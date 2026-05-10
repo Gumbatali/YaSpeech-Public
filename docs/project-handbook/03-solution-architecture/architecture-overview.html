@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YaSpeech Architecture Overview</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #20242c;
+        --muted: #667085;
+        --line: #d9e0ea;
+        --data: #4299e1;
+        --processing: #ed8936;
+        --ai: #6e8dff;
+        --success: #48bb78;
+      }
+
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 40px 24px 64px;
+      }
+
+      h1,
+      h2 {
+        margin: 0 0 16px;
+      }
+
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 24px;
+        margin-bottom: 20px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 16px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      svg {
+        width: 100%;
+        height: auto;
+        border-radius: 18px;
+        background: #fbfcfe;
+        border: 1px solid var(--line);
+      }
+
+      pre {
+        overflow: auto;
+        margin: 0;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>YaSpeech MVP</h1>
+        <p class="muted">
+          Веб-обёртка над Yandex Cloud сервисами для обработки аудиозаписей
+          встреч и выпуска протоколов.
+        </p>
+      </section>
+
+      <section>
+        <h2>Бизнес-контекст</h2>
+        <div class="grid">
+          <div class="card">
+            <strong>Проблема</strong>
+            <p class="muted">Записи встреч плохо превращаются в рабочие артефакты.</p>
+          </div>
+          <div class="card">
+            <strong>Цель</strong>
+            <p class="muted">Дать пользователю быстрый путь от аудио к протоколу.</p>
+          </div>
+          <div class="card">
+            <strong>Ограничение</strong>
+            <p class="muted">Минимум облачных расходов и только допустимый стек.</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Data Flow</h2>
+        <svg viewBox="0 0 980 340" xmlns="http://www.w3.org/2000/svg">
+          <rect x="32" y="44" width="160" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="112" y="86" text-anchor="middle" font-size="18" fill="#20242c">Пользователь</text>
+
+          <rect x="248" y="44" width="180" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="338" y="78" text-anchor="middle" font-size="18" fill="#20242c">Web UI</text>
+          <text x="338" y="100" text-anchor="middle" font-size="13" fill="#667085">React SPA</text>
+
+          <rect x="488" y="44" width="180" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="578" y="78" text-anchor="middle" font-size="18" fill="#20242c">API / Worker</text>
+          <text x="578" y="100" text-anchor="middle" font-size="13" fill="#667085">Cloud Functions</text>
+
+          <rect x="738" y="24" width="190" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="833" y="58" text-anchor="middle" font-size="18" fill="#20242c">Object Storage</text>
+          <text x="833" y="80" text-anchor="middle" font-size="13" fill="#667085">сайт и артефакты</text>
+
+          <rect x="738" y="124" width="190" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="833" y="158" text-anchor="middle" font-size="18" fill="#20242c">SpeechSense</text>
+          <text x="833" y="180" text-anchor="middle" font-size="13" fill="#667085">транскрипт</text>
+
+          <rect x="738" y="224" width="190" height="72" rx="18" fill="#fff" stroke="#d9e0ea"/>
+          <text x="833" y="258" text-anchor="middle" font-size="18" fill="#20242c">AI Studio</text>
+          <text x="833" y="280" text-anchor="middle" font-size="13" fill="#667085">draft и протокол</text>
+
+          <line x1="192" y1="80" x2="248" y2="80" stroke="#4299e1" stroke-width="4"/>
+          <line x1="428" y1="80" x2="488" y2="80" stroke="#ed8936" stroke-width="4"/>
+          <line x1="668" y1="80" x2="738" y2="60" stroke="#4299e1" stroke-width="4"/>
+          <line x1="668" y1="110" x2="738" y2="160" stroke="#ed8936" stroke-width="4"/>
+          <line x1="668" y1="130" x2="738" y2="260" stroke="#6e8dff" stroke-width="4"/>
+        </svg>
+      </section>
+
+      <section>
+        <h2>Архитектурные слои</h2>
+        <pre>
+┌───────────────────────────────────────────────┐
+│ Presentation Layer                            │
+│ Web UI / Mobile-first interface               │
+├───────────────────────────────────────────────┤
+│ Application Layer                             │
+│ HTTP handlers / use cases / pipeline service  │
+├───────────────────────────────────────────────┤
+│ Infrastructure Layer                          │
+│ Storage / Queue / Cloud Functions             │
+├───────────────────────────────────────────────┤
+│ External Services                             │
+│ SpeechSense / AI Studio                       │
+└───────────────────────────────────────────────┘
+        </pre>
+      </section>
+
+      <section>
+        <h2>Ключевые возможности</h2>
+        <div class="grid">
+          <div class="card"><strong>Проекты</strong><p class="muted">Список проектов и команда.</p></div>
+          <div class="card"><strong>Встречи</strong><p class="muted">История и состояние обработки.</p></div>
+          <div class="card"><strong>Draft</strong><p class="muted">Черновик названия и спикеров.</p></div>
+          <div class="card"><strong>Протокол</strong><p class="muted">Summary, решения и задачи.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Развёртывание</h2>
+        <p class="muted">
+          Целевой контур: Yandex Object Storage, API Gateway, Cloud Functions,
+          Message Queue, SpeechSense и AI Studio. Постоянно включённая VM не
+          требуется.
+        </p>
+      </section>
+    </main>
+  </body>
+  </html>

@@ -1,0 +1,45 @@
+<svg width="1600" height="2200" viewBox="0 0 1600 2200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1600" height="2200" fill="#F6F7F9"/>
+  <g opacity="0.42" stroke="#C7D3E6" stroke-width="3">
+    <path d="M120 210H640V780H120V210Z"/>
+    <path d="M220 310H540V680H220V310Z"/>
+    <path d="M760 140H1400V840H760V140Z"/>
+    <path d="M860 240H1300V740H860V240Z"/>
+    <path d="M180 980H710V1540H180V980Z"/>
+    <path d="M280 1080H610V1440H280V1080Z"/>
+    <path d="M820 1040H1450V1800H820V1040Z"/>
+    <path d="M920 1140H1350V1700H920V1140Z"/>
+  </g>
+  <g opacity="0.24" stroke="#DCE5F2" stroke-width="2">
+    <path d="M0 420H1600"/>
+    <path d="M0 840H1600"/>
+    <path d="M0 1260H1600"/>
+    <path d="M0 1680H1600"/>
+    <path d="M260 0V2200"/>
+    <path d="M520 0V2200"/>
+    <path d="M780 0V2200"/>
+    <path d="M1040 0V2200"/>
+    <path d="M1300 0V2200"/>
+  </g>
+  <g opacity="0.22" fill="#F1F4F8">
+    <rect x="112" y="202" width="120" height="120" rx="20"/>
+    <rect x="400" y="658" width="180" height="82" rx="20"/>
+    <rect x="1002" y="228" width="214" height="110" rx="28"/>
+    <rect x="1180" y="1550" width="168" height="96" rx="24"/>
+    <rect x="344" y="1198" width="144" height="110" rx="22"/>
+  </g>
+  <g opacity="0.28" stroke="#8CA7E0" stroke-width="4">
+    <path d="M118 494H542"/>
+    <path d="M758 486H1298"/>
+    <path d="M180 1286H610"/>
+    <path d="M820 1410H1348"/>
+  </g>
+  <g opacity="0.22" stroke="#6E8DFF" stroke-width="2.5">
+    <path d="M612 492H704"/>
+    <path d="M1298 486H1398"/>
+    <path d="M610 1286H716"/>
+    <path d="M1348 1410H1450"/>
+    <path d="M1010 340H1108"/>
+    <path d="M950 1544H1052"/>
+  </g>
+</svg>
