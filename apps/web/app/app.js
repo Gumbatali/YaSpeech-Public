@@ -16,6 +16,7 @@ import {
         ...init,
         headers: {
           "content-type": "application/json",
+          ...(window.__API_KEY__ ? { "x-api-key": window.__API_KEY__ } : {}),
           ...(init.headers ?? {})
         }
       });
@@ -365,7 +366,7 @@ import {
           members: cleanedMembers
         });
         setTeamDraft(payload.project.team);
-        setNotice("Люди проекта сохранены.");
+        setNotice("Участники проекта сохранены.");
         await refreshProjects({ selectProjectId: selectedProjectId });
       } catch (caughtError) {
         setError(caughtError.message);
@@ -609,7 +610,7 @@ import {
             className="ghost-button"
             onClick=${() => setRequestedScreen("project-people")}
           >
-            Люди проекта
+            Участники проекта
           </button>
         </header>
       `;
@@ -659,10 +660,7 @@ import {
               <strong>${meetingForm.file ? meetingForm.file.name : "Файл пока не выбран"}</strong>
               <span>
                 ${meetingForm.file
-                  ? (() => {
-                      const mb = (meetingForm.file.size / (1024 * 1024)).toFixed(1);
-                      return `${mb} МБ · готов к загрузке`;
-                    })()
+                  ? (meetingForm.file.size / (1024 * 1024)).toFixed(1) + " МБ · готов к загрузке"
                   : "MP3, M4A, WAV, OGG, FLAC, AAC · максимум 1 ГБ"}
               </span>
             </div>
@@ -953,7 +951,7 @@ import {
           <section className="panel panel-main">
             <div className="row">
               <div>
-                <div className="eyebrow">Люди проекта</div>
+                <div className="eyebrow">Участники проекта</div>
                 <h2>Кого учитывать на встречах</h2>
               </div>
               <button className="ghost-button" onClick=${addTeamMember}>Добавить</button>
