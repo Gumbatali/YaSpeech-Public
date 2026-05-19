@@ -6,7 +6,7 @@ export class MarkUploadCompletedUseCase {
     this.clock = clock;
   }
 
-  async execute({ meetingId, sizeBytes }) {
+  async execute({ meetingId, sizeBytes, durationSeconds }) {
     const meeting = await this.meetingRepository.getById(meetingId);
     if (!meeting) {
       throw new Error(`Meeting not found: ${meetingId}`);
@@ -15,7 +15,8 @@ export class MarkUploadCompletedUseCase {
     const updated = markMeetingUploaded(
       meeting,
       sizeBytes,
-      this.clock.now().toISOString()
+      this.clock.now().toISOString(),
+      durationSeconds ?? null
     );
     await this.meetingRepository.save(updated);
     return updated;
