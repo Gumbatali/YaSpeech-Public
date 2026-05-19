@@ -3,7 +3,7 @@ export class YcProjectRepository {
     this.storage = storage;
   }
 
-  async getAll() {
+  async list() {
     const index = await this.storage.readJson("projects/index.json");
     return index ?? [];
   }
@@ -15,7 +15,7 @@ export class YcProjectRepository {
   async save(project) {
     await this.storage.writeJson(`projects/${project.id}/project.json`, project);
 
-    const all = await this.getAll();
+    const all = await this.list();
     const next = all.filter((p) => p.id !== project.id);
     next.unshift({ id: project.id, name: project.name, createdAt: project.createdAt });
     await this.storage.writeJson("projects/index.json", next);

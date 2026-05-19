@@ -12,7 +12,7 @@ export class YcMeetingRepository {
     return this.storage.readJson(`projects/${entry.projectId}/meetings/${meetingId}/meeting.json`);
   }
 
-  async getByProjectId(projectId) {
+  async listByProject(projectId) {
     const index = await this.storage.readJson(
       `projects/${projectId}/meetings/index.json`
     );
@@ -24,7 +24,7 @@ export class YcMeetingRepository {
     await this.storage.writeJson(key, meeting);
 
     // Обновляем индекс проекта
-    const index = await this.getByProjectId(meeting.projectId);
+    const index = await this.listByProject(meeting.projectId);
     const next = index.filter((m) => m.id !== meeting.id);
     next.unshift({
       id: meeting.id,
