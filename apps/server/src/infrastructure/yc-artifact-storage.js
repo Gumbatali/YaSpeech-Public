@@ -11,6 +11,13 @@ export class YcArtifactStorage {
     this.secret = secret;
   }
 
+  /** Called by CreateMeetingUseCase — returns upload descriptor */
+  async issueMeetingUpload(meeting) {
+    const key = meeting.artifacts.audioOriginalKey;
+    const uploadUrl = await this.getUploadUrl(key, meeting.contentType);
+    return { method: "PUT", uploadUrl, artifactKey: key };
+  }
+
   /** Presigned PUT URL for direct browser upload */
   async getUploadUrl(key, _contentType) {
     return presignUrl({
