@@ -702,7 +702,7 @@ import {
                   className="meeting-row"
                   onClick=${() => openMeetingFromHistory(meeting.id)}
                 >
-                  <div>
+                  <div className="meeting-info">
                     <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
                     <span>${formatMeetingDate(meeting.date)}</span>
                   </div>

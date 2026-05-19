@@ -324,6 +324,12 @@ button { cursor: pointer; }
   min-height: 3.25rem;
 }
 
+.meeting-info {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
 .project-card strong,
 .meeting-row strong,
 .file-picker-meta strong,
