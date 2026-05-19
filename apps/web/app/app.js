@@ -76,10 +76,10 @@ import {
       });
     }
 
-    completeUpload(meetingId, sizeBytes) {
+    completeUpload(meetingId, sizeBytes, durationSeconds) {
       return this.json(`/api/meetings/${meetingId}/upload-complete`, {
         method: "POST",
-        body: JSON.stringify({ sizeBytes })
+        body: JSON.stringify({ sizeBytes, durationSeconds: durationSeconds ?? null })
       });
     }
 
@@ -123,6 +123,26 @@ import {
     } catch {
       return value;
     }
+  }
+
+  function formatMeetingTime(meeting) {
+    const dur = meeting?.audioFile?.durationSeconds;
+    const uploadedAt = meeting?.audioFile?.uploadedAt;
+    if (!dur || !uploadedAt) return null;
+    const endMs = new Date(uploadedAt).getTime();
+    const startMs = endMs - dur * 1000;
+    const fmt = (ms) => new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
+    return fmt(startMs) + "–" + fmt(endMs);
+  }
+
+  function getAudioDuration(file) {
+    return new Promise((resolve) => {
+      const audio = document.createElement("audio");
+      const url = URL.createObjectURL(file);
+      audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(Math.round(audio.duration)); };
+      audio.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      audio.src = url;
+    });
   }
 
   function createProjectForm() {
@@ -426,10 +446,12 @@ import {
           contentType: meetingForm.file.type || "application/octet-stream"
         });
 
+        const durationSeconds = await getAudioDuration(meetingForm.file);
         await api.uploadFile(payload.upload, meetingForm.file);
         const uploaded = await api.completeUpload(
           payload.meeting.id,
-          meetingForm.file.size
+          meetingForm.file.size,
+          durationSeconds
         );
         setActiveMeeting(uploaded.meeting);
         setNotice("Запись загружена.");
@@ -704,7 +726,10 @@ import {
                 >
                   <div className="meeting-info">
                     <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
-                    <span>${formatMeetingDate(meeting.date)}</span>
+                    <span>
+                      ${formatMeetingDate(meeting.date)}
+                      ${formatMeetingTime(meeting) ? " · " + formatMeetingTime(meeting) : ""}
+                    </span>
                   </div>
                   <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
                 </button>

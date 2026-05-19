@@ -58,7 +58,7 @@ export function createMeeting({
   };
 }
 
-export function markMeetingUploaded(meeting, sizeBytes, updatedAt) {
+export function markMeetingUploaded(meeting, sizeBytes, updatedAt, durationSeconds) {
   if (meeting.status !== "uploading" && meeting.status !== "draft") {
     return {
       ...meeting,
@@ -76,7 +76,9 @@ export function markMeetingUploaded(meeting, sizeBytes, updatedAt) {
     updatedAt,
     audioFile: {
       ...meeting.audioFile,
-      sizeBytes
+      sizeBytes,
+      uploadedAt: updatedAt,
+      ...(durationSeconds != null ? { durationSeconds } : {})
     }
   };
 }

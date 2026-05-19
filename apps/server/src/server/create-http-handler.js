@@ -259,7 +259,8 @@ export function createHttpHandler({
         const payload = await readJsonRequestBody(request);
         const meeting = await markUploadCompleted.execute({
           meetingId: parts[2],
-          sizeBytes: payload.sizeBytes ?? 0
+          sizeBytes: payload.sizeBytes ?? 0,
+          durationSeconds: payload.durationSeconds ?? null
         });
         pipelineService.enqueueProcessing(parts[2]);
         sendJson(response, 200, { meeting });
