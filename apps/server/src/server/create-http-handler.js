@@ -202,6 +202,29 @@ export function createHttpHandler({
 
       if (request.method === "POST" && url.pathname === "/api/meetings") {
         const payload = await readJsonRequestBody(request);
+
+        const ALLOWED_CONTENT_TYPES = [
+          "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
+          "audio/x-m4a", "audio/wav", "audio/wave", "audio/ogg",
+          "audio/webm", "audio/aac", "audio/flac", "audio/x-flac",
+          "audio/opus", "application/octet-stream"
+        ];
+        const AUDIO_EXT = /\.(mp3|m4a|mp4|wav|ogg|webm|aac|flac|opus)$/i;
+        const MAX_FILE_NAME_LEN = 255;
+
+        const ct = (payload.contentType || "").toLowerCase().split(";")[0].trim();
+        const fn = payload.fileName || "";
+
+        if (!ALLOWED_CONTENT_TYPES.includes(ct) && !AUDIO_EXT.test(fn)) {
+          badRequest(response, "Неподдерживаемый формат файла. Допустимы только аудиофайлы (MP3, M4A, WAV, OGG, FLAC, AAC).");
+          return;
+        }
+
+        if (!fn || fn.length > MAX_FILE_NAME_LEN) {
+          badRequest(response, "Некорректное имя файла.");
+          return;
+        }
+
         const result = await createMeeting.execute({
           projectId: payload.projectId,
           date: payload.date,

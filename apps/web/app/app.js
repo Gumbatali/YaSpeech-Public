@@ -386,6 +386,33 @@ import {
         return;
       }
 
+      const ALLOWED_TYPES = [
+        "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
+        "audio/x-m4a", "audio/wav", "audio/wave", "audio/ogg",
+        "audio/webm", "audio/aac", "audio/flac", "audio/x-flac"
+      ];
+      const MAX_SIZE_BYTES = 1 * 1024 * 1024 * 1024; // 1 GB
+
+      const fileType = meetingForm.file.type || "";
+      const fileName = meetingForm.file.name || "";
+      const AUDIO_EXT = /\.(mp3|m4a|mp4|wav|ogg|webm|aac|flac|opus)$/i;
+
+      if (!ALLOWED_TYPES.includes(fileType) && !AUDIO_EXT.test(fileName)) {
+        setError("Неподдерживаемый формат. Загрузите аудиофайл: MP3, M4A, WAV, OGG, FLAC, AAC.");
+        return;
+      }
+
+      if (meetingForm.file.size > MAX_SIZE_BYTES) {
+        const sizeMb = (meetingForm.file.size / (1024 * 1024)).toFixed(0);
+        setError(`Файл слишком большой (${sizeMb} МБ). Максимальный размер — 1 ГБ.`);
+        return;
+      }
+
+      if (meetingForm.file.size === 0) {
+        setError("Файл пустой. Выберите другой файл.");
+        return;
+      }
+
       try {
         setSubmittingMeeting(true);
         setError("");
@@ -619,7 +646,7 @@ import {
             <label className="file-picker-button">
               <input
                 type="file"
-                accept="audio/*"
+                accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac"
                 onChange=${(event) =>
                   setMeetingForm((current) => ({
                     ...current,
@@ -632,8 +659,11 @@ import {
               <strong>${meetingForm.file ? meetingForm.file.name : "Файл пока не выбран"}</strong>
               <span>
                 ${meetingForm.file
-                  ? "Файл готов к загрузке"
-                  : "Поддерживается одна аудиозапись встречи"}
+                  ? (() => {
+                      const mb = (meetingForm.file.size / (1024 * 1024)).toFixed(1);
+                      return `${mb} МБ · готов к загрузке`;
+                    })()
+                  : "MP3, M4A, WAV, OGG, FLAC, AAC · максимум 1 ГБ"}
               </span>
             </div>
           </div>
