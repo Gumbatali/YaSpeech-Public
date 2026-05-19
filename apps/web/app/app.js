@@ -125,6 +125,12 @@ import {
     }
   }
 
+  function formatMeetingDateWithTime(meeting) {
+    const datePart = formatMeetingDate(meeting.date);
+    const timeRange = formatMeetingTime(meeting);
+    return timeRange ? datePart + " · " + timeRange : datePart;
+  }
+
   function formatMeetingTime(meeting) {
     const dur = meeting?.audioFile?.durationSeconds;
     const uploadedAt = meeting?.audioFile?.uploadedAt;
@@ -419,7 +425,7 @@ import {
           const blob = new Blob(chunks, { type: mimeType });
           const ext = mimeType.includes("webm") ? "webm" : "mp4";
           const now = new Date();
-          const name = "запись_" + now.toISOString().slice(0, 16).replace("T", "_") + "." + ext;
+          const name = "запись_" + now.toISOString().slice(0, 16).replace("T", "_").replace(":", "-") + "." + ext;
           const file = new File([blob], name, { type: mimeType });
           setMeetingForm((current) => ({ ...current, file }));
           setRecording(false);
@@ -794,10 +800,7 @@ import {
                 >
                   <div className="meeting-info">
                     <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
-                    <span>
-                      ${formatMeetingDate(meeting.date)}
-                      ${formatMeetingTime(meeting) ? " · " + formatMeetingTime(meeting) : ""}
-                    </span>
+                    <span>${formatMeetingDateWithTime(meeting)}</span>
                   </div>
                   <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
                 </button>
