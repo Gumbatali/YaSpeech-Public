@@ -286,6 +286,17 @@ export function createHttpHandler({
         parts[0] === "api" &&
         parts[1] === "meetings" &&
         parts.length === 3 &&
+        request.method === "DELETE"
+      ) {
+        await meetingRepository.delete(parts[2]);
+        sendJson(response, 200, { deleted: true });
+        return;
+      }
+
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts.length === 3 &&
         request.method === "GET"
       ) {
         const meeting = await meetingRepository.getById(parts[2]);

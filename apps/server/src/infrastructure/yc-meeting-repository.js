@@ -45,6 +45,12 @@ export class YcMeetingRepository {
       updatedAt: meeting.updatedAt,
       speechKitJobId: meeting.speechKitJobId,
       summaryTitle: meeting.protocol?.summary?.title ?? meeting.titleDraft,
+      audioFile: meeting.audioFile
+        ? {
+            uploadedAt: meeting.audioFile.uploadedAt,
+            durationSeconds: meeting.audioFile.durationSeconds
+          }
+        : undefined
     });
     await this.storage.writeJson(
       `projects/${meeting.projectId}/meetings/index.json`,
@@ -60,5 +66,22 @@ export class YcMeetingRepository {
       baseKey,
     });
     await this.storage.writeJson("meetings/index.json", nextGlobal);
+  }
+
+  async delete(meetingId) {
+    const global = await this.storage.readJson("meetings/index.json");
+    if (!global) return;
+    const entry = global.find((m) => m.id === meetingId);
+    if (!entry) return;
+
+    // Удаляем из глобального индекса
+    const nextGlobal = global.filter((m) => m.id !== meetingId);
+    await this.storage.writeJson("meetings/index.json", nextGlobal);
+
+    // Удаляем из индекса проекта
+    const projectKey = `projects/${entry.projectId}/meetings/index.json`;
+    const projectList = (await this.storage.readJson(projectKey)) ?? [];
+    const nextProjectList = projectList.filter((m) => m.id !== meetingId);
+    await this.storage.writeJson(projectKey, nextProjectList);
   }
 }
