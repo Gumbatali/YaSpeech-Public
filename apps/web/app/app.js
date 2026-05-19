@@ -145,6 +145,12 @@ import {
     });
   }
 
+  function formatRecordingTime(seconds) {
+    const m = String(Math.floor(seconds / 60)).padStart(2, "0");
+    const s = String(seconds % 60).padStart(2, "0");
+    return m + ":" + s;
+  }
+
   function createProjectForm() {
     return { name: "" };
   }
@@ -177,6 +183,10 @@ import {
     const [savingTeam, setSavingTeam] = useState(false);
     const [confirmingDraft, setConfirmingDraft] = useState(false);
     const [showProjectComposer, setShowProjectComposer] = useState(false);
+    const [recording, setRecording] = useState(false);
+    const [recordingSeconds, setRecordingSeconds] = useState(0);
+    const recorderRef = React.useRef(null);
+    const timerRef = React.useRef(null);
     const [projectForm, setProjectForm] = useState(createProjectForm());
     const [meetingForm, setMeetingForm] = useState(createMeetingForm());
     const [draftForm, setDraftForm] = useState(createDraftForm());
@@ -393,6 +403,41 @@ import {
       } finally {
         setSavingTeam(false);
       }
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+        const recorder = new MediaRecorder(stream, { mimeType });
+        const chunks = [];
+
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          clearInterval(timerRef.current);
+          const blob = new Blob(chunks, { type: mimeType });
+          const ext = mimeType.includes("webm") ? "webm" : "mp4";
+          const now = new Date();
+          const name = "запись_" + now.toISOString().slice(0, 16).replace("T", "_") + "." + ext;
+          const file = new File([blob], name, { type: mimeType });
+          setMeetingForm((current) => ({ ...current, file }));
+          setRecording(false);
+          setRecordingSeconds(0);
+        };
+
+        recorderRef.current = recorder;
+        recorder.start(250);
+        setRecording(true);
+        setRecordingSeconds(0);
+        timerRef.current = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
+      } catch (err) {
+        setError("Нет доступа к микрофону. Разрешите доступ в настройках браузера.");
+      }
+    }
+
+    function stopRecording() {
+      recorderRef.current?.stop();
     }
 
     async function handleCreateMeeting(event) {
@@ -673,18 +718,41 @@ import {
           </div>
 
           <div className="file-picker">
-            <label className="file-picker-button">
-              <input
-                type="file"
-                accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac"
-                onChange=${(event) =>
-                  setMeetingForm((current) => ({
-                    ...current,
-                    file: event.target.files?.[0] ?? null
-                  }))}
-              />
-              Выбрать файл
-            </label>
+            <div className="file-picker-actions">
+              <label className="file-picker-button" aria-disabled=${recording}>
+                <input
+                  type="file"
+                  accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac"
+                  disabled=${recording}
+                  onChange=${(event) =>
+                    setMeetingForm((current) => ({
+                      ...current,
+                      file: event.target.files?.[0] ?? null
+                    }))}
+                />
+                Выбрать файл
+              </label>
+
+              ${recording
+                ? html`<button
+                    type="button"
+                    className="record-stop-button"
+                    onClick=${stopRecording}
+                  >
+                    <span className="rec-dot"></span>
+                    ${formatRecordingTime(recordingSeconds)}
+                    · Остановить
+                  </button>`
+                : html`<button
+                    type="button"
+                    className="record-start-button"
+                    onClick=${startRecording}
+                  >
+                    <span className="rec-dot"></span>
+                    Записать
+                  </button>`}
+            </div>
+
             <div className="file-picker-meta">
               <strong>${meetingForm.file ? meetingForm.file.name : "Файл пока не выбран"}</strong>
               <span>
