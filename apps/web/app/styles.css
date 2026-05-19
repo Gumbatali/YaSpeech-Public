@@ -214,6 +214,26 @@ button {
   gap: 16px;
 }
 
+.date-inline {
+  margin-top: 6px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid color-mix(in oklch, currentColor 25%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  opacity: 0.55;
+  padding: 2px 0;
+  cursor: pointer;
+  width: auto;
+}
+
+.date-inline:focus {
+  outline: none;
+  opacity: 0.9;
+  border-bottom-color: currentColor;
+}
+
 .field input,
 .speaker-item input {
   width: 100%;

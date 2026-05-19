@@ -607,10 +607,15 @@ import {
             <h1>${selectedProject?.name}</h1>
           </div>
           <button
-            className="ghost-button"
+            className="ghost-button members-button"
             onClick=${() => setRequestedScreen("project-people")}
           >
-            Участники проекта
+            ${(() => {
+              const n = selectedProject?.team?.length ?? 0;
+              if (n === 0) return "Добавить участников";
+              const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
+              return n + " " + label;
+            })()}
           </button>
         </header>
       `;
@@ -623,25 +628,22 @@ import {
             <div>
               <div className="eyebrow">Новая запись</div>
               <h2>Загрузить запись</h2>
+              <input
+                className="date-inline"
+                type="date"
+                value=${meetingForm.date}
+                onInput=${(event) =>
+                  setMeetingForm((current) => ({
+                    ...current,
+                    date: event.target.value
+                  }))}
+              />
             </div>
             <p className="panel-copy">
               Система подготовит текст встречи, предложит черновик и потом
               соберёт готовый протокол.
             </p>
           </div>
-
-          <label className="field">
-            <span>Дата встречи</span>
-            <input
-              type="date"
-              value=${meetingForm.date}
-              onInput=${(event) =>
-                setMeetingForm((current) => ({
-                  ...current,
-                  date: event.target.value
-                }))}
-            />
-          </label>
 
           <div className="file-picker">
             <label className="file-picker-button">
