@@ -135,7 +135,7 @@ test("creates a meeting with upload metadata and keeps status transitions idempo
   assert.match(created.upload.uploadUrl, /meeting-001/);
   assert.equal(
     created.meeting.artifacts.audioOriginalKey,
-    "projects/ezhenedelnyy-produktovyy/meetings/meeting-001/audio-original.m4a"
+    "projects/ezhenedelnyy-produktovyy/2026-05-10_meeting-001/audio.m4a"
   );
 
   const markUploadCompleted = new MarkUploadCompletedUseCase(meetings, clock);

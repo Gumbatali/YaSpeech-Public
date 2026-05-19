@@ -29,7 +29,8 @@ export function createMeeting({
   createdAt
 }) {
   const extension = resolveExtension(fileName, contentType);
-  const baseKey = `projects/${project.id}/meetings/${meetingId}`;
+  const datePart = date ? String(date).replace(/[^0-9-]/g, "").slice(0, 10) : "0000-00-00";
+  const baseKey = `projects/${project.id}/${datePart}_${meetingId}`;
 
   return {
     id: meetingId,
@@ -47,11 +48,12 @@ export function createMeeting({
       contentType
     },
     artifacts: {
-      audioOriginalKey: `${baseKey}/audio-original${extension}`,
+      audioOriginalKey: `${baseKey}/audio${extension}`,
       transcriptKey: `${baseKey}/transcript.json`,
       protocolJsonKey: `${baseKey}/protocol.json`,
       protocolTextKey: `${baseKey}/protocol.txt`,
-      manifestKey: `${baseKey}/meeting.json`
+      manifestKey: `${baseKey}/meeting.json`,
+      baseKey
     }
   };
 }

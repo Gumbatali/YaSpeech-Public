@@ -33,7 +33,7 @@ export class MockYandexGptGateway {
     };
   }
 
-  async generateProtocol({ meeting, project, transcript }) {
+  async generateProtocol({ meeting, project, transcript, previousProtocol = null }) {
     if (this.remainingFailures > 0) {
       this.remainingFailures -= 1;
       const error = new Error("YandexGPT temporary error.");
@@ -63,6 +63,20 @@ export class MockYandexGptGateway {
       deadline: index === 0 ? "2026-05-12" : "2026-05-13"
     }));
 
+    // Сверка с предыдущим протоколом: делим задачи на выполненные и перенесённые
+    let completedFromPrevious = [];
+    let carriedForward = [];
+
+    if (previousProtocol?.actionItems?.length) {
+      const prevItems = previousProtocol.actionItems;
+      const half = Math.ceil(prevItems.length / 2);
+      completedFromPrevious = prevItems.slice(0, half).map((item) => ({
+        ...item,
+        completedAt: meeting.date
+      }));
+      carriedForward = prevItems.slice(half);
+    }
+
     const protocol = {
       summary: {
         title: meeting.titleDraft || `${project.name} — статусы и решения`,
@@ -72,6 +86,8 @@ export class MockYandexGptGateway {
       guests: meeting.guests.map((guest) => guest.name),
       decisions,
       actionItems,
+      completedFromPrevious,
+      carriedForward,
       transcriptHighlights: transcript.phrases.map((phrase, index) => ({
         speaker:
           meeting.speakerDrafts?.[index]?.guessedName ||
@@ -82,7 +98,7 @@ export class MockYandexGptGateway {
       }))
     };
 
-    const protocolText = [
+    const protocolTextParts = [
       "Протокол встречи",
       "",
       `Проект: ${project.name}`,
@@ -99,11 +115,35 @@ export class MockYandexGptGateway {
       "Решения:",
       ...decisions.map((decision, index) => `${index + 1}. ${decision}`),
       "",
-      "Задачи:",
+      "Новые задачи:",
       ...actionItems.map(
         (item, index) =>
           `${index + 1}. ${item.owner} — ${item.task} (до ${item.deadline})`
-      ),
+      )
+    ];
+
+    if (completedFromPrevious.length > 0) {
+      protocolTextParts.push(
+        "",
+        "Выполнено с прошлой встречи:",
+        ...completedFromPrevious.map(
+          (item, index) => `${index + 1}. ✓ ${item.owner} — ${item.task}`
+        )
+      );
+    }
+
+    if (carriedForward.length > 0) {
+      protocolTextParts.push(
+        "",
+        "Перенесено на следующую встречу:",
+        ...carriedForward.map(
+          (item, index) =>
+            `${index + 1}. ${item.owner} — ${item.task} (до ${item.deadline})`
+        )
+      );
+    }
+
+    protocolTextParts.push(
       "",
       "Транскрипт по спикерам:",
       ...transcript.phrases.map((phrase, index) => {
@@ -114,11 +154,11 @@ export class MockYandexGptGateway {
           phrase.speakerTag;
         return `- ${speaker}: ${phrase.text}`;
       })
-    ].join("\n");
+    );
 
     return {
       protocol,
-      protocolText
+      protocolText: protocolTextParts.join("\n")
     };
   }
 }

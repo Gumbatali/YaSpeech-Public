@@ -4,12 +4,19 @@ export class YcMeetingRepository {
   }
 
   async getById(meetingId) {
-    // Ищем встречу по всем проектам (или используем глобальный индекс)
     const global = await this.storage.readJson("meetings/index.json");
     if (!global) return null;
     const entry = global.find((m) => m.id === meetingId);
     if (!entry) return null;
-    return this.storage.readJson(`projects/${entry.projectId}/meetings/${meetingId}/meeting.json`);
+
+    // Новый путь: baseKey хранится в индексе
+    if (entry.baseKey) {
+      return this.storage.readJson(`${entry.baseKey}/meeting.json`);
+    }
+    // Fallback: старый путь (meetings/{uuid}/meeting.json)
+    return this.storage.readJson(
+      `projects/${entry.projectId}/meetings/${meetingId}/meeting.json`
+    );
   }
 
   async listByProject(projectId) {
@@ -20,7 +27,10 @@ export class YcMeetingRepository {
   }
 
   async save(meeting) {
-    const key = `projects/${meeting.projectId}/meetings/${meeting.id}/meeting.json`;
+    const baseKey = meeting.artifacts?.baseKey
+      ?? `projects/${meeting.projectId}/meetings/${meeting.id}`;
+    const key = `${baseKey}/meeting.json`;
+
     await this.storage.writeJson(key, meeting);
 
     // Обновляем индекс проекта
@@ -41,10 +51,14 @@ export class YcMeetingRepository {
       next
     );
 
-    // Обновляем глобальный индекс
+    // Обновляем глобальный индекс (храним baseKey для backward compat)
     const global = (await this.storage.readJson("meetings/index.json")) ?? [];
     const nextGlobal = global.filter((m) => m.id !== meeting.id);
-    nextGlobal.unshift({ id: meeting.id, projectId: meeting.projectId });
+    nextGlobal.unshift({
+      id: meeting.id,
+      projectId: meeting.projectId,
+      baseKey,
+    });
     await this.storage.writeJson("meetings/index.json", nextGlobal);
   }
 }

@@ -160,10 +160,31 @@ export class MeetingPipelineService {
       throw new Error("Transcript not found for protocol generation.");
     }
 
+    // Загружаем последний завершённый протокол проекта для сверки задач
+    let previousProtocol = null;
+    try {
+      const allMeetings = await this.meetingRepository.listByProject(meeting.projectId);
+      const prevMeeting = allMeetings
+        .filter((m) => m.id !== meeting.id && m.status === "done")
+        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
+
+      if (prevMeeting) {
+        const prevFull = await this.meetingRepository.getById(prevMeeting.id);
+        if (prevFull?.artifacts?.protocolJsonKey) {
+          previousProtocol = await this.artifactStorage.readJson(
+            prevFull.artifacts.protocolJsonKey
+          );
+        }
+      }
+    } catch {
+      // не критично — продолжаем без предыдущего протокола
+    }
+
     const { protocol, protocolText } = await this.yandexGptGateway.generateProtocol({
       meeting,
       project,
-      transcript
+      transcript,
+      previousProtocol
     });
 
     await this.artifactStorage.writeJson(meeting.artifacts.protocolJsonKey, protocol);

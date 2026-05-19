@@ -44,5 +44,7 @@ export function makeDeps() {
     clock,
   });
 
-  return { projectRepository, meetingRepository, artifactStorage, pipelineService, clock, idGenerator };
+  const apiKey = process.env.API_KEY ?? null;
+
+  return { projectRepository, meetingRepository, artifactStorage, pipelineService, clock, idGenerator, apiKey };
 }

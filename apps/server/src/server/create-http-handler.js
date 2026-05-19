@@ -48,7 +48,8 @@ export function createHttpHandler({
   pipelineService,
   clock,
   idGenerator,
-  webRootDirectory
+  webRootDirectory,
+  apiKey
 }) {
   const createProject = new CreateProjectUseCase(
     projectRepository,
@@ -76,6 +77,13 @@ export function createHttpHandler({
     if (request.method === "OPTIONS") {
       response.writeHead(204);
       response.end();
+      return;
+    }
+
+    // API key protection — только для /api/* маршрутов
+    if (apiKey && parts[0] === "api" && request.headers["x-api-key"] !== apiKey) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Unauthorized" }));
       return;
     }
 
