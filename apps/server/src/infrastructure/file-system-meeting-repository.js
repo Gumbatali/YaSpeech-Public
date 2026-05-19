@@ -61,7 +61,7 @@ export class FileSystemMeetingRepository {
       status: meeting.status,
       currentStage: meeting.currentStage,
       updatedAt: meeting.updatedAt,
-      speechSenseTalkId: meeting.speechSenseTalkId,
+      speechKitJobId: meeting.speechKitJobId,
       summaryTitle: meeting.protocol?.summary?.title ?? meeting.titleDraft
     });
     nextIndex.sort((left, right) => right.date.localeCompare(left.date));

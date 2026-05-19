@@ -4,8 +4,8 @@ import { FileSystemMeetingRepository } from "../infrastructure/file-system-meeti
 import { FileSystemProjectRepository } from "../infrastructure/file-system-project-repository.js";
 import { LocalArtifactStorage } from "../infrastructure/local-artifact-storage.js";
 import { LocalQueueRunner } from "../infrastructure/local-queue-runner.js";
-import { MockAiStudioGateway } from "../infrastructure/mock-ai-studio-gateway.js";
-import { MockSpeechSenseGateway } from "../infrastructure/mock-speech-sense-gateway.js";
+import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
+import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.js";
 import { createHttpHandler } from "./create-http-handler.js";
 
 class RuntimeClock {
@@ -41,8 +41,8 @@ export async function createRuntimeServer({
     meetingRepository,
     projectRepository,
     artifactStorage,
-    speechSenseGateway: new MockSpeechSenseGateway(),
-    aiStudioGateway: new MockAiStudioGateway({
+    speechKitGateway: new MockSpeechKitGateway(),
+    yandexGptGateway: new MockYandexGptGateway({
       failAttempts: failAiStudioAttempts
     }),
     queueRunner,

@@ -1,4 +1,4 @@
-export class MockAiStudioGateway {
+export class MockYandexGptGateway {
   constructor({ failAttempts = 0 } = {}) {
     this.remainingFailures = failAttempts;
   }
@@ -36,8 +36,8 @@ export class MockAiStudioGateway {
   async generateProtocol({ meeting, project, transcript }) {
     if (this.remainingFailures > 0) {
       this.remainingFailures -= 1;
-      const error = new Error("AI Studio temporary error.");
-      error.code = "AI_STUDIO_ERROR";
+      const error = new Error("YandexGPT temporary error.");
+      error.code = "YANDEX_GPT_ERROR";
       throw error;
     }
 
@@ -47,7 +47,7 @@ export class MockAiStudioGateway {
 
     const decisions = [
       "Зафиксировали текущий статус MVP и список ближайших задач.",
-      "Согласовали продолжать обработку встреч через SpeechSense с отдельной генерацией протокола."
+      "Согласовали продолжать обработку встреч через SpeechKit с отдельной генерацией протокола через YandexGPT."
     ];
 
     const actionItemOwners =

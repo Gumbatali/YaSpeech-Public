@@ -237,7 +237,7 @@ test("failed AI generation can be retried to completion", async () => {
     );
 
     assert.equal(failed.body.meeting.status, "failed");
-    assert.equal(failed.body.meeting.error.code, "AI_STUDIO_ERROR");
+    assert.equal(failed.body.meeting.error.code, "YANDEX_GPT_ERROR");
 
     const retried = await requestJson(
       server,

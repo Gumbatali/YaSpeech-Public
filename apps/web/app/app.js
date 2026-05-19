@@ -196,7 +196,7 @@ import {
     useEffect(() => {
       if (
         !activeMeeting ||
-        !["uploaded", "speechsense_processing", "protocol_generating"].includes(
+        !["uploaded", "speechkit_processing", "protocol_generating"].includes(
           activeMeeting.status
         )
       ) {

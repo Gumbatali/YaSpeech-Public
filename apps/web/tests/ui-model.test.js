@@ -22,7 +22,7 @@ test("resolveScreen prefers the project-first upload flow", () => {
   assert.equal(
     resolveScreen({
       selectedProjectId: "project-1",
-      activeMeeting: { status: "speechsense_processing", currentStage: "speechsense_processing" },
+      activeMeeting: { status: "speechkit_processing", currentStage: "speechkit_processing" },
       requestedScreen: ""
     }),
     "meeting-processing"
@@ -47,7 +47,7 @@ test("resolveScreen prefers the project-first upload flow", () => {
 
 test("getStageViewModel uses human language for the processing stages", () => {
   assert.deepEqual(
-    getStageViewModel({ status: "speechsense_processing", currentStage: "speechsense_processing" }),
+    getStageViewModel({ status: "speechkit_processing", currentStage: "speechkit_processing" }),
     {
       tone: "working",
       title: "Готовим текст встречи",
@@ -89,9 +89,9 @@ test("getStageViewModel uses human language for the processing stages", () => {
 
 test("timeline step state shows draft and final protocol as separate stages", () => {
   assert.equal(
-    getTimelineStepState("speechsense_processing", {
-      status: "speechsense_processing",
-      currentStage: "speechsense_processing"
+    getTimelineStepState("speechkit_processing", {
+      status: "speechkit_processing",
+      currentStage: "speechkit_processing"
     }),
     "current"
   );

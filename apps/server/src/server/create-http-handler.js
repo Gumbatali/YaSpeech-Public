@@ -81,6 +81,7 @@ export function createHttpHandler({
 
     try {
       if (request.method === "GET" && url.pathname === "/") {
+        if (!webRootDirectory) { notFound(response); return; }
         const html = await readFile(path.join(webRootDirectory, "index.html"), "utf8");
         response.writeHead(200, {
           "content-type": "text/html; charset=utf-8"
@@ -90,6 +91,7 @@ export function createHttpHandler({
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/app/")) {
+        if (!webRootDirectory) { notFound(response); return; }
         const assetPath = path.resolve(webRootDirectory, `.${url.pathname}`);
         const appDirectory = path.resolve(webRootDirectory, "app");
 

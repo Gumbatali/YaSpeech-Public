@@ -1,4 +1,4 @@
-export class MockSpeechSenseGateway {
+export class MockSpeechKitGateway {
   async processMeeting({ meeting, project }) {
     const scopedTeam = project.team.filter((member) =>
       meeting.participantIds.includes(member.id)
@@ -11,7 +11,7 @@ export class MockSpeechSenseGateway {
             { name: "Участник проекта" },
             { name: "Коллега по встрече" }
           ];
-    const talkId = `talk-${meeting.id}`;
+    const jobId = `job-${meeting.id}`;
     const fallbackPhrases = [
       `обсуждает текущий статус проекта ${project.name} и ход MVP.`,
       "предлагает упростить интерфейс и оставить загрузку записи на главном экране.",
@@ -42,9 +42,9 @@ export class MockSpeechSenseGateway {
     }
 
     return {
-      talkId,
+      jobId,
       transcript: {
-        talkId,
+        jobId,
         meetingId: meeting.id,
         rawText: phrases
           .map((phrase) => `${phrase.speakerLabel}: ${phrase.text}`)

@@ -8,16 +8,16 @@ export class MeetingPipelineService {
     meetingRepository,
     projectRepository,
     artifactStorage,
-    speechSenseGateway,
-    aiStudioGateway,
+    speechKitGateway,
+    yandexGptGateway,
     queueRunner,
     clock
   }) {
     this.meetingRepository = meetingRepository;
     this.projectRepository = projectRepository;
     this.artifactStorage = artifactStorage;
-    this.speechSenseGateway = speechSenseGateway;
-    this.aiStudioGateway = aiStudioGateway;
+    this.speechKitGateway = speechKitGateway;
+    this.yandexGptGateway = yandexGptGateway;
     this.queueRunner = queueRunner;
     this.clock = clock;
   }
@@ -103,8 +103,8 @@ export class MeetingPipelineService {
       const code =
         error.code ??
         (failedMeeting.currentStage === "protocol_generating"
-          ? "AI_STUDIO_ERROR"
-          : "SPEECHSENSE_ERROR");
+          ? "YANDEX_GPT_ERROR"
+          : "SPEECHKIT_ERROR");
 
       await this.meetingRepository.save({
         ...failedMeeting,
@@ -121,19 +121,19 @@ export class MeetingPipelineService {
   async prepareDraft(meeting, project) {
     await this.meetingRepository.save({
       ...meeting,
-      status: "speechsense_processing",
-      currentStage: "speechsense_processing",
+      status: "speechkit_processing",
+      currentStage: "speechkit_processing",
       updatedAt: this.clock.now().toISOString()
     });
 
-    const { talkId, transcript } = await this.speechSenseGateway.processMeeting({
+    const { jobId, transcript } = await this.speechKitGateway.processMeeting({
       meeting,
       project
     });
 
     await this.artifactStorage.writeJson(meeting.artifacts.transcriptKey, transcript);
 
-    const draft = await this.aiStudioGateway.generateDraft({
+    const draft = await this.yandexGptGateway.generateDraft({
       meeting,
       project,
       transcript
@@ -141,7 +141,7 @@ export class MeetingPipelineService {
 
     const draftMeeting = {
       ...(await this.meetingRepository.getById(meeting.id)),
-      speechSenseTalkId: talkId,
+      speechKitJobId: jobId,
       titleDraft: draft.titleDraft,
       speakerDrafts: draft.speakerDrafts,
       transcriptPreview: draft.transcriptPreview,
@@ -160,7 +160,7 @@ export class MeetingPipelineService {
       throw new Error("Transcript not found for protocol generation.");
     }
 
-    const { protocol, protocolText } = await this.aiStudioGateway.generateProtocol({
+    const { protocol, protocolText } = await this.yandexGptGateway.generateProtocol({
       meeting,
       project,
       transcript
@@ -174,7 +174,7 @@ export class MeetingPipelineService {
       this.clock
     ).execute({
       meetingId: meeting.id,
-      talkId: meeting.speechSenseTalkId,
+      talkId: meeting.speechKitJobId,
       transcriptKey: meeting.artifacts.transcriptKey,
       protocolJsonKey: meeting.artifacts.protocolJsonKey,
       protocolTextKey: meeting.artifacts.protocolTextKey

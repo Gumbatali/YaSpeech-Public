@@ -90,7 +90,7 @@ export function finalizeMeetingProtocol(
     currentStage: "done",
     updatedAt,
     error: undefined,
-    speechSenseTalkId: talkId,
+    speechKitJobId: talkId,
     artifacts: {
       ...meeting.artifacts,
       transcriptKey,

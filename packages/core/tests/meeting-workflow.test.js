@@ -207,14 +207,14 @@ test("allows team updates, protocol completion, and retry after failure", async 
   });
 
   assert.equal(finalized.status, "done");
-  assert.equal(finalized.speechSenseTalkId, "talk-123");
+  assert.equal(finalized.speechKitJobId, "talk-123");
 
   await meetings.save({
     ...finalized,
     status: "failed",
     currentStage: "protocol_generating",
     error: {
-      code: "AI_STUDIO_ERROR",
+      code: "YANDEX_GPT_ERROR",
       message: "Temporary issue"
     }
   });

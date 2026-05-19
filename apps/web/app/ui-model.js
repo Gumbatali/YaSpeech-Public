@@ -1,6 +1,6 @@
 export const TIMELINE_STEPS = [
   { key: "uploaded", title: "Запись загружена" },
-  { key: "speechsense_processing", title: "Готовим текст встречи" },
+  { key: "speechkit_processing", title: "Готовим текст встречи" },
   { key: "draft_ready", title: "Черновик готов" },
   { key: "protocol_generating", title: "Собираем итоговый протокол" },
   { key: "done", title: "Протокол готов" }
@@ -30,7 +30,7 @@ export function resolveScreen({ selectedProjectId, activeMeeting, requestedScree
   }
 
   if (
-    ["uploaded", "speechsense_processing", "protocol_generating", "failed"].includes(
+    ["uploaded", "speechkit_processing", "protocol_generating", "failed"].includes(
       activeMeeting.status
     )
   ) {
@@ -81,7 +81,7 @@ export function getStageViewModel(meeting) {
     };
   }
 
-  if (meeting.status === "speechsense_processing") {
+  if (meeting.status === "speechkit_processing") {
     return {
       tone: "working",
       title: "Готовим текст встречи",
@@ -114,7 +114,7 @@ function getCurrentStepKey(meeting) {
   }
 
   if (meeting.status === "failed") {
-    return meeting.currentStage ?? "speechsense_processing";
+    return meeting.currentStage ?? "speechkit_processing";
   }
 
   if (meeting.status === "uploading") {
