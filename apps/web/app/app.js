@@ -7,7 +7,7 @@ import {
 } from "./ui-model.js";
 
 (function bootstrapApp() {
-  const { useEffect, useState } = window.React;
+  const { useEffect, useState, useRef } = window.React;
   const html = window.htm.bind(window.React.createElement);
 
   class ApiClient {
@@ -76,6 +76,10 @@ import {
       });
     }
 
+    deleteMeeting(meetingId) {
+      return this.json(`/api/meetings/${meetingId}`, { method: "DELETE" });
+    }
+
     completeUpload(meetingId, sizeBytes, durationSeconds) {
       return this.json(`/api/meetings/${meetingId}/upload-complete`, {
         method: "POST",
@@ -133,11 +137,12 @@ import {
 
   function formatMeetingTime(meeting) {
     const dur = meeting?.audioFile?.durationSeconds;
-    const uploadedAt = meeting?.audioFile?.uploadedAt;
-    if (!dur || !uploadedAt) return null;
-    const endMs = new Date(uploadedAt).getTime();
-    const startMs = endMs - dur * 1000;
+    const uploadedAt = meeting?.audioFile?.uploadedAt || meeting?.updatedAt;
+    if (!uploadedAt) return null;
     const fmt = (ms) => new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
+    const endMs = new Date(uploadedAt).getTime();
+    if (!dur) return fmt(endMs);
+    const startMs = endMs - dur * 1000;
     return fmt(startMs) + "–" + fmt(endMs);
   }
 
@@ -175,6 +180,62 @@ import {
     };
   }
 
+  function HoldToDelete({ onDelete, label = "Удерживайте чтобы удалить" }) {
+    const [progress, setProgress] = useState(0);
+    const startRef = useRef(null);
+    const rafRef = useRef(null);
+    const triggeredRef = useRef(false);
+    const HOLD_MS = 1000;
+
+    const start = (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      triggeredRef.current = false;
+      startRef.current = Date.now();
+
+      const tick = () => {
+        const elapsed = Date.now() - startRef.current;
+        const p = Math.min(1, elapsed / HOLD_MS);
+        setProgress(p);
+
+        if (p >= 1) {
+          triggeredRef.current = true;
+          setProgress(0);
+          onDelete();
+        } else {
+          rafRef.current = requestAnimationFrame(tick);
+        }
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    const cancel = (event) => {
+      if (event) event.stopPropagation();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (!triggeredRef.current) setProgress(0);
+    };
+
+    return html`
+      <button
+        type="button"
+        className="hold-delete"
+        title=${label}
+        aria-label=${label}
+        style=${`--progress: ${progress}`}
+        onPointerDown=${start}
+        onPointerUp=${cancel}
+        onPointerLeave=${cancel}
+        onPointerCancel=${cancel}
+      >
+        <svg className="hold-delete-ring" viewBox="0 0 32 32" aria-hidden="true">
+          <circle className="hold-delete-ring-track" cx="16" cy="16" r="14" />
+          <circle className="hold-delete-ring-fill" cx="16" cy="16" r="14" />
+        </svg>
+        <span className="hold-delete-icon" aria-hidden="true">×</span>
+      </button>
+    `;
+  }
+
   function App() {
     const [projects, setProjects] = useState([]);
     const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -191,8 +252,8 @@ import {
     const [showProjectComposer, setShowProjectComposer] = useState(false);
     const [recording, setRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
-    const recorderRef = React.useRef(null);
-    const timerRef = React.useRef(null);
+    const recorderRef = useRef(null);
+    const timerRef = useRef(null);
     const [projectForm, setProjectForm] = useState(createProjectForm());
     const [meetingForm, setMeetingForm] = useState(createMeetingForm());
     const [draftForm, setDraftForm] = useState(createDraftForm());
@@ -339,6 +400,20 @@ import {
       setError("");
       setNotice("");
       await refreshMeeting(meetingId, false);
+    }
+
+    async function handleDeleteMeeting(meetingId) {
+      try {
+        await api.deleteMeeting(meetingId);
+        setNotice("Встреча удалена.");
+        setError("");
+        if (activeMeeting?.id === meetingId) {
+          setActiveMeeting(null);
+        }
+        await refreshMeetings(selectedProjectId);
+      } catch (caughtError) {
+        setError(caughtError.message);
+      }
     }
 
     async function handleCreateProject(event) {
@@ -793,17 +868,20 @@ import {
           <div className="meeting-list">
             ${recentMeetings.map(
               (meeting) => html`
-                <button
-                  key=${meeting.id}
-                  className="meeting-row"
-                  onClick=${() => openMeetingFromHistory(meeting.id)}
-                >
-                  <div className="meeting-info">
-                    <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
-                    <span>${formatMeetingDateWithTime(meeting)}</span>
-                  </div>
-                  <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
-                </button>
+                <div key=${meeting.id} className="meeting-row">
+                  <button
+                    type="button"
+                    className="meeting-row-main"
+                    onClick=${() => openMeetingFromHistory(meeting.id)}
+                  >
+                    <div className="meeting-info">
+                      <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
+                      <span>${formatMeetingDateWithTime(meeting)}</span>
+                    </div>
+                    <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
+                  </button>
+                  <${HoldToDelete} onDelete=${() => handleDeleteMeeting(meeting.id)} />
+                </div>
               `
             )}
           </div>
