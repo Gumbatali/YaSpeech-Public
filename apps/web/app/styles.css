@@ -1,3 +1,6 @@
+/* ==============================
+   Design Tokens
+   ============================== */
 :root {
   --bg: #F6F7F9;
   --bg-deep: #EEF1F5;
@@ -20,12 +23,20 @@
   --radius-sm: 12px;
 }
 
-* {
-  box-sizing: border-box;
+/* ==============================
+   Fluid root font — scales with browser zoom + viewport.
+   16px baseline at 375px → 18px at 1200px.
+   ============================== */
+html {
+  font-size: clamp(1rem, 0.94rem + 0.3vw, 1.125rem);
 }
 
-html,
-body {
+/* ==============================
+   Reset & Base
+   ============================== */
+* { box-sizing: border-box; }
+
+html, body {
   margin: 0;
   min-height: 100%;
   background:
@@ -33,34 +44,39 @@ body {
     linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.18)),
     url("/app/real-estate-grid.svg"),
     linear-gradient(180deg, #FBFCFE 0%, var(--bg) 100%);
-  background-size: cover, cover, cover;
+  background-size: cover;
   background-attachment: fixed;
   color: var(--ink);
   font-family: "Golos Text", "Trebuchet MS", sans-serif;
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
 }
 
-button,
-input,
-textarea {
-  font: inherit;
-}
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
 
-button {
-  cursor: pointer;
-}
-
+/* ==============================
+   App Shell — mobile-first padding
+   ============================== */
 .app-shell {
   min-height: 100vh;
-  padding: 16px;
+  padding: 0.75rem;
 }
 
+/* ==============================
+   Screen Layout
+   ============================== */
 .screen {
-  width: min(100%, 780px);
+  width: 100%;
+  max-width: 56rem;          /* ~900px at 16px base */
   margin: 0 auto;
   display: grid;
-  gap: 14px;
+  gap: 0.875rem;
 }
 
+/* ==============================
+   Panel / Card Surface
+   ============================== */
 .screen-header,
 .project-header,
 .panel,
@@ -75,14 +91,12 @@ button {
 .project-header,
 .panel {
   border-radius: var(--radius-xl);
+  padding: 1rem;
 }
 
-.screen-header,
-.project-header,
-.panel {
-  padding: 18px;
-}
-
+/* ==============================
+   Flex Row (headers, meta)
+   ============================== */
 .screen-header,
 .project-header,
 .panel-head,
@@ -92,10 +106,13 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 0.75rem;
   flex-wrap: wrap;
 }
 
+/* ==============================
+   Grid Stacks
+   ============================== */
 .screen-header,
 .panel,
 .stack-form,
@@ -108,29 +125,35 @@ button {
 .stack,
 .transcript-box {
   display: grid;
-  gap: 14px;
+  gap: 0.875rem;
 }
 
+/* ==============================
+   Eyebrow / Brand Mark
+   ============================== */
 .brand-mark,
 .eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--brand);
 }
 
 .brand-mark::before,
 .eyebrow::before {
   content: "";
-  width: 18px;
+  width: 1.125rem;
   height: 2px;
   border-radius: 999px;
   background: currentColor;
 }
 
+/* ==============================
+   Typography — all rem, headings use clamp
+   ============================== */
 .screen-header h1,
 .project-heading h1,
 .panel h2 {
@@ -141,12 +164,12 @@ button {
 }
 
 .screen-header h1 {
-  font-size: clamp(1.9rem, 8vw, 2.8rem);
+  font-size: clamp(1.6rem, 5vw + 0.5rem, 2.8rem);
 }
 
 .project-heading h1,
 .panel h2 {
-  font-size: clamp(1.35rem, 5vw, 2rem);
+  font-size: clamp(1.25rem, 3.5vw + 0.3rem, 2rem);
 }
 
 .screen-header p,
@@ -160,26 +183,33 @@ button {
 .banner,
 .transcript-row p {
   color: var(--ink-soft);
+  font-size: 0.9rem;
 }
 
-.project-screen {
-  gap: 12px;
-}
+/* ==============================
+   Project Screen
+   ============================== */
+.project-screen { gap: 0.75rem; }
 
 .project-heading {
   display: grid;
-  gap: 6px;
+  gap: 0.375rem;
   min-width: 0;
   flex: 1;
 }
 
+/* ==============================
+   Buttons — min-height 2.75rem (44px) for touch
+   ============================== */
 .primary-button,
 .ghost-button,
 .back-button,
 .file-picker-button {
   border: 0;
   border-radius: 999px;
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
+  min-height: 2.75rem;
+  font-size: 0.9rem;
   transition: transform 180ms ease, background 180ms ease;
 }
 
@@ -205,17 +235,23 @@ button {
   transform: translateY(-1px);
 }
 
+/* ==============================
+   Panel — main variant
+   ============================== */
 .panel-main {
   background: rgba(255, 255, 255, 0.98);
 }
 
+/* ==============================
+   Fields
+   ============================== */
 .field {
   display: grid;
-  gap: 16px;
+  gap: 0.5rem;
 }
 
 .date-inline {
-  margin-top: 6px;
+  margin-top: 0.375rem;
   background: none;
   border: none;
   border-bottom: 1px solid color-mix(in oklch, currentColor 25%, transparent);
@@ -223,7 +259,7 @@ button {
   font: inherit;
   font-size: 0.85rem;
   opacity: 0.55;
-  padding: 2px 0;
+  padding: 0.125rem 0;
   cursor: pointer;
   width: auto;
 }
@@ -240,8 +276,10 @@ button {
   border-radius: var(--radius-md);
   border: 1px solid var(--line-strong);
   background: rgba(255, 255, 255, 0.95);
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
   color: var(--ink);
+  font-size: 1rem;
+  min-height: 2.75rem;
 }
 
 .field input:focus,
@@ -250,11 +288,14 @@ button {
   border-color: rgba(183, 82, 52, 0.32);
 }
 
+/* ==============================
+   List Items
+   ============================== */
 .project-list,
 .meeting-list,
 .people-list,
 .result-stack {
-  gap: 10px;
+  gap: 0.625rem;
 }
 
 .project-card,
@@ -275,11 +316,12 @@ button {
 .meeting-row {
   width: 100%;
   text-align: left;
-  padding: 16px;
+  padding: 1rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 0.875rem;
+  min-height: 3.25rem;
 }
 
 .project-card strong,
@@ -292,15 +334,18 @@ button {
   color: var(--ink);
 }
 
+/* ==============================
+   File Picker
+   ============================== */
 .file-picker {
   display: grid;
-  gap: 12px;
+  gap: 0.75rem;
   border-radius: var(--radius-lg);
   border: 1.5px dashed rgba(110, 141, 255, 0.46);
   background:
     radial-gradient(circle at top right, rgba(110, 141, 255, 0.12), transparent 40%),
     linear-gradient(180deg, #FCFDFE 0%, #F4F7FD 100%);
-  padding: 16px;
+  padding: 1rem;
 }
 
 .file-picker-button {
@@ -321,32 +366,36 @@ button {
 
 .file-picker-meta {
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
+/* ==============================
+   Status Chip
+   ============================== */
 .status-chip {
   white-space: nowrap;
   border-radius: 999px;
   background: rgba(110, 141, 255, 0.12);
   color: var(--accent);
-  padding: 8px 12px;
-  font-size: 0.92rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
 }
 
-.timeline {
-  gap: 10px;
-}
+/* ==============================
+   Timeline
+   ============================== */
+.timeline { gap: 0.625rem; }
 
 .timeline-item {
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
 }
 
 .timeline-dot {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   border-radius: 50%;
   background: rgba(102, 112, 133, 0.28);
   flex: 0 0 auto;
@@ -356,60 +405,61 @@ button {
   border-color: rgba(255, 90, 54, 0.28);
   background: rgba(255, 243, 239, 0.96);
 }
-
-.timeline-item.current .timeline-dot {
-  background: var(--brand);
-}
+.timeline-item.current .timeline-dot { background: var(--brand); }
 
 .timeline-item.done {
   border-color: rgba(110, 141, 255, 0.24);
   background: rgba(244, 247, 255, 0.96);
 }
+.timeline-item.done .timeline-dot { background: var(--success); }
 
-.timeline-item.done .timeline-dot {
-  background: var(--success);
-}
-
+/* ==============================
+   Meta Box, Speaker, Person, Result, Transcript
+   ============================== */
 .meta-box {
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 
 .speaker-item,
 .person-row,
 .result-block,
 .transcript-row {
-  padding: 14px 16px;
+  padding: 0.875rem 1rem;
 }
 
 .speaker-item,
 .person-row {
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 
 .transcript-box {
   border-top: 1px solid var(--line);
-  padding-top: 6px;
+  padding-top: 0.375rem;
 }
 
 .transcript-row p {
-  margin: 6px 0 0;
+  margin: 0.375rem 0 0;
   line-height: 1.5;
 }
 
 .result-block ul,
 .result-block ol {
-  margin: 8px 0 0;
-  padding-left: 18px;
+  margin: 0.5rem 0 0;
+  padding-left: 1.125rem;
   display: grid;
-  gap: 8px;
+  gap: 0.5rem;
 }
 
+/* ==============================
+   Banners
+   ============================== */
 .banner {
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 0.75rem 0.875rem;
+  font-size: 0.9rem;
 }
 
 .banner-ok {
@@ -423,18 +473,52 @@ button {
 }
 
 .empty-state {
-  padding: 16px;
+  padding: 1rem;
   line-height: 1.5;
+  font-size: 0.9rem;
+}
+
+/* ==============================
+   Mobile: small tweaks for narrow screens
+   ============================== */
+@media (max-width: 480px) {
+  .project-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .project-card,
+  .meeting-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .status-chip {
+    align-self: flex-start;
+  }
+
+  .screen-header h1 {
+    font-size: clamp(1.4rem, 6vw, 2rem);
+  }
+}
+
+/* ==============================
+   Desktop: wider layout + 2-column results
+   ============================== */
+@media (min-width: 640px) {
+  .app-shell { padding: 1.25rem; }
+
+  .screen-header,
+  .project-header,
+  .panel {
+    padding: 1.25rem;
+  }
 }
 
 @media (min-width: 900px) {
-  .app-shell {
-    padding: 24px;
-  }
-
-  .screen {
-    width: min(100%, 900px);
-  }
+  .app-shell { padding: 1.5rem; }
 
   .result-stack {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -579,7 +579,12 @@ import {
                     onClick=${() => openProject(project.id)}
                   >
                     <strong>${project.name}</strong>
-                    <span>${project.teamCount} человек в проекте</span>
+                    <span>${(() => {
+                      const n = project.team?.length ?? project.teamCount ?? 0;
+                      if (n === 0) return "Нет участников";
+                      const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
+                      return n + " " + label;
+                    })()}</span>
                   </button>
                 `
               )}
