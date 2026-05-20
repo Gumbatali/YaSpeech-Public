@@ -137,15 +137,10 @@ export function createHttpHandler({
         parts[3] === "team" &&
         request.method === "GET"
       ) {
-        const project = await projectRepository.getById(parts[2]);
-        if (!project) {
-          notFound(response);
-          return;
-        }
-
+        const members = await projectRepository.getTeam(parts[2]);
         sendJson(response, 200, {
-          projectId: project.id,
-          members: project.team
+          projectId: parts[2],
+          members
         });
         return;
       }
