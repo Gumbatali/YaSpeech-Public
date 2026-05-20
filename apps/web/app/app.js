@@ -764,7 +764,7 @@ import {
           >
             ${(() => {
               const n = selectedProject?.team?.length ?? 0;
-              if (n === 0) return "Добавить участников";
+              if (n === 0) return "Состав проекта";
               const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
               return n + " " + label;
             })()}
