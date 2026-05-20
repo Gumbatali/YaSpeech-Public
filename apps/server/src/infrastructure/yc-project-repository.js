@@ -20,4 +20,10 @@ export class YcProjectRepository {
     next.unshift({ id: project.id, name: project.name, createdAt: project.createdAt });
     await this.storage.writeJson("projects/index.json", next);
   }
+
+  async delete(projectId) {
+    const all = await this.list();
+    const next = all.filter((p) => p.id !== projectId);
+    await this.storage.writeJson("projects/index.json", next);
+  }
 }
