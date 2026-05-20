@@ -228,6 +228,8 @@ export function createHttpHandler({
         const result = await createMeeting.execute({
           projectId: payload.projectId,
           date: payload.date,
+          startTime: payload.startTime ?? null,
+          endTime: payload.endTime ?? null,
           participantIds: payload.participantIds ?? [],
           guests: payload.guests ?? [],
           fileName: payload.fileName,
