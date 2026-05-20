@@ -180,8 +180,7 @@ import {
   }
 
   function createMeetingForm() {
-    const t = nowHHMM();
-    return { date: todayIso(), startTime: t, endTime: t, durationSeconds: null, file: null };
+    return { date: todayIso(), startTime: null, endTime: null, durationSeconds: null, file: null };
   }
 
   function createDraftForm(meeting = null) {
@@ -746,23 +745,25 @@ import {
                   onInput=${(event) =>
                     setMeetingForm((current) => ({ ...current, date: event.target.value }))}
                 />
-                <div className="time-range-edit">
-                  <input
-                    className="time-inline"
-                    type="time"
-                    value=${meetingForm.startTime}
-                    onInput=${(event) =>
-                      setMeetingForm((current) => ({ ...current, startTime: event.target.value }))}
-                  />
-                  <span className="time-sep">–</span>
-                  <input
-                    className="time-inline"
-                    type="time"
-                    value=${meetingForm.endTime}
-                    onInput=${(event) =>
-                      setMeetingForm((current) => ({ ...current, endTime: event.target.value }))}
-                  />
-                </div>
+                ${meetingForm.startTime
+                  ? html`<div className="time-range-edit">
+                      <input
+                        className="time-inline"
+                        type="time"
+                        value=${meetingForm.startTime}
+                        onInput=${(event) =>
+                          setMeetingForm((current) => ({ ...current, startTime: event.target.value }))}
+                      />
+                      <span className="time-sep">–</span>
+                      <input
+                        className="time-inline"
+                        type="time"
+                        value=${meetingForm.endTime}
+                        onInput=${(event) =>
+                          setMeetingForm((current) => ({ ...current, endTime: event.target.value }))}
+                      />
+                    </div>`
+                  : null}
               </div>
             </div>
             <p className="panel-copy">
