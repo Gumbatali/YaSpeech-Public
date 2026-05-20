@@ -66,13 +66,19 @@ import {
       });
     }
 
-    uploadFile(upload, file) {
-      return fetch(upload.uploadUrl, {
-        method: upload.method,
-        headers: {
-          "content-type": file.type || "application/octet-stream"
-        },
-        body: file
+    uploadFile(upload, file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(upload.method, upload.uploadUrl);
+        xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+        xhr.onload = () => resolve(xhr);
+        xhr.onerror = () => reject(new Error("Ошибка загрузки файла."));
+        xhr.send(file);
       });
     }
 
@@ -209,6 +215,7 @@ import {
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(true);
     const [submittingMeeting, setSubmittingMeeting] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
     const [savingTeam, setSavingTeam] = useState(false);
     const [confirmingDraft, setConfirmingDraft] = useState(false);
     const [showProjectComposer, setShowProjectComposer] = useState(false);
@@ -540,12 +547,14 @@ import {
 
         const file = meetingForm.file;
         const durationSeconds = meetingForm.durationSeconds ?? await getAudioDuration(file);
-        await api.uploadFile(payload.upload, file);
+        setUploadProgress(0);
+        await api.uploadFile(payload.upload, file, (pct) => setUploadProgress(pct));
         const uploaded = await api.completeUpload(
           payload.meeting.id,
           file.size,
           durationSeconds
         );
+        setUploadProgress(0);
         // Файл залит — теперь переходим на экран с этапами
         setActiveMeeting(uploaded.meeting);
         setNotice("Запись загружена.");
@@ -861,6 +870,13 @@ import {
               </span>
             </div>
           </div>
+
+          ${submittingMeeting
+            ? html`<div className="upload-progress-wrap">
+                <div className="upload-progress-bar" style=${{ width: uploadProgress + "%" }}></div>
+                <span className="upload-progress-label">${uploadProgress < 100 ? uploadProgress + "% · загружаем файл…" : "Финализируем…"}</span>
+              </div>`
+            : null}
 
           <button
             className="primary-button"

@@ -579,6 +579,37 @@ button { cursor: pointer; }
 }
 
 /* ==============================
+   Upload Progress
+   ============================== */
+.upload-progress-wrap {
+  position: relative;
+  height: 2.5rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.upload-progress-bar {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(110, 141, 255, 0.22), rgba(110, 141, 255, 0.38));
+  border-radius: inherit;
+  transition: width 200ms ease;
+}
+
+.upload-progress-label {
+  position: relative;
+  z-index: 1;
+  padding: 0 1rem;
+  font-size: 0.85rem;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==============================
    Banners
    ============================== */
 .banner {
