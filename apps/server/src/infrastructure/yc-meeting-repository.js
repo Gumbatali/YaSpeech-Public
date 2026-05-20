@@ -61,4 +61,23 @@ export class YcMeetingRepository {
     });
     await this.storage.writeJson("meetings/index.json", nextGlobal);
   }
+
+  async delete(meetingId) {
+    const global = (await this.storage.readJson("meetings/index.json")) ?? [];
+    const entry = global.find((m) => m.id === meetingId);
+
+    if (entry) {
+      // Remove from project index
+      const projectIndex = await this.listByProject(entry.projectId);
+      const nextProjectIndex = projectIndex.filter((m) => m.id !== meetingId);
+      await this.storage.writeJson(
+        `projects/${entry.projectId}/meetings/index.json`,
+        nextProjectIndex
+      );
+
+      // Remove from global index
+      const nextGlobal = global.filter((m) => m.id !== meetingId);
+      await this.storage.writeJson("meetings/index.json", nextGlobal);
+    }
+  }
 }

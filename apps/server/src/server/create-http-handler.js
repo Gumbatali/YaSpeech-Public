@@ -72,7 +72,7 @@ export function createHttpHandler({
 
     response.setHeader("access-control-allow-origin", "*");
     response.setHeader("access-control-allow-headers", "content-type");
-    response.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,OPTIONS");
+    response.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
 
     if (request.method === "OPTIONS") {
       response.writeHead(204);
@@ -330,6 +330,28 @@ export function createHttpHandler({
         }
 
         sendText(response, 200, protocol);
+        return;
+      }
+
+      if (
+        parts[0] === "api" &&
+        parts[1] === "projects" &&
+        parts.length === 3 &&
+        request.method === "DELETE"
+      ) {
+        await projectRepository.delete(parts[2]);
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts.length === 3 &&
+        request.method === "DELETE"
+      ) {
+        await meetingRepository.delete(parts[2]);
+        sendJson(response, 200, { ok: true });
         return;
       }
 
