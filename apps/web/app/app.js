@@ -109,6 +109,14 @@ import {
 
       return response.text();
     }
+
+    deleteProject(projectId) {
+      return this.json(`/api/projects/${projectId}`, { method: "DELETE" });
+    }
+
+    deleteMeeting(meetingId) {
+      return this.json(`/api/meetings/${meetingId}`, { method: "DELETE" });
+    }
   }
 
   const api = new ApiClient();
@@ -592,6 +600,32 @@ import {
       }
     }
 
+    async function handleDeleteProject(projectId) {
+      try {
+        setError("");
+        await api.deleteProject(projectId);
+        setNotice("Проект удалён.");
+        const payload = await api.listProjects();
+        setProjects(payload.projects);
+      } catch (caughtError) {
+        setError(caughtError.message);
+      }
+    }
+
+    async function handleDeleteMeeting(meetingId) {
+      try {
+        setError("");
+        await api.deleteMeeting(meetingId);
+        setNotice("Встреча удалена.");
+        await refreshMeetings(selectedProjectId);
+        if (activeMeeting?.id === meetingId) {
+          setActiveMeeting(null);
+        }
+      } catch (caughtError) {
+        setError(caughtError.message);
+      }
+    }
+
     async function copyProtocol() {
       if (!activeMeeting) {
         return;
@@ -677,19 +711,26 @@ import {
             <div className="project-list">
               ${projects.map(
                 (project) => html`
-                  <button
-                    key=${project.id}
-                    className="project-card"
-                    onClick=${() => openProject(project.id)}
-                  >
-                    <strong>${project.name}</strong>
-                    <span>${(() => {
-                      const n = project.team?.length ?? project.teamCount ?? 0;
-                      if (n === 0) return "Нет участников";
-                      const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
-                      return n + " " + label;
-                    })()}</span>
-                  </button>
+                  <div key=${project.id} className="project-card">
+                    <button
+                      className="project-card-body"
+                      onClick=${() => openProject(project.id)}
+                    >
+                      <strong>${project.name}</strong>
+                      <span>${(() => {
+                        const n = project.team?.length ?? project.teamCount ?? 0;
+                        if (n === 0) return "Нет участников";
+                        const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
+                        return n + " " + label;
+                      })()}</span>
+                    </button>
+                    <button
+                      className="ghost-button card-remove-button"
+                      onClick=${(e) => { e.stopPropagation(); handleDeleteProject(project.id); }}
+                    >
+                      Убрать
+                    </button>
+                  </div>
                 `
               )}
             </div>
@@ -841,20 +882,27 @@ import {
           <div className="meeting-list">
             ${recentMeetings.map(
               (meeting) => html`
-                <button
-                  key=${meeting.id}
-                  className="meeting-row"
-                  onClick=${() => openMeetingFromHistory(meeting.id)}
-                >
-                  <div className="meeting-info">
-                    <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
-                    <span className="meeting-date-line">${formatMeetingDate(meeting.date)}</span>
-                    ${formatMeetingTimeRange(meeting)
-                      ? html`<span className="meeting-time-line">${formatMeetingTimeRange(meeting)}</span>`
-                      : null}
-                  </div>
-                  <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
-                </button>
+                <div key=${meeting.id} className="meeting-row">
+                  <button
+                    className="meeting-row-body"
+                    onClick=${() => openMeetingFromHistory(meeting.id)}
+                  >
+                    <div className="meeting-info">
+                      <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
+                      <span className="meeting-date-line">${formatMeetingDate(meeting.date)}</span>
+                      ${formatMeetingTimeRange(meeting)
+                        ? html`<span className="meeting-time-line">${formatMeetingTimeRange(meeting)}</span>`
+                        : null}
+                    </div>
+                    <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
+                  </button>
+                  <button
+                    className="ghost-button card-remove-button"
+                    onClick=${() => handleDeleteMeeting(meeting.id)}
+                  >
+                    Убрать
+                  </button>
+                </div>
               `
             )}
           </div>
