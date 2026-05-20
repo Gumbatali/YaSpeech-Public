@@ -9,7 +9,7 @@ export class CreateMeetingUseCase {
     this.idGenerator = idGenerator;
   }
 
-  async execute({ projectId, date, participantIds, guests, fileName, contentType }) {
+  async execute({ projectId, date, startTime, endTime, participantIds, guests, fileName, contentType }) {
     const project = await this.projectRepository.getById(projectId);
     if (!project) {
       throw new Error(`Project not found: ${projectId}`);
@@ -19,6 +19,8 @@ export class CreateMeetingUseCase {
       meetingId: this.idGenerator.next(),
       project,
       date,
+      startTime: startTime ?? null,
+      endTime: endTime ?? null,
       participantIds,
       guests,
       fileName,

@@ -125,20 +125,38 @@ import {
     }
   }
 
-  function formatMeetingDateWithTime(meeting) {
-    const datePart = formatMeetingDate(meeting.date);
-    const timeRange = formatMeetingTime(meeting);
-    return timeRange ? datePart + " · " + timeRange : datePart;
+  function nowHHMM() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   }
 
-  function formatMeetingTime(meeting) {
+  function subtractSecondsHHMM(hhmm, seconds) {
+    const [h, m] = hhmm.split(":").map(Number);
+    const totalMin = h * 60 + m - Math.round(seconds / 60);
+    const clampedMin = ((totalMin % 1440) + 1440) % 1440;
+    return String(Math.floor(clampedMin / 60)).padStart(2, "0") + ":" + String(clampedMin % 60).padStart(2, "0");
+  }
+
+  function getMeetingTimeRange(meeting) {
+    // Prefer explicitly stored times
+    if (meeting?.startTime && meeting?.endTime) {
+      return { start: meeting.startTime, end: meeting.endTime };
+    }
+    // Fallback: compute from uploadedAt + durationSeconds
     const dur = meeting?.audioFile?.durationSeconds;
-    const uploadedAt = meeting?.audioFile?.uploadedAt;
-    if (!dur || !uploadedAt) return null;
-    const endMs = new Date(uploadedAt).getTime();
-    const startMs = endMs - dur * 1000;
+    const uploadedAt = meeting?.audioFile?.uploadedAt || meeting?.updatedAt;
+    if (!uploadedAt) return null;
     const fmt = (ms) => new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
-    return fmt(startMs) + "–" + fmt(endMs);
+    const endMs = new Date(uploadedAt).getTime();
+    const end = fmt(endMs);
+    const start = dur ? fmt(endMs - dur * 1000) : end;
+    return { start, end };
+  }
+
+  function formatMeetingTimeRange(meeting) {
+    const range = getMeetingTimeRange(meeting);
+    if (!range) return null;
+    return range.start === range.end ? range.start : range.start + "–" + range.end;
   }
 
   function getAudioDuration(file) {
@@ -162,10 +180,8 @@ import {
   }
 
   function createMeetingForm() {
-    return {
-      date: todayIso(),
-      file: null
-    };
+    const t = nowHHMM();
+    return { date: todayIso(), startTime: t, endTime: t, durationSeconds: null, file: null };
   }
 
   function createDraftForm(meeting = null) {
@@ -424,12 +440,12 @@ import {
           clearInterval(timerRef.current);
           const blob = new Blob(chunks, { type: mimeType });
           const ext = mimeType.includes("webm") ? "webm" : "mp4";
-          const now = new Date();
-          const name = "запись_" + now.toISOString().slice(0, 16).replace("T", "_").replace(":", "-") + "." + ext;
+          const recNow = new Date();
+          const name = "запись_" + recNow.toISOString().slice(0, 16).replace("T", "_").replace(":", "-") + "." + ext;
           const file = new File([blob], name, { type: mimeType });
-          setMeetingForm((current) => ({ ...current, file }));
           setRecording(false);
           setRecordingSeconds(0);
+          void handleFileSelect(file);
         };
 
         recorderRef.current = recorder;
@@ -444,6 +460,20 @@ import {
 
     function stopRecording() {
       recorderRef.current?.stop();
+    }
+
+    async function handleFileSelect(file) {
+      setMeetingForm((current) => ({ ...current, file, durationSeconds: null }));
+      const dur = await getAudioDuration(file);
+      const endTime = nowHHMM();
+      const startTime = dur ? subtractSecondsHHMM(endTime, dur) : endTime;
+      setMeetingForm((current) => ({
+        ...current,
+        file,
+        durationSeconds: dur,
+        startTime,
+        endTime
+      }));
     }
 
     async function handleCreateMeeting(event) {
@@ -491,13 +521,15 @@ import {
         const payload = await api.createMeeting({
           projectId: selectedProjectId,
           date: meetingForm.date,
+          startTime: meetingForm.startTime || null,
+          endTime: meetingForm.endTime || null,
           participantIds: teamDraft.map((member) => member.id),
           guests: [],
           fileName: meetingForm.file.name,
           contentType: meetingForm.file.type || "application/octet-stream"
         });
 
-        const durationSeconds = await getAudioDuration(meetingForm.file);
+        const durationSeconds = meetingForm.durationSeconds ?? await getAudioDuration(meetingForm.file);
         await api.uploadFile(payload.upload, meetingForm.file);
         const uploaded = await api.completeUpload(
           payload.meeting.id,
@@ -706,16 +738,32 @@ import {
             <div>
               <div className="eyebrow">Новая запись</div>
               <h2>Загрузить запись</h2>
-              <input
-                className="date-inline"
-                type="date"
-                value=${meetingForm.date}
-                onInput=${(event) =>
-                  setMeetingForm((current) => ({
-                    ...current,
-                    date: event.target.value
-                  }))}
-              />
+              <div className="meeting-datetime-edit">
+                <input
+                  className="date-inline"
+                  type="date"
+                  value=${meetingForm.date}
+                  onInput=${(event) =>
+                    setMeetingForm((current) => ({ ...current, date: event.target.value }))}
+                />
+                <div className="time-range-edit">
+                  <input
+                    className="time-inline"
+                    type="time"
+                    value=${meetingForm.startTime}
+                    onInput=${(event) =>
+                      setMeetingForm((current) => ({ ...current, startTime: event.target.value }))}
+                  />
+                  <span className="time-sep">–</span>
+                  <input
+                    className="time-inline"
+                    type="time"
+                    value=${meetingForm.endTime}
+                    onInput=${(event) =>
+                      setMeetingForm((current) => ({ ...current, endTime: event.target.value }))}
+                  />
+                </div>
+              </div>
             </div>
             <p className="panel-copy">
               Система подготовит текст встречи, предложит черновик и потом
@@ -730,11 +778,10 @@ import {
                   type="file"
                   accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac"
                   disabled=${recording}
-                  onChange=${(event) =>
-                    setMeetingForm((current) => ({
-                      ...current,
-                      file: event.target.files?.[0] ?? null
-                    }))}
+                  onChange=${(event) => {
+                    const f = event.target.files?.[0];
+                    if (f) void handleFileSelect(f);
+                  }}
                 />
                 Выбрать файл
               </label>
@@ -800,7 +847,10 @@ import {
                 >
                   <div className="meeting-info">
                     <strong>${meeting.summaryTitle || "Новая встреча"}</strong>
-                    <span>${formatMeetingDateWithTime(meeting)}</span>
+                    <span className="meeting-date-line">${formatMeetingDate(meeting.date)}</span>
+                    ${formatMeetingTimeRange(meeting)
+                      ? html`<span className="meeting-time-line">${formatMeetingTimeRange(meeting)}</span>`
+                      : null}
                   </div>
                   <span className="status-chip">${getMeetingStatusLabel(meeting)}</span>
                 </button>
@@ -861,9 +911,15 @@ import {
 
             <div className="meta-box">
               <div className="meta-row">
-                <span>Дата встречи</span>
+                <span>Дата</span>
                 <strong>${activeMeeting ? formatMeetingDate(activeMeeting.date) : "—"}</strong>
               </div>
+              ${activeMeeting && formatMeetingTimeRange(activeMeeting)
+                ? html`<div className="meta-row">
+                    <span>Время</span>
+                    <strong>${formatMeetingTimeRange(activeMeeting)}</strong>
+                  </div>`
+                : null}
               <div className="meta-row">
                 <span>Файл</span>
                 <strong>${activeMeeting?.audioFile?.originalFileName || "—"}</strong>
@@ -985,6 +1041,12 @@ import {
               <div>
                 <div className="eyebrow">Готовый результат</div>
                 <h2>${protocol.summary.title}</h2>
+              </div>
+              <div className="meeting-meta-line">
+                <span>${formatMeetingDate(activeMeeting.date)}</span>
+                ${formatMeetingTimeRange(activeMeeting)
+                  ? html`<span className="meeting-time-line">${formatMeetingTimeRange(activeMeeting)}</span>`
+                  : null}
               </div>
               <p className="panel-copy">${protocol.summary.overview}</p>
             </div>
