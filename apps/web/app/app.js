@@ -76,10 +76,6 @@ import {
       });
     }
 
-    deleteProject(projectId) {
-      return this.json(`/api/projects/${projectId}`, { method: "DELETE" });
-    }
-
     deleteMeeting(meetingId) {
       return this.json(`/api/meetings/${meetingId}`, { method: "DELETE" });
     }
@@ -329,17 +325,13 @@ import {
       try {
         setLoading(true);
         setError("");
-        const [teamResult, meetingsResult] = await Promise.allSettled([
+        const [teamResponse, meetingsResponse] = await Promise.all([
           api.getTeam(projectId),
           api.listMeetings(projectId)
         ]);
 
-        setTeamDraft(
-          teamResult.status === "fulfilled" ? teamResult.value.members ?? [] : []
-        );
-        setMeetings(
-          meetingsResult.status === "fulfilled" ? meetingsResult.value.meetings : []
-        );
+        setTeamDraft(teamResponse.members);
+        setMeetings(meetingsResponse.meetings);
         setMeetingForm(createMeetingForm());
       } catch (caughtError) {
         setError(caughtError.message);
@@ -408,21 +400,6 @@ import {
       setError("");
       setNotice("");
       await refreshMeeting(meetingId, false);
-    }
-
-    async function handleDeleteProject(projectId) {
-      try {
-        await api.deleteProject(projectId);
-        setNotice("Проект удалён.");
-        setError("");
-        if (selectedProjectId === projectId) {
-          goHome();
-        } else {
-          await refreshProjects();
-        }
-      } catch (caughtError) {
-        setError(caughtError.message);
-      }
     }
 
     async function handleDeleteMeeting(meetingId) {
@@ -744,22 +721,19 @@ import {
             <div className="project-list">
               ${projects.map(
                 (project) => html`
-                  <div key=${project.id} className="project-card">
-                    <button
-                      type="button"
-                      className="project-card-main"
-                      onClick=${() => openProject(project.id)}
-                    >
-                      <strong>${project.name}</strong>
-                      <span>${(() => {
-                        const n = project.team?.length ?? project.teamCount ?? 0;
-                        if (n === 0) return "Нет участников";
-                        const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
-                        return n + " " + label;
-                      })()}</span>
-                    </button>
-                    <${HoldToDelete} onDelete=${() => handleDeleteProject(project.id)} label="Удерживайте чтобы удалить проект" />
-                  </div>
+                  <button
+                    key=${project.id}
+                    className="project-card"
+                    onClick=${() => openProject(project.id)}
+                  >
+                    <strong>${project.name}</strong>
+                    <span>${(() => {
+                      const n = project.team?.length ?? project.teamCount ?? 0;
+                      if (n === 0) return "Нет участников";
+                      const label = n === 1 ? "участник" : n >= 2 && n <= 4 ? "участника" : "участников";
+                      return n + " " + label;
+                    })()}</span>
+                  </button>
                 `
               )}
             </div>
@@ -1168,23 +1142,23 @@ import {
               ${teamDraft.map(
                 (member, index) => html`
                   <div key=${member.id} className="person-row">
-                    <div className="person-row-fields">
-                      <label className="field">
-                        <span>Имя</span>
-                        <input
-                          value=${member.name}
-                          onInput=${(event) => updateTeamMember(index, "name", event.target.value)}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Роль</span>
-                        <input
-                          value=${member.role}
-                          onInput=${(event) => updateTeamMember(index, "role", event.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <${HoldToDelete} onDelete=${() => removeTeamMember(member.id)} label="Удерживайте чтобы удалить участника" />
+                    <label className="field">
+                      <span>Имя</span>
+                      <input
+                        value=${member.name}
+                        onInput=${(event) => updateTeamMember(index, "name", event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Роль</span>
+                      <input
+                        value=${member.role}
+                        onInput=${(event) => updateTeamMember(index, "role", event.target.value)}
+                      />
+                    </label>
+                    <button className="ghost-button" onClick=${() => removeTeamMember(member.id)}>
+                      Убрать
+                    </button>
                   </div>
                 `
               )}
