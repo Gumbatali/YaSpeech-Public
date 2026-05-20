@@ -470,10 +470,12 @@ import {
     }
 
     async function handleFileSelect(file) {
-      setMeetingForm((current) => ({ ...current, file, durationSeconds: null }));
+      setMeetingForm((current) => ({ ...current, file, durationSeconds: null, startTime: null, endTime: null }));
       const dur = await getAudioDuration(file);
-      const endTime = nowHHMM();
-      const startTime = dur ? subtractSecondsHHMM(endTime, dur) : endTime;
+      // Только если длительность известна — предзаполняем время.
+      // Иначе оставляем null: время вычислится из uploadedAt после загрузки.
+      const endTime = dur ? nowHHMM() : null;
+      const startTime = dur ? subtractSecondsHHMM(endTime, dur) : null;
       setMeetingForm((current) => ({
         ...current,
         file,
