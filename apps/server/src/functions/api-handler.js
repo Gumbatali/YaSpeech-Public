@@ -17,6 +17,12 @@ function getHandler() {
 }
 
 export async function index(event) {
+  // Таймер-прогрев: YC Timer trigger присылает событие без httpMethod
+  if (!event.httpMethod) {
+    getHandler(); // просто инициализируем зависимости, чтобы инстанс прогрелся
+    return { statusCode: 200, body: "warmed" };
+  }
+
   const h = getHandler();
 
   // Эмулируем Node.js IncomingMessage из YC-события

@@ -538,6 +538,10 @@ import {
           contentType: meetingForm.file.type || "application/octet-stream"
         });
 
+        // Сразу показываем экран этапов — не ждём загрузки файла
+        setActiveMeeting(payload.meeting);
+        setMeetingForm(createMeetingForm());
+
         const durationSeconds = meetingForm.durationSeconds ?? await getAudioDuration(meetingForm.file);
         await api.uploadFile(payload.upload, meetingForm.file);
         const uploaded = await api.completeUpload(
@@ -547,7 +551,6 @@ import {
         );
         setActiveMeeting(uploaded.meeting);
         setNotice("Запись загружена.");
-        setMeetingForm(createMeetingForm());
         await refreshMeetings(selectedProjectId);
       } catch (caughtError) {
         setError(caughtError.message);
