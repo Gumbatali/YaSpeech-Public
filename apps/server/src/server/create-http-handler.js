@@ -121,6 +121,17 @@ export function createHttpHandler({
         return;
       }
 
+      if (
+        parts[0] === "api" &&
+        parts[1] === "projects" &&
+        parts.length === 3 &&
+        request.method === "DELETE"
+      ) {
+        await projectRepository.delete(parts[2]);
+        sendJson(response, 200, { deleted: true });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/projects") {
         const payload = await readJsonRequestBody(request);
         const project = await createProject.execute({
@@ -145,7 +156,7 @@ export function createHttpHandler({
 
         sendJson(response, 200, {
           projectId: project.id,
-          members: project.team
+          members: project.team ?? []
         });
         return;
       }
