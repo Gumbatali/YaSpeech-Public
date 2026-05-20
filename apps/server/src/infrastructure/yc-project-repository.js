@@ -17,7 +17,12 @@ export class YcProjectRepository {
 
     const all = await this.list();
     const next = all.filter((p) => p.id !== project.id);
-    next.unshift({ id: project.id, name: project.name, createdAt: project.createdAt });
+    next.unshift({
+      id: project.id,
+      name: project.name,
+      createdAt: project.createdAt,
+      teamCount: project.team?.length ?? 0
+    });
     await this.storage.writeJson("projects/index.json", next);
   }
 
