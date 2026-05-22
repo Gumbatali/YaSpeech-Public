@@ -504,19 +504,20 @@ import {
         return;
       }
 
+      // SpeechKit v2 longRunningRecognize поддерживает только MP3, OGG_OPUS, LINEAR16_PCM (WAV)
       const ALLOWED_TYPES = [
-        "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
-        "audio/x-m4a", "audio/wav", "audio/wave", "audio/ogg",
-        "audio/webm", "audio/aac", "audio/flac", "audio/x-flac"
+        "audio/mpeg", "audio/mp3",
+        "audio/wav", "audio/wave", "audio/x-wav",
+        "audio/ogg", "audio/opus", "audio/webm"
       ];
       const MAX_SIZE_BYTES = 1 * 1024 * 1024 * 1024; // 1 GB
 
       const fileType = meetingForm.file.type || "";
       const fileName = meetingForm.file.name || "";
-      const AUDIO_EXT = /\.(mp3|m4a|mp4|wav|ogg|webm|aac|flac|opus)$/i;
+      const AUDIO_EXT = /\.(mp3|wav|ogg|opus)$/i;
 
       if (!ALLOWED_TYPES.includes(fileType) && !AUDIO_EXT.test(fileName)) {
-        setError("Неподдерживаемый формат. Загрузите аудиофайл: MP3, M4A, WAV, OGG, FLAC, AAC.");
+        setError("Поддерживаются форматы: MP3, WAV, OGG, Opus. Формат M4A/AAC/FLAC не поддерживается — конвертируйте в MP3.");
         return;
       }
 
@@ -831,7 +832,7 @@ import {
               <label className="file-picker-button" aria-disabled=${recording}>
                 <input
                   type="file"
-                  accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac"
+                  accept=".mp3,.wav,.ogg,.opus,audio/mpeg,audio/wav,audio/ogg,audio/opus"
                   disabled=${recording}
                   onChange=${(event) => {
                     const f = event.target.files?.[0];
