@@ -25,3 +25,8 @@ export async function getIamToken() {
   _expiresAt = Date.now() + data.expires_in * 1000;
   return _cachedToken;
 }
+
+export function invalidateIamToken() {
+  _cachedToken = null;
+  _expiresAt = 0;
+}
