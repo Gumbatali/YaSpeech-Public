@@ -76,7 +76,13 @@ import {
             onProgress(Math.round((e.loaded / e.total) * 100));
           }
         };
-        xhr.onload = () => resolve(xhr);
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr);
+          } else {
+            reject(new Error(`Ошибка загрузки файла на сервер (HTTP ${xhr.status}).`));
+          }
+        };
         xhr.onerror = () => reject(new Error("Ошибка загрузки файла."));
         xhr.send(file);
       });
@@ -108,7 +114,11 @@ import {
     }
 
     async getProtocolText(meetingId) {
-      const response = await fetch(`/api/meetings/${meetingId}/protocol.txt`);
+      const response = await fetch(`/api/meetings/${meetingId}/protocol.txt`, {
+        headers: {
+          ...(window.__API_KEY__ ? { "x-api-key": window.__API_KEY__ } : {})
+        }
+      });
       if (!response.ok) {
         throw new Error("Не удалось получить текст протокола.");
       }
@@ -223,6 +233,26 @@ import {
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const recorderRef = React.useRef(null);
     const timerRef = React.useRef(null);
+    const streamRef = React.useRef(null);
+
+    useEffect(() => {
+      return () => {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+        }
+        if (recorderRef.current && recorderRef.current.state !== "inactive") {
+          try {
+            recorderRef.current.stop();
+          } catch {}
+        }
+        if (streamRef.current) {
+          try {
+            streamRef.current.getTracks().forEach((t) => t.stop());
+          } catch {}
+          streamRef.current = null;
+        }
+      };
+    }, []);
     const [projectForm, setProjectForm] = useState(createProjectForm());
     const [meetingForm, setMeetingForm] = useState(createMeetingForm());
     const [draftForm, setDraftForm] = useState(createDraftForm());
@@ -444,14 +474,21 @@ import {
     async function startRecording() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
         const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
         const recorder = new MediaRecorder(stream, { mimeType });
         const chunks = [];
 
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
         recorder.onstop = () => {
-          stream.getTracks().forEach((t) => t.stop());
-          clearInterval(timerRef.current);
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((t) => t.stop());
+            streamRef.current = null;
+          }
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
           const blob = new Blob(chunks, { type: mimeType });
           const ext = mimeType.includes("webm") ? "webm" : "mp4";
           const recNow = new Date();

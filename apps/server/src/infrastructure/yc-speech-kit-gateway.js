@@ -1,4 +1,4 @@
-import { getIamToken } from "../shared/iam-token.js";
+import { getIamToken, invalidateIamToken } from "../shared/iam-token.js";
 
 const SPEECHKIT_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize";
 const OPERATION_URL = "https://operation.api.cloud.yandex.net/operations";
@@ -26,33 +26,43 @@ export class YcSpeechKitGateway {
   }
 
   async processMeeting({ meeting }) {
-    const iamToken = await getIamToken();
+    let iamToken = await getIamToken();
 
     const audioUri = `https://storage.yandexcloud.net/${this.bucket}/${meeting.artifacts.audioOriginalKey}`;
     const encoding = resolveEncoding(meeting.audioFile?.originalFileName);
 
-    // Запускаем асинхронное распознавание
-    const startRes = await fetch(SPEECHKIT_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${iamToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        config: {
-          specification: {
-            languageCode: "ru-RU",
-            model: "general:rc",
-            ...(encoding ? { audioEncoding: encoding } : {}),
-            speakerLabeling: "ENABLED",
-            rawResults: false,
-            partialResults: false,
-            audioChannelCount: 1
-          }
+    const makeRequest = async (token) => {
+      return fetch(SPEECHKIT_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
         },
-        audio: { uri: audioUri }
-      })
-    });
+        body: JSON.stringify({
+          config: {
+            specification: {
+              languageCode: "ru-RU",
+              model: "general:rc",
+              ...(encoding ? { audioEncoding: encoding } : {}),
+              speakerLabeling: "ENABLED",
+              rawResults: false,
+              partialResults: false,
+              audioChannelCount: 1
+            }
+          },
+          audio: { uri: audioUri }
+        })
+      });
+    };
+
+    // Запускаем асинхронное распознавание
+    let startRes = await makeRequest(iamToken);
+
+    if (startRes.status === 401) {
+      invalidateIamToken();
+      iamToken = await getIamToken();
+      startRes = await makeRequest(iamToken);
+    }
 
     if (!startRes.ok) {
       const text = await startRes.text().catch(() => "");
@@ -77,10 +87,18 @@ export class YcSpeechKitGateway {
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(intervalMs);
 
-      const iamToken = await getIamToken();
-      const res = await fetch(`${OPERATION_URL}/${operationId}`, {
+      let iamToken = await getIamToken();
+      let res = await fetch(`${OPERATION_URL}/${operationId}`, {
         headers: { "Authorization": `Bearer ${iamToken}` }
       });
+
+      if (res.status === 401) {
+        invalidateIamToken();
+        iamToken = await getIamToken();
+        res = await fetch(`${OPERATION_URL}/${operationId}`, {
+          headers: { "Authorization": `Bearer ${iamToken}` }
+        });
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");

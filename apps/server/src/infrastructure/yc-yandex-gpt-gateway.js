@@ -1,4 +1,4 @@
-import { getIamToken } from "../shared/iam-token.js";
+import { getIamToken, invalidateIamToken } from "../shared/iam-token.js";
 
 const GPT_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
 const MAX_TRANSCRIPT_CHARS = 24_000; // ~8k токенов, оставляем место для промпта
@@ -10,9 +10,9 @@ export class YcYandexGptGateway {
   }
 
   async complete(systemPrompt, userPrompt, temperature = 0.3) {
-    const iamToken = await getIamToken();
+    let iamToken = await getIamToken();
 
-    const res = await fetch(GPT_URL, {
+    let res = await fetch(GPT_URL, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${iamToken}`,
@@ -31,6 +31,30 @@ export class YcYandexGptGateway {
         ]
       })
     });
+
+    if (res.status === 401) {
+      invalidateIamToken();
+      iamToken = await getIamToken();
+      res = await fetch(GPT_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${iamToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          modelUri: this.modelUri,
+          completionOptions: {
+            stream: false,
+            temperature,
+            maxTokens: 4000
+          },
+          messages: [
+            { role: "system", text: systemPrompt },
+            { role: "user", text: userPrompt }
+          ]
+        })
+      });
+    }
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

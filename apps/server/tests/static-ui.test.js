@@ -36,7 +36,7 @@ test("server exposes the SPA shell and frontend entrypoint", async () => {
     assert.match(appScript, /function App/);
     assert.match(appScript, /Выбрать файл/);
     assert.match(appScript, /Последние встречи/);
-    assert.match(appScript, /Люди проекта/);
+    assert.match(appScript, /Участники проекта/);
     assert.match(appScript, /Черновик встречи/);
     assert.match(appScript, /Собрать протокол/);
     assert.doesNotMatch(appScript, /Быстрый старт/);

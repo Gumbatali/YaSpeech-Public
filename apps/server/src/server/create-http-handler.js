@@ -88,6 +88,32 @@ export function createHttpHandler({
     }
 
     try {
+      const ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+
+      if (parts[0] === "api" && parts[1] === "projects" && parts.length > 2) {
+        const projectId = parts[2];
+        if (!ID_REGEX.test(projectId)) {
+          badRequest(response, "Некорректный ID проекта.");
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "meetings" && parts.length > 2) {
+        const meetingId = parts[2];
+        if (!ID_REGEX.test(meetingId)) {
+          badRequest(response, "Некорректный ID встречи.");
+          return;
+        }
+      }
+
+      if (parts[0] === "local-upload" && parts.length > 1) {
+        const meetingId = parts[1];
+        if (!ID_REGEX.test(meetingId)) {
+          badRequest(response, "Некорректный ID встречи.");
+          return;
+        }
+      }
+
       if (request.method === "GET" && url.pathname === "/") {
         if (!webRootDirectory) { notFound(response); return; }
         const html = await readFile(path.join(webRootDirectory, "index.html"), "utf8");
@@ -197,6 +223,11 @@ export function createHttpHandler({
 
       if (request.method === "POST" && url.pathname === "/api/meetings") {
         const payload = await readJsonRequestBody(request);
+
+        if (!payload.projectId || !ID_REGEX.test(payload.projectId)) {
+          badRequest(response, "Некорректный ID проекта.");
+          return;
+        }
 
         const ALLOWED_CONTENT_TYPES = [
           "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a",
