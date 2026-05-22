@@ -3,20 +3,17 @@ import { getIamToken } from "../shared/iam-token.js";
 const SPEECHKIT_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize";
 const OPERATION_URL = "https://operation.api.cloud.yandex.net/operations";
 
+// SpeechKit v2 поддерживает только: LINEAR16_PCM, OGG_OPUS, MP3
+// Для остальных форматов не указываем encoding — автоопределение по URI
 function resolveEncoding(fileName) {
   const ext = (fileName ?? "").split(".").pop().toLowerCase();
   const map = {
     mp3: "MP3",
-    m4a: "MP4",
-    mp4: "MP4",
-    wav: "LINEAR16_PCM",
     ogg: "OGG_OPUS",
-    webm: "WEBM_OPUS",
-    flac: "FLAC",
-    aac: "AAC",
-    opus: "OGG_OPUS"
+    opus: "OGG_OPUS",
+    wav: "LINEAR16_PCM"
   };
-  return map[ext] ?? "MP3";
+  return map[ext] ?? null; // null = не указываем, SpeechKit сам определит
 }
 
 function sleep(ms) {
@@ -46,7 +43,7 @@ export class YcSpeechKitGateway {
           specification: {
             languageCode: "ru-RU",
             model: "general:rc",
-            audioEncoding: encoding,
+            ...(encoding ? { audioEncoding: encoding } : {}),
             speakerLabeling: "ENABLED",
             rawResults: false,
             partialResults: false,
