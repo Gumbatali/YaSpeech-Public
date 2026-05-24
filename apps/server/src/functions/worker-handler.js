@@ -3,6 +3,7 @@
  * Триггер: Yandex Message Queue → обрабатывает встречи из очереди.
  */
 import { makeDeps } from "./make-deps.js";
+import { logger } from "../shared/logger.js";
 
 let deps;
 
@@ -18,21 +19,22 @@ export async function index(event) {
   const results = [];
 
   for (const msg of messages) {
+    let meetingId = null;
     try {
       const body = JSON.parse(msg.details?.message?.body ?? "{}");
-      const { meetingId } = body;
+      meetingId = body.meetingId ?? null;
       if (!meetingId) {
-        console.warn("Worker: no meetingId in message", msg);
+        logger.warn("Worker: no meetingId in message", { raw: msg.details?.message?.body });
         results.push({ meetingId: null, status: "skipped" });
         continue;
       }
-      console.log("Worker: processing meeting", meetingId);
+      logger.info("Worker: processing", { meetingId });
       await pipelineService.processMeeting(meetingId);
-      console.log("Worker: done", meetingId);
+      logger.info("Worker: done", { meetingId });
       results.push({ meetingId, status: "ok" });
     } catch (err) {
-      console.error("Worker error:", err);
-      results.push({ status: "error", error: err.message });
+      logger.error("Worker: unhandled error", { meetingId, error: err.message, stack: err.stack });
+      results.push({ meetingId, status: "error", error: err.message });
     }
   }
 

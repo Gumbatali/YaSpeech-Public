@@ -36,7 +36,7 @@ export function makeDeps() {
   const clock             = new RuntimeClock();
   const idGenerator       = new RuntimeIdGenerator();
 
-  const folderId = process.env.YC_FOLDER_ID ?? "b1gu902hilj9930q2ebn";
+  const folderId = process.env.YC_FOLDER_ID || "b1gu902hilj9930q2ebn";
   const useMocks = process.env.USE_MOCKS === "true";
 
   const speechKitGateway = useMocks

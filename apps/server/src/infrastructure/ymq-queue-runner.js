@@ -1,4 +1,5 @@
 import { signRequest } from "../shared/sign-v4.js";
+import { logger } from "../shared/logger.js";
 
 const REGION   = "ru-central1";
 const SERVICE  = "sqs";
@@ -19,11 +20,15 @@ export class YmqQueueRunner {
     this.path      = url.pathname;
   }
 
-  enqueue(taskId, _fn) {
+  async enqueue(taskId, _fn) {
     const meetingId = taskId.replace("meeting:", "");
-    this._send(JSON.stringify({ meetingId })).catch(
-      (err) => console.error("YMQ send error:", err)
-    );
+    try {
+      await this._send(JSON.stringify({ meetingId }));
+      logger.info("YMQ: message sent", { meetingId });
+    } catch (err) {
+      logger.error("YMQ: failed to enqueue meeting", { meetingId, error: err.message });
+      throw err; // пробрасываем — caller должен знать об ошибке
+    }
   }
 
   // Совместимость с LocalQueueRunner API

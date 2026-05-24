@@ -2,6 +2,8 @@ import {
   FinalizeProtocolUseCase,
   RetryMeetingUseCase
 } from "../../../../packages/core/src/index.js";
+import { logger } from "../shared/logger.js";
+import { postprocessTranscript } from "./transcript-postprocessor.js";
 
 export class MeetingPipelineService {
   constructor({
@@ -22,30 +24,35 @@ export class MeetingPipelineService {
     this.clock = clock;
   }
 
-  enqueueProcessing(meetingId) {
-    this.queueRunner.enqueue(`meeting:${meetingId}`, async () => {
+  async enqueueProcessing(meetingId) {
+    await this.queueRunner.enqueue(`meeting:${meetingId}`, async () => {
       await this.processMeeting(meetingId);
     });
   }
 
   async retry(meetingId) {
     const failedMeeting = await this.meetingRepository.getById(meetingId);
+
     const meeting = await new RetryMeetingUseCase(
       this.meetingRepository,
       this.clock
     ).execute({ meetingId });
 
+    // Если предыдущий сбой был на стадии генерации протокола — пропускаем SpeechKit
+    let savedMeeting = meeting;
     if (failedMeeting?.currentStage === "protocol_generating") {
-      await this.meetingRepository.save({
+      savedMeeting = {
         ...meeting,
         status: "protocol_generating",
         currentStage: "protocol_generating",
         updatedAt: this.clock.now().toISOString()
-      });
+      };
+      await this.meetingRepository.save(savedMeeting);
     }
 
-    this.enqueueProcessing(meetingId);
-    return meeting;
+    await this.enqueueProcessing(meetingId);
+    logger.info("Meeting retry enqueued", { meetingId, stage: savedMeeting.currentStage });
+    return savedMeeting; // возвращаем актуальный объект (#7 fix)
   }
 
   async confirmDraft(meetingId, { titleDraft, speakerDrafts }) {
@@ -79,6 +86,7 @@ export class MeetingPipelineService {
   async processMeeting(meetingId) {
     const meeting = await this.meetingRepository.getById(meetingId);
     if (!meeting || !["uploaded", "protocol_generating"].includes(meeting.status)) {
+      logger.warn("processMeeting: skipped", { meetingId, status: meeting?.status });
       return;
     }
 
@@ -87,33 +95,31 @@ export class MeetingPipelineService {
       throw new Error(`Project not found for meeting ${meetingId}`);
     }
 
+    logger.info("processMeeting: start", { meetingId, status: meeting.status, projectId: meeting.projectId });
+
     try {
       if (meeting.status === "uploaded") {
         await this.prepareDraft(meeting, project);
+        logger.info("processMeeting: draft ready", { meetingId });
         return;
       }
 
       await this.generateProtocol(meeting, project);
+      logger.info("processMeeting: protocol done", { meetingId });
     } catch (error) {
       const failedMeeting = await this.meetingRepository.getById(meetingId);
-      if (!failedMeeting) {
-        throw error;
-      }
+      if (!failedMeeting) throw error;
 
-      const code =
-        error.code ??
-        (failedMeeting.currentStage === "protocol_generating"
-          ? "YANDEX_GPT_ERROR"
-          : "SPEECHKIT_ERROR");
+      const code = error.code ??
+        (failedMeeting.currentStage === "protocol_generating" ? "YANDEX_GPT_ERROR" : "SPEECHKIT_ERROR");
+
+      logger.error("processMeeting: failed", { meetingId, code, error: error.message });
 
       await this.meetingRepository.save({
         ...failedMeeting,
         status: "failed",
         updatedAt: this.clock.now().toISOString(),
-        error: {
-          code,
-          message: error.message
-        }
+        error: { code, message: error.message }
       });
     }
   }
@@ -126,12 +132,18 @@ export class MeetingPipelineService {
       updatedAt: this.clock.now().toISOString()
     });
 
-    const { jobId, transcript } = await this.speechKitGateway.processMeeting({
+    const { jobId, transcript: rawTranscript } = await this.speechKitGateway.processMeeting({
       meeting,
       project
     });
 
+    // Postprocessing — чистим, склеиваем, переименовываем спикеров
+    const transcript = postprocessTranscript(rawTranscript);
+
+    // Сохраняем и сырой, и обработанный — для отладки и retry
     await this.artifactStorage.writeJson(meeting.artifacts.transcriptKey, transcript);
+    const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
+    await this.artifactStorage.writeJson(rawKey, rawTranscript);
 
     const draft = await this.yandexGptGateway.generateDraft({
       meeting,
@@ -146,6 +158,10 @@ export class MeetingPipelineService {
       speakerDrafts: draft.speakerDrafts,
       transcriptPreview: draft.transcriptPreview,
       transcriptSegments: draft.transcriptSegments,
+      gptContext: {
+        ...draft.context,
+        correctedText: draft.correctedText // сохраняем исправленный текст для pass C
+      },
       status: "draft_ready",
       currentStage: "draft_ready",
       updatedAt: this.clock.now().toISOString()

@@ -1,4 +1,5 @@
 import { getIamToken, invalidateIamToken } from "../shared/iam-token.js";
+import { logger } from "../shared/logger.js";
 
 const SPEECHKIT_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize";
 const OPERATION_URL = "https://operation.api.cloud.yandex.net/operations";
@@ -25,12 +26,21 @@ export class YcSpeechKitGateway {
     this.bucket = bucket;
   }
 
-  async processMeeting({ meeting }) {
+  async processMeeting({ meeting, project }) {
     let iamToken = await getIamToken();
 
     const audioUri = `https://storage.yandexcloud.net/${this.bucket}/${meeting.artifacts.audioOriginalKey}`;
     const encoding = resolveEncoding(meeting.audioFile?.originalFileName);
 
+    logger.info("SpeechKit: starting recognition", {
+      meetingId: meeting.id,
+      audioUri,
+      encoding: encoding ?? "auto"
+    });
+
+    // v2 longRunningRecognize поддерживает только стандартный набор полей.
+    // literatureText / speechAdaptation — это v3, при попытке их добавить
+    // v2 либо игнорирует, либо возвращает урезанный результат. Не используем.
     const makeRequest = async (token) => {
       return fetch(SPEECHKIT_URL, {
         method: "POST",
@@ -42,12 +52,11 @@ export class YcSpeechKitGateway {
           config: {
             specification: {
               languageCode: "ru-RU",
-              model: "general:rc",
+              model: "general",
               ...(encoding ? { audioEncoding: encoding } : {}),
               speakerLabeling: "ENABLED",
               rawResults: false,
-              partialResults: false,
-              audioChannelCount: 1
+              partialResults: false
             }
           },
           audio: { uri: audioUri }
@@ -66,6 +75,7 @@ export class YcSpeechKitGateway {
 
     if (!startRes.ok) {
       const text = await startRes.text().catch(() => "");
+      logger.error("SpeechKit: start failed", { meetingId: meeting.id, status: startRes.status, body: text });
       throw new Error(`SpeechKit start failed ${startRes.status}: ${text}`);
     }
 
@@ -74,6 +84,8 @@ export class YcSpeechKitGateway {
     if (!operationId) {
       throw new Error(`SpeechKit: no operation id in response: ${JSON.stringify(operation)}`);
     }
+
+    logger.info("SpeechKit: operation created, polling...", { meetingId: meeting.id, operationId });
 
     // Ждём завершения (до 25 минут)
     const response = await this.pollOperation(operationId, 500, 3000);
