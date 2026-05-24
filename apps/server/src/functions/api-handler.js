@@ -4,14 +4,16 @@
  */
 import { createHttpHandler } from "../server/create-http-handler.js";
 import { makeDeps } from "./make-deps.js";
+import { logger } from "../shared/logger.js";
 
 let handler;
 
 function getHandler() {
   if (!handler) {
     const deps = makeDeps();
-    // webRootDirectory не нужен — фронт живёт в Object Storage
-    handler = createHttpHandler({ ...deps, webRootDirectory: null });
+    // В Cloud Function код лежит в /function/code/ — берём web-папку оттуда
+    const webRootDirectory = process.env.WEB_ROOT ?? "/function/code/apps/web";
+    handler = createHttpHandler({ ...deps, webRootDirectory });
   }
   return handler;
 }
@@ -49,7 +51,14 @@ export async function index(event) {
 
   const fakeRes = {
     setHeader: (name, value) => { resHeaders[name.toLowerCase()] = value; },
-    writeHead: (code) => { statusCode = code; },
+    writeHead: (code, headers) => {
+      statusCode = code;
+      if (headers && typeof headers === "object") {
+        for (const [k, v] of Object.entries(headers)) {
+          resHeaders[k.toLowerCase()] = v;
+        }
+      }
+    },
     end: (data) => { if (data) chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data)); },
     write: (data) => { chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data)); },
   };
@@ -57,6 +66,15 @@ export async function index(event) {
   await h(fakeReq, fakeRes);
 
   const responseBody = Buffer.concat(chunks).toString("utf-8");
+
+  if (statusCode >= 500) {
+    logger.error("API: 5xx response", {
+      method: event.httpMethod,
+      url: event.url,
+      statusCode,
+      body: responseBody.slice(0, 500)
+    });
+  }
 
   return {
     statusCode,

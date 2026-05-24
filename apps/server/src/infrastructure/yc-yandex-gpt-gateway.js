@@ -1,139 +1,340 @@
-import { getIamToken, invalidateIamToken } from "../shared/iam-token.js";
+/**
+ * YandexGPT Gateway — многопроходной анализ транскрипта.
+ *
+ * Стадии:
+ *   A  — коррекция ASR:    A2 (коррекция чанков), A3 (глоссарий)
+ *   B  — понимание:        B1 (контекст), B2 (спикеры)
+ *   C  — генерация:        C1 (протокол)
+ *   D  — QA:               D1 (достоверность), D2 (полнота)  [только при хорошем качестве]
+ *
+ * Оптимизации:
+ *   - Чанки A2 обрабатываются параллельно
+ *   - Стадии D пропускаются при quality="good" (нет смысла тратить токены)
+ *   - Сохраняем context в meeting.gptContext для retry без повторных вызовов
+ */
 
-const GPT_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
-const MAX_TRANSCRIPT_CHARS = 24_000; // ~8k токенов, оставляем место для промпта
+import { YandexGptClient } from "./llm/yandex-gpt-client.js";
+import { chunkPhrases, mergeChunkResults } from "../application/transcription/chunker.js";
+import {
+  promptAsrCorrection,
+  promptGlossary,
+  promptContextAnalysis,
+  promptSpeakerIdentification,
+  promptProtocolExtraction,
+  promptFaithfulnessCheck,
+  promptCompletenessCheck
+} from "./llm/prompts.js";
+import { logger } from "../shared/logger.js";
+
+const MAX_TRANSCRIPT_CHARS = 22_000;
 
 export class YcYandexGptGateway {
   constructor({ folderId }) {
     this.folderId = folderId;
-    this.modelUri = `gpt://${folderId}/yandexgpt-pro/latest`;
+    this.modelUri = `gpt://${folderId}/yandexgpt/latest`;
+    this.client = new YandexGptClient({ modelUri: this.modelUri });
+    logger.info("YandexGPT: initialized", { folderId, modelUri: this.modelUri });
   }
 
-  async complete(systemPrompt, userPrompt, temperature = 0.3) {
-    let iamToken = await getIamToken();
+  // ============================================================
+  // STAGE A: ASR Correction
+  // ============================================================
 
-    let res = await fetch(GPT_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${iamToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        modelUri: this.modelUri,
-        completionOptions: {
-          stream: false,
-          temperature,
-          maxTokens: 4000
-        },
-        messages: [
-          { role: "system", text: systemPrompt },
-          { role: "user", text: userPrompt }
-        ]
-      })
+  /**
+   * Исправляет ASR-ошибки путём параллельной обработки чанков.
+   * Возвращает исправленный rawText и обогащённые phrases.
+   */
+  async correctTranscript(transcript, domain) {
+    const chunks = chunkPhrases(transcript.phrases ?? []);
+
+    if (chunks.length === 1 && chunks[0].text.length < 2000) {
+      // Очень короткий транскрипт — пропускаем коррекцию, не стоит токенов
+      logger.info("GPT A2: skipped (transcript too short)", { chars: chunks[0].text.length });
+      return { correctedText: chunks[0].text, glossary: null };
+    }
+
+    logger.info("GPT A2: correcting", { chunks: chunks.length, domain });
+
+    // Параллельная коррекция всех чанков
+    const correctionRequests = chunks.map((chunk) => {
+      const { system, user, options } = promptAsrCorrection({
+        chunkText: chunk.text,
+        domain,
+        chunkIndex: chunk.index,
+        totalChunks: chunk.total
+      });
+      return { system, user, options };
     });
 
-    if (res.status === 401) {
-      invalidateIamToken();
-      iamToken = await getIamToken();
-      res = await fetch(GPT_URL, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${iamToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          modelUri: this.modelUri,
-          completionOptions: {
-            stream: false,
-            temperature,
-            maxTokens: 4000
-          },
-          messages: [
-            { role: "system", text: systemPrompt },
-            { role: "user", text: userPrompt }
-          ]
-        })
-      });
+    const rawResults = await this.client.completeBatch(correctionRequests);
+
+    // Разбираем ответы
+    const chunkResults = rawResults.map((raw, i) => {
+      const parsed = YandexGptClient.parseJson(raw, { correctedLines: [] }, `A2 chunk ${i}`);
+      const lines = Array.isArray(parsed.correctedLines) ? parsed.correctedLines : [];
+      return { phrases: chunks[i].phrases, correctedLines: lines };
+    });
+
+    const correctedText = mergeChunkResults(chunkResults);
+
+    // Pass A3: глоссарий (только если длинный транскрипт)
+    let glossary = null;
+    if (chunks.length > 1) {
+      logger.info("GPT A3: extracting glossary");
+      const { system, user, options } = promptGlossary({ correctedText, domain });
+      const glossaryRaw = await this.client.complete(system, user, options);
+      glossary = YandexGptClient.parseJson(glossaryRaw, { terms: [], abbreviations: {} }, "A3");
+      logger.info("GPT A3: done", { terms: glossary.terms?.length ?? 0 });
     }
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`YandexGPT failed ${res.status}: ${text}`);
-    }
-
-    const data = await res.json();
-    const raw = data.result?.alternatives?.[0]?.message?.text ?? "";
-
-    // Убираем markdown-обёртку если GPT завернул ответ в ```json ... ```
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-    return cleaned;
+    return { correctedText, glossary };
   }
 
-  async generateDraft({ project, transcript }) {
-    const teamList = project.team?.length
-      ? project.team.map((m) => `- ${m.name}${m.role ? ` (${m.role})` : ""}`).join("\n")
-      : "Список участников не задан";
+  // ============================================================
+  // STAGE B: Understanding
+  // ============================================================
 
-    const transcriptText = transcript.rawText.slice(0, MAX_TRANSCRIPT_CHARS);
+  async analyzeContext({ correctedText, projectName }) {
+    logger.info("GPT B1: context analysis");
+    const { system, user, options } = promptContextAnalysis({ transcriptText: correctedText, projectName });
+    const raw = await this.client.complete(system, user, options);
+    const result = YandexGptClient.parseJson(raw, {
+      meetingType: "прочее",
+      domain: "не определено",
+      mainTopics: [],
+      mentionedEntities: { people: [], organizations: [], places: [], dates: [], amounts: [] },
+      transcriptQuality: "fair",
+      confidenceNote: null
+    }, "B1");
 
-    const systemPrompt = `Ты — ассистент для анализа транскриптов деловых встреч на русском языке.
-Отвечай ТОЛЬКО корректным JSON без пояснений и без markdown-обёртки.`;
+    logger.info("GPT B1: done", {
+      type: result.meetingType,
+      domain: result.domain,
+      quality: result.transcriptQuality,
+      topics: result.mainTopics?.length ?? 0
+    });
 
-    const userPrompt = `Транскрипт встречи:
-${transcriptText}
+    return result;
+  }
 
-Список участников проекта "${project.name}":
-${teamList}
+  async identifySpeakers({ correctedText, transcript, project, context }) {
+    logger.info("GPT B2: speaker identification");
 
-Верни JSON строго в таком формате:
-{
-  "titleDraft": "Краткое название встречи (5-8 слов)",
-  "speakerDrafts": [
-    {
-      "id": "speaker-1",
-      "label": "Спикер 1",
-      "guessedName": "Имя из списка участников если угадал, иначе null"
-    }
-  ]
-}
+    const speakerStats = transcript.speakerStats ?? [];
+    const { system, user, options } = promptSpeakerIdentification({
+      transcriptText: correctedText,
+      speakerStats,
+      projectTeam: project.team ?? [],
+      context
+    });
 
-Уникальные id спикеров из транскрипта: ${[...new Set(transcript.phrases.map((p) => p.speakerId))].join(", ")}`;
+    const raw = await this.client.complete(system, user, options);
+    const speakerIds = [...new Set((transcript.phrases ?? []).map((p) => p.speakerId))];
+    const result = YandexGptClient.parseJson(raw, {
+      speakerDrafts: speakerIds.map((id, i) => ({
+        id,
+        label: `Спикер ${i + 1}`,
+        guessedName: null,
+        guessedRole: null,
+        confidence: "low",
+        reasoning: "fallback"
+      }))
+    }, "B2");
 
-    let result;
+    const drafts = result.speakerDrafts ?? [];
+    logger.info("GPT B2: done", {
+      identified: drafts.filter((s) => s.guessedName).length,
+      total: drafts.length
+    });
+
+    return drafts;
+  }
+
+  // ============================================================
+  // STAGE C: Protocol Generation
+  // ============================================================
+
+  async extractProtocol({ correctedText, meeting, project, context, speakers, previousProtocol }) {
+    logger.info("GPT C1: protocol extraction");
+
+    const speakerMap = speakers
+      .map((s) => `- ${s.label} = ${s.guessedName || "неизвестен"}${s.guessedRole ? ` (${s.guessedRole})` : ""}`)
+      .join("\n");
+
+    const { system, user, options } = promptProtocolExtraction({
+      transcriptText: correctedText,
+      domain: context.domain,
+      meetingType: context.meetingType,
+      mainTopics: context.mainTopics ?? [],
+      speakerMap,
+      prevActionItems: previousProtocol?.actionItems ?? null,
+      meetingDate: meeting.date ?? "не указана",
+      projectName: project.name,
+      organizations: context.mentionedEntities?.organizations ?? []
+    });
+
+    const raw = await this.client.complete(system, user, options);
+
+    let protocol;
     try {
-      const raw = await this.complete(systemPrompt, userPrompt);
-      result = JSON.parse(raw);
+      protocol = JSON.parse(raw);
     } catch (e) {
-      // Fallback: базовый черновик
-      const speakerIds = [...new Set(transcript.phrases.map((p) => p.speakerId))];
-      return {
-        titleDraft: `${project.name} — встреча`,
-        speakerDrafts: speakerIds.map((id, i) => ({
-          id,
-          label: `Спикер ${i + 1}`,
-          guessedName: null,
-          confidence: "low"
-        })),
-        transcriptPreview: transcript.rawText.slice(0, 2000),
-        transcriptSegments: transcript.phrases.map((p) => ({
-          speakerId: p.speakerId,
-          speakerLabel: p.speakerLabel,
-          guessedName: null,
-          text: p.text
-        }))
-      };
+      logger.error("GPT C1: invalid JSON", { error: e.message, preview: raw.slice(0, 500) });
+      throw new Error(`YandexGPT вернул некорректный JSON для протокола: ${e.message}`);
     }
 
-    const speakerDrafts = (result.speakerDrafts ?? []).map((s) => ({
-      ...s,
-      confidence: s.guessedName ? "high" : "low"
-    }));
+    // Гарантируем все поля
+    protocol.summary ??= { title: meeting.titleDraft ?? project.name, overview: "" };
+    protocol.participants ??= [];
+    protocol.decisions ??= [];
+    protocol.actionItems ??= [];
+    protocol.completedFromPrevious ??= [];
+    protocol.carriedForward ??= [];
+    protocol.openQuestions ??= [];
+    protocol.transcriptHighlights ??= [];
+
+    logger.info("GPT C1: done", {
+      title: protocol.summary.title,
+      decisions: protocol.decisions.length,
+      actions: protocol.actionItems.length,
+      openQuestions: protocol.openQuestions.length
+    });
+
+    return protocol;
+  }
+
+  // ============================================================
+  // STAGE D: Quality Assurance (optional)
+  // ============================================================
+
+  /**
+   * Проверяет достоверность и полноту протокола.
+   * Запускается только если качество транскрипта "fair" или "poor".
+   * Возвращает доработанный протокол.
+   */
+  async qaProtocol({ protocol, correctedText, context }) {
+    if (context.transcriptQuality === "good") {
+      logger.info("GPT D: skipped (quality=good)");
+      return protocol;
+    }
+
+    logger.info("GPT D1+D2: qa check");
+
+    // D1 и D2 параллельно
+    const [faithfulnessRaw, completenessRaw] = await this.client.completeBatch([
+      (() => {
+        const { system, user, options } = promptFaithfulnessCheck({
+          protocol,
+          transcriptText: correctedText
+        });
+        return { system, user, options };
+      })(),
+      (() => {
+        const { system, user, options } = promptCompletenessCheck({
+          protocol,
+          transcriptText: correctedText,
+          domain: context.domain
+        });
+        return { system, user, options };
+      })()
+    ]);
+
+    const faithfulness = YandexGptClient.parseJson(
+      faithfulnessRaw,
+      { suggestedRemovals: [] },
+      "D1"
+    );
+    const completeness = YandexGptClient.parseJson(
+      completenessRaw,
+      { missedActions: [], missedDecisions: [], overallCompleteness: "medium" },
+      "D2"
+    );
+
+    logger.info("GPT D: done", {
+      suggestedRemovals: faithfulness.suggestedRemovals?.length ?? 0,
+      missedActions: completeness.missedActions?.length ?? 0,
+      overallCompleteness: completeness.overallCompleteness
+    });
+
+    // Применяем результаты QA
+    const patchedProtocol = { ...protocol };
+
+    // Удаляем выдуманные пункты (fabricated)
+    if (faithfulness.suggestedRemovals?.length) {
+      const removals = new Set(faithfulness.suggestedRemovals.map((r) => r.toLowerCase().slice(0, 50)));
+      patchedProtocol.decisions = protocol.decisions.filter(
+        (d) => !removals.has(d.toLowerCase().slice(0, 50))
+      );
+      patchedProtocol.actionItems = protocol.actionItems.filter(
+        (a) => !removals.has(a.task?.toLowerCase().slice(0, 50))
+      );
+    }
+
+    // Добавляем пропущенные задачи
+    if (completeness.missedActions?.length) {
+      for (const action of completeness.missedActions) {
+        if (action.task && action.owner) {
+          patchedProtocol.actionItems = [...patchedProtocol.actionItems, action];
+        }
+      }
+    }
+
+    // Добавляем пропущенные решения
+    if (completeness.missedDecisions?.length) {
+      patchedProtocol.decisions = [...patchedProtocol.decisions, ...completeness.missedDecisions];
+    }
+
+    patchedProtocol.qaNote = completeness.note ?? null;
+    patchedProtocol.completenessScore = completeness.overallCompleteness;
+
+    return patchedProtocol;
+  }
+
+  // ============================================================
+  // PUBLIC API
+  // ============================================================
+
+  /**
+   * Stage A+B: коррекция ASR + контекстный анализ + идентификация спикеров.
+   * Вызывается после SpeechKit, до показа черновика пользователю.
+   */
+  async generateDraft({ project, transcript, meeting }) {
+    // B0: предварительный контекст для определения домена (нужен для A2)
+    const quickContext = await this.analyzeContext({
+      correctedText: transcript.rawText.slice(0, 8000),
+      projectName: project.name
+    });
+
+    // A2+A3: коррекция с учётом домена
+    const domain = quickContext.domain || "общий";
+    const { correctedText, glossary } = await this.correctTranscript(transcript, domain);
+
+    // B1: полный контекст уже на исправленном тексте
+    const context = correctedText !== transcript.rawText
+      ? await this.analyzeContext({ correctedText, projectName: project.name })
+      : quickContext;
+
+    // B2: идентификация спикеров
+    const speakerDrafts = await this.identifySpeakers({
+      correctedText,
+      transcript,
+      project,
+      context
+    });
 
     return {
-      titleDraft: result.titleDraft ?? `${project.name} — встреча`,
-      speakerDrafts,
-      transcriptPreview: transcript.rawText.slice(0, 2000),
-      transcriptSegments: transcript.phrases.map((p, i) => {
+      titleDraft: this._deriveDraftTitle(context, project),
+      speakerDrafts: speakerDrafts.map((s) => ({
+        id: s.id,
+        label: s.label,
+        guessedName: s.guessedName,
+        confidence: s.confidence ?? "low"
+      })),
+      context,
+      correctedText,
+      glossary: glossary ?? undefined,
+      transcriptPreview: correctedText.slice(0, 2000),
+      transcriptSegments: (transcript.phrases ?? []).map((p) => {
         const draft = speakerDrafts.find((s) => s.id === p.speakerId);
         return {
           speakerId: p.speakerId,
@@ -145,116 +346,129 @@ ${teamList}
     };
   }
 
+  /**
+   * Stage C+D: генерация финального протокола.
+   * Вызывается после подтверждения черновика пользователем.
+   */
   async generateProtocol({ meeting, project, transcript, previousProtocol = null }) {
-    const participants = (meeting.speakerDrafts ?? [])
-      .map((s) => s.guessedName || s.label)
-      .filter(Boolean);
+    // Используем correctedText из meeting если есть (был сохранён в gptContext)
+    const correctedText = meeting.gptContext?.correctedText
+      ?? transcript.rawText.slice(0, MAX_TRANSCRIPT_CHARS);
 
-    const transcriptText = transcript.rawText.slice(0, MAX_TRANSCRIPT_CHARS);
+    // Контекст из meeting или анализируем заново
+    const context = meeting.gptContext ?? await this.analyzeContext({
+      correctedText,
+      projectName: project.name
+    });
 
-    const prevSection = previousProtocol?.actionItems?.length
-      ? `\nЗадачи с предыдущей встречи (проверь какие выполнены, какие нет):\n${previousProtocol.actionItems.map((a) => `- ${a.owner}: ${a.task} (дедлайн ${a.deadline})`).join("\n")}`
-      : "";
+    const speakers = (meeting.speakerDrafts ?? []).map((s) => ({
+      id: s.id,
+      label: s.label,
+      guessedName: s.guessedName,
+      guessedRole: null,
+      confidence: s.confidence
+    }));
 
-    const systemPrompt = `Ты — ассистент для составления протоколов деловых встреч на русском языке.
-Отвечай ТОЛЬКО корректным JSON без пояснений и без markdown-обёртки.
-Сегодняшняя дата встречи: ${meeting.date}.`;
+    // C1: базовый протокол
+    let protocol = await this.extractProtocol({
+      correctedText,
+      meeting,
+      project,
+      context,
+      speakers,
+      previousProtocol
+    });
 
-    const userPrompt = `Транскрипт встречи:
-${transcriptText}
+    // D1+D2: QA (только для fair/poor транскриптов)
+    protocol = await this.qaProtocol({ protocol, correctedText, context });
 
-Проект: ${project.name}
-Название встречи: ${meeting.titleDraft ?? project.name}
-Участники: ${participants.join(", ") || "не определены"}${prevSection}
-
-Верни JSON строго в таком формате:
-{
-  "summary": {
-    "title": "Финальное название встречи",
-    "overview": "2-3 предложения о чём была встреча"
-  },
-  "participants": ["Имя1", "Имя2"],
-  "decisions": ["Решение 1", "Решение 2"],
-  "actionItems": [
-    { "owner": "Имя", "task": "Задача", "deadline": "YYYY-MM-DD" }
-  ],
-  "completedFromPrevious": [
-    { "owner": "Имя", "task": "Задача", "deadline": "YYYY-MM-DD" }
-  ],
-  "carriedForward": [
-    { "owner": "Имя", "task": "Задача", "deadline": "YYYY-MM-DD" }
-  ],
-  "transcriptHighlights": [
-    { "speaker": "Имя", "quote": "Цитата до 100 символов" }
-  ]
-}
-
-completedFromPrevious — задачи из предыдущей встречи которые упомянуты как выполненные.
-carriedForward — задачи из предыдущей встречи которые не выполнены и переносятся.
-Если предыдущих задач не было — оба массива пустые.`;
-
-    let protocol;
-    try {
-      const raw = await this.complete(systemPrompt, userPrompt, 0.2);
-      protocol = JSON.parse(raw);
-    } catch (e) {
-      throw new Error(`YandexGPT вернул некорректный JSON: ${e.message}`);
-    }
-
-    // Гарантируем наличие всех полей
-    protocol.summary ??= { title: meeting.titleDraft ?? project.name, overview: "" };
-    protocol.participants ??= participants;
-    protocol.decisions ??= [];
-    protocol.actionItems ??= [];
-    protocol.completedFromPrevious ??= [];
-    protocol.carriedForward ??= [];
-    protocol.transcriptHighlights ??= [];
-
-    const protocolText = buildProtocolText(protocol, meeting, project);
+    const protocolText = buildProtocolText(protocol, meeting, project, context);
     return { protocol, protocolText };
   }
+
+  _deriveDraftTitle(context, project) {
+    if (context.mainTopics?.length) {
+      return context.mainTopics.slice(0, 2).join(", ");
+    }
+    return `${project.name} — ${context.meetingType ?? "встреча"}`;
+  }
 }
 
-function buildProtocolText(protocol, meeting, project) {
+// ============================================================
+// Protocol text formatter
+// ============================================================
+
+function buildProtocolText(protocol, meeting, project, context) {
   const lines = [
-    "ПРОТОКОЛ ВСТРЕЧИ",
+    "═══════════════════════════════════════════",
+    "       ПРОТОКОЛ ВСТРЕЧИ",
+    "═══════════════════════════════════════════",
     "",
-    `Проект: ${project.name}`,
-    `Название: ${protocol.summary.title}`,
-    `Дата: ${meeting.date}`,
+    `Проект:   ${project.name}`,
+    `Встреча:  ${protocol.summary.title}`,
+    `Дата:     ${meeting.date ?? "—"}`,
+    `Тип:      ${context?.meetingType ?? "—"}`,
+    `Сфера:    ${context?.domain ?? "—"}`,
     `Участники: ${protocol.participants.join(", ") || "—"}`,
-    "",
-    "КРАТКАЯ СВОДКА",
-    protocol.summary.overview,
-    "",
-    "РЕШЕНИЯ",
-    ...protocol.decisions.map((d, i) => `${i + 1}. ${d}`),
-    "",
-    "ЗАДАЧИ",
-    ...protocol.actionItems.map((a, i) => `${i + 1}. ${a.owner} — ${a.task} (до ${a.deadline})`)
+    ""
   ];
 
-  if (protocol.completedFromPrevious.length > 0) {
-    lines.push(
-      "",
-      "ВЫПОЛНЕНО С ПРОШЛОЙ ВСТРЕЧИ",
-      ...protocol.completedFromPrevious.map((a, i) => `${i + 1}. ✓ ${a.owner} — ${a.task}`)
-    );
+  if (protocol.summary.overview) {
+    lines.push("── КРАТКАЯ СВОДКА ─────────────────────────");
+    lines.push(protocol.summary.overview);
+    lines.push("");
   }
 
-  if (protocol.carriedForward.length > 0) {
-    lines.push(
-      "",
-      "ПЕРЕНЕСЕНО НА СЛЕДУЮЩУЮ ВСТРЕЧУ",
-      ...protocol.carriedForward.map((a, i) => `${i + 1}. ${a.owner} — ${a.task} (до ${a.deadline})`)
-    );
+  if (protocol.decisions.length > 0) {
+    lines.push("── ПРИНЯТЫЕ РЕШЕНИЯ ────────────────────────");
+    protocol.decisions.forEach((d, i) => lines.push(`  ${i + 1}. ${d}`));
+    lines.push("");
   }
 
-  lines.push(
-    "",
-    "КЛЮЧЕВЫЕ МОМЕНТЫ",
-    ...protocol.transcriptHighlights.map((h) => `— ${h.speaker}: «${h.quote}»`)
-  );
+  if (protocol.actionItems.length > 0) {
+    lines.push("── ЗАДАЧИ ──────────────────────────────────");
+    protocol.actionItems.forEach((a, i) =>
+      lines.push(`  ${i + 1}. [${a.owner}] ${a.task}  →  до ${a.deadline}`)
+    );
+    lines.push("");
+  }
+
+  if (protocol.openQuestions?.length > 0) {
+    lines.push("── ОТКРЫТЫЕ ВОПРОСЫ ────────────────────────");
+    protocol.openQuestions.forEach((q, i) => lines.push(`  ${i + 1}. ${q}`));
+    lines.push("");
+  }
+
+  if (protocol.completedFromPrevious?.length > 0) {
+    lines.push("── ВЫПОЛНЕНО С ПРОШЛОЙ ВСТРЕЧИ ─────────────");
+    protocol.completedFromPrevious.forEach((a, i) =>
+      lines.push(`  ${i + 1}. ✓  [${a.owner}] ${a.task}`)
+    );
+    lines.push("");
+  }
+
+  if (protocol.carriedForward?.length > 0) {
+    lines.push("── ПЕРЕНЕСЕНО ──────────────────────────────");
+    protocol.carriedForward.forEach((a, i) =>
+      lines.push(`  ${i + 1}. ➜  [${a.owner}] ${a.task}  →  до ${a.deadline}`)
+    );
+    lines.push("");
+  }
+
+  if (protocol.transcriptHighlights?.length > 0) {
+    lines.push("── КЛЮЧЕВЫЕ МОМЕНТЫ ────────────────────────");
+    protocol.transcriptHighlights.forEach((h) =>
+      lines.push(`  — ${h.speaker}: «${h.quote}»`)
+    );
+    lines.push("");
+  }
+
+  if (protocol.qaNote) {
+    lines.push(`  ℹ  ${protocol.qaNote}`);
+    lines.push("");
+  }
+
+  lines.push("═══════════════════════════════════════════");
 
   return lines.join("\n");
 }

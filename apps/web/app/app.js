@@ -5,6 +5,8 @@ import {
   getTimelineStepState,
   resolveScreen
 } from "./ui-model.js";
+import { preprocessAudio } from "./audio/preprocessor.js";
+import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.js";
 
 (function bootstrapApp() {
   const { useEffect, useState } = window.React;
@@ -229,6 +231,7 @@ import {
     const [savingTeam, setSavingTeam] = useState(false);
     const [confirmingDraft, setConfirmingDraft] = useState(false);
     const [showProjectComposer, setShowProjectComposer] = useState(false);
+    const [resultTab, setResultTab] = useState("summary"); // "summary" | "transcript"
     const [recording, setRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const recorderRef = React.useRef(null);
@@ -471,32 +474,57 @@ import {
       }
     }
 
+    /** Кодирует AudioBuffer в WAV (PCM 16-bit) — без библиотек, работает в любом браузере */
+    function encodeWav(audioBuffer) {
+      const numChannels = audioBuffer.numberOfChannels;
+      const sampleRate  = audioBuffer.sampleRate;
+      const numSamples  = audioBuffer.length * numChannels;
+      const dataBytes   = numSamples * 2;
+
+      const buffer = new ArrayBuffer(44 + dataBytes);
+      const view   = new DataView(buffer);
+      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+
+      writeStr(0, "RIFF");  view.setUint32(4, 36 + dataBytes, true);
+      writeStr(8, "WAVE");  writeStr(12, "fmt ");
+      view.setUint32(16, 16, true);  view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);  view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * numChannels * 2, true);
+      view.setUint16(32, numChannels * 2, true);  view.setUint16(34, 16, true);
+      writeStr(36, "data");  view.setUint32(40, dataBytes, true);
+
+      let off = 44;
+      for (let i = 0; i < audioBuffer.length; i++) {
+        for (let ch = 0; ch < numChannels; ch++) {
+          const s = Math.max(-1, Math.min(1, audioBuffer.getChannelData(ch)[i]));
+          view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+          off += 2;
+        }
+      }
+      return buffer;
+    }
+
     async function startRecording() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         streamRef.current = stream;
+
         const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
         const recorder = new MediaRecorder(stream, { mimeType });
         const chunks = [];
 
         recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-        recorder.onstop = () => {
-          if (streamRef.current) {
-            streamRef.current.getTracks().forEach((t) => t.stop());
-            streamRef.current = null;
-          }
-          if (timerRef.current) {
-            clearInterval(timerRef.current);
-            timerRef.current = null;
-          }
-          const blob = new Blob(chunks, { type: mimeType });
-          const ext = mimeType.includes("webm") ? "webm" : "mp4";
-          const recNow = new Date();
-          const name = "запись_" + recNow.toISOString().slice(0, 16).replace("T", "_").replace(":", "-") + "." + ext;
-          const file = new File([blob], name, { type: mimeType });
+        recorder.onstop = async () => {
+          if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+          if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
           setRecording(false);
           setRecordingSeconds(0);
-          void handleFileSelect(file);
+
+          const webmBlob = new Blob(chunks, { type: mimeType });
+          const baseName = "запись_" + new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+          // handleFileSelect сам прогонит preprocessing — отдаём WebM как есть
+          const recordedFile = new File([webmBlob], baseName + ".webm", { type: mimeType });
+          void handleFileSelect(recordedFile);
         };
 
         recorderRef.current = recorder;
@@ -514,10 +542,36 @@ import {
     }
 
     async function handleFileSelect(file) {
+      // 1. Анализируем качество ДО обработки — чтобы предупредить юзера
+      let qualityReport = null;
+      try {
+        setNotice("Анализ записи…");
+        qualityReport = await analyzeAudioQuality(file);
+        setNotice(describeQuality(qualityReport));
+        if (qualityReport.quality === "poor") {
+          setError("Качество записи низкое — результат распознавания может быть плохим. " +
+            describeQuality(qualityReport));
+        }
+      } catch (e) {
+        // не критично — пайплайн всё равно попробует обработать
+      }
+
+      // 2. Прогоняем через полный preprocessing pipeline
+      try {
+        setNotice("Обработка аудио: декодирование…");
+        const processed = await preprocessAudio(file, (stage, percent) => {
+          setNotice(`Обработка аудио: ${stage} (${percent}%)`);
+        });
+        file = processed;
+        setNotice(`Готово. Загружаю файл (${(file.size / 1024).toFixed(0)} КБ)…`);
+      } catch (e) {
+        setError("Не удалось обработать аудио: " + e.message +
+          ". Попробуйте сохранить в MP3 или WAV.");
+        return;
+      }
+
       setMeetingForm((current) => ({ ...current, file, durationSeconds: null, startTime: null, endTime: null }));
-      const dur = await getAudioDuration(file);
-      // Только если длительность известна — предзаполняем время.
-      // Иначе оставляем null: время вычислится из uploadedAt после загрузки.
+      const dur = qualityReport?.durationSeconds ?? await getAudioDuration(file);
       const endTime = dur ? nowHHMM() : null;
       const startTime = dur ? subtractSecondsHHMM(endTime, dur) : null;
       setMeetingForm((current) => ({
@@ -541,20 +595,21 @@ import {
         return;
       }
 
-      // SpeechKit v2 longRunningRecognize поддерживает только MP3, OGG_OPUS, LINEAR16_PCM (WAV)
       const ALLOWED_TYPES = [
         "audio/mpeg", "audio/mp3",
         "audio/wav", "audio/wave", "audio/x-wav",
-        "audio/ogg", "audio/opus", "audio/webm"
+        "audio/ogg", "audio/opus", "audio/webm",
+        "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac",
+        "audio/flac", "audio/x-flac", "video/mp4"
       ];
       const MAX_SIZE_BYTES = 1 * 1024 * 1024 * 1024; // 1 GB
 
       const fileType = meetingForm.file.type || "";
       const fileName = meetingForm.file.name || "";
-      const AUDIO_EXT = /\.(mp3|wav|ogg|opus)$/i;
+      const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac|mp4)$/i;
 
       if (!ALLOWED_TYPES.includes(fileType) && !AUDIO_EXT.test(fileName)) {
-        setError("Поддерживаются форматы: MP3, WAV, OGG, Opus. Формат M4A/AAC/FLAC не поддерживается — конвертируйте в MP3.");
+        setError("Неподдерживаемый формат. Допустимы: MP3, WAV, OGG, M4A, AAC, FLAC.");
         return;
       }
 
@@ -708,6 +763,32 @@ import {
       } catch (caughtError) {
         setError(caughtError.message);
       }
+    }
+
+    function downloadTranscript() {
+      const segments = activeMeeting?.transcriptSegments;
+      if (!segments?.length) {
+        setError("Расшифровка недоступна.");
+        return;
+      }
+      const lines = segments.map((s) => {
+        const name = s.guessedName || s.speakerLabel || s.speakerId;
+        return `${name}:\n${s.text}`;
+      });
+      const text = [
+        `Расшифровка встречи`,
+        `Проект: ${activeMeeting.projectId}`,
+        `Дата: ${activeMeeting.date}`,
+        ``,
+        ...lines
+      ].join("\n\n");
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `transcript-${activeMeeting.projectId}-${activeMeeting.date}.txt`;
+      anchor.click();
+      URL.revokeObjectURL(url);
     }
 
     function renderNoticeArea() {
@@ -869,7 +950,7 @@ import {
               <label className="file-picker-button" aria-disabled=${recording}>
                 <input
                   type="file"
-                  accept=".mp3,.wav,.ogg,.opus,audio/mpeg,audio/wav,audio/ogg,audio/opus"
+                  accept=".mp3,.wav,.ogg,.opus,.m4a,.aac,.flac,audio/mpeg,audio/wav,audio/ogg,audio/opus,audio/mp4,audio/m4a,audio/aac,audio/flac"
                   disabled=${recording}
                   onChange=${(event) => {
                     const f = event.target.files?.[0];
@@ -1124,6 +1205,88 @@ import {
       `;
     }
 
+    // Цвета для спикеров в расшифровке
+    const SPEAKER_COLORS = [
+      "#4f6ef7", "#e05c5c", "#2bba8a", "#e09c2b",
+      "#9b59b6", "#16a085", "#d35400", "#2980b9"
+    ];
+    function speakerColor(speakerId) {
+      const idx = parseInt((speakerId ?? "0").replace(/\D/g, "") || "0", 10) - 1;
+      return SPEAKER_COLORS[Math.abs(idx) % SPEAKER_COLORS.length];
+    }
+    function speakerInitial(label) {
+      return (label ?? "?").replace("Спикер ", "С").slice(0, 2).toUpperCase();
+    }
+
+    function renderTranscriptTab() {
+      const segments = activeMeeting?.transcriptSegments ?? [];
+      if (!segments.length) {
+        return html`<div className="empty-state">Расшифровка недоступна.</div>`;
+      }
+      return html`
+        <div className="transcript-full">
+          ${segments.map((seg, i) => {
+            const color = speakerColor(seg.speakerId);
+            const label = seg.guessedName || seg.speakerLabel || seg.speakerId;
+            const initial = speakerInitial(label);
+            return html`
+              <div key=${i} className="tf-row">
+                <div className="tf-avatar" style=${{ background: color }}>${initial}</div>
+                <div className="tf-body">
+                  <div className="tf-name" style=${{ color }}>${label}</div>
+                  <div className="tf-text">${seg.text}</div>
+                </div>
+              </div>
+            `;
+          })}
+        </div>
+      `;
+    }
+
+    function renderSummaryTab(protocol) {
+      return html`
+        <div className="result-stack">
+          <section className="result-block">
+            <div className="eyebrow">Участники</div>
+            ${protocol.participants?.length
+              ? html`<ul>${protocol.participants.map((p, i) => html`<li key=${i}>${p}</li>`)}</ul>`
+              : html`<p className="empty-hint">Не определены</p>`}
+          </section>
+
+          <section className="result-block">
+            <div className="eyebrow">Что решили</div>
+            ${protocol.decisions?.length
+              ? html`<ol>${protocol.decisions.map((d, i) => html`<li key=${i}>${d}</li>`)}</ol>`
+              : html`<p className="empty-hint">Решений не зафиксировано</p>`}
+          </section>
+
+          <section className="result-block">
+            <div className="eyebrow">Следующие шаги</div>
+            ${protocol.actionItems?.length
+              ? html`<ul>${protocol.actionItems.map((item, i) => html`
+                  <li key=${i} className="action-item">
+                    <span className="action-owner">${item.owner}</span>
+                    <span className="action-task">${item.task}</span>
+                    <span className="action-deadline">до ${item.deadline}</span>
+                  </li>`)}</ul>`
+              : html`<p className="empty-hint">Задач не зафиксировано</p>`}
+          </section>
+
+          ${protocol.transcriptHighlights?.length ? html`
+            <section className="result-block">
+              <div className="eyebrow">Ключевые цитаты</div>
+              <div className="highlights-list">
+                ${protocol.transcriptHighlights.map((h, i) => html`
+                  <div key=${i} className="highlight-card">
+                    <div className="highlight-speaker">${h.speaker}</div>
+                    <blockquote className="highlight-quote">«${h.quote}»</blockquote>
+                  </div>`)}
+              </div>
+            </section>` : null}
+        </div>
+      `;
+    }
+
     function renderResultScreen() {
       const protocol = activeMeeting?.protocol;
       if (!protocol) {
@@ -1158,57 +1321,31 @@ import {
               <p className="panel-copy">${protocol.summary.overview}</p>
             </div>
 
-            <div className="button-row">
-              <button className="primary-button" onClick=${copyProtocol}>Скопировать</button>
-              <button className="ghost-button" onClick=${downloadProtocol}>Скачать TXT</button>
-              <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+            <div className="result-tabs">
+              <button
+                className=${"tab-btn" + (resultTab === "summary" ? " tab-btn--active" : "")}
+                onClick=${() => setResultTab("summary")}
+              >Саммари</button>
+              <button
+                className=${"tab-btn" + (resultTab === "transcript" ? " tab-btn--active" : "")}
+                onClick=${() => setResultTab("transcript")}
+              >Расшифровка</button>
             </div>
 
-            <div className="result-stack">
-              <section className="result-block">
-                <div className="eyebrow">Участники</div>
-                <ul>
-                  ${protocol.participants.map(
-                    (participant, index) => html`<li key=${index}>${participant}</li>`
-                  )}
-                </ul>
-              </section>
+            ${resultTab === "summary"
+              ? html`<div className="button-row">
+                  <button className="primary-button" onClick=${copyProtocol}>Скопировать саммари</button>
+                  <button className="ghost-button" onClick=${downloadProtocol}>Скачать TXT</button>
+                  <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+                </div>`
+              : html`<div className="button-row">
+                  <button className="primary-button" onClick=${downloadTranscript}>Скачать расшифровку</button>
+                  <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+                </div>`}
 
-              <section className="result-block">
-                <div className="eyebrow">Что решили</div>
-                <ol>
-                  ${protocol.decisions.map(
-                    (decision, index) => html`<li key=${index}>${decision}</li>`
-                  )}
-                </ol>
-              </section>
-
-              <section className="result-block">
-                <div className="eyebrow">Следующие шаги</div>
-                <ul>
-                  ${protocol.actionItems.map(
-                    (item, index) => html`
-                      <li key=${index}>
-                        <strong>${item.owner}</strong>: ${item.task} до ${item.deadline}
-                      </li>
-                    `
-                  )}
-                </ul>
-              </section>
-
-              <section className="result-block">
-                <div className="eyebrow">Транскрипт по спикерам</div>
-                <ul>
-                  ${protocol.transcriptHighlights.map(
-                    (highlight, index) => html`
-                      <li key=${index}>
-                        <strong>${highlight.speaker}</strong>: ${highlight.quote}
-                      </li>
-                    `
-                  )}
-                </ul>
-              </section>
-            </div>
+            ${resultTab === "summary"
+              ? renderSummaryTab(protocol)
+              : renderTranscriptTab()}
           </section>
         </section>
       `;
