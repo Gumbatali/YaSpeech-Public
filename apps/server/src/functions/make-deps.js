@@ -7,7 +7,7 @@ import { YcMeetingRepository } from "../infrastructure/yc-meeting-repository.js"
 import { YmqQueueRunner } from "../infrastructure/ymq-queue-runner.js";
 import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.js";
 import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
-import { SmartAsrGateway } from "../infrastructure/smart-asr-gateway.js";
+import { YcSpeechKitGateway } from "../infrastructure/yc-speech-kit-gateway.js";
 import { YcYandexGptGateway } from "../infrastructure/yc-yandex-gpt-gateway.js";
 import { MeetingPipelineService } from "../application/meeting-pipeline-service.js";
 
@@ -39,17 +39,9 @@ export function makeDeps() {
   const folderId = process.env.YC_FOLDER_ID || "b1gu902hilj9930q2ebn";
   const useMocks = process.env.USE_MOCKS === "true";
 
-  const groqApiKey  = process.env.GROQ_API_KEY ?? null;
-  const hfToken     = process.env.HF_TOKEN ?? null;
-
   const speechKitGateway = useMocks
     ? new MockSpeechKitGateway()
-    : new SmartAsrGateway({
-        groqApiKey,
-        hfToken,
-        speechKitBucket: bucket,
-        artifactStorage,
-      });
+    : new YcSpeechKitGateway({ bucket });
 
   const yandexGptGateway = useMocks
     ? new MockYandexGptGateway()
