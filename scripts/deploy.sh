@@ -37,6 +37,9 @@ SHARED_FILES=(
   apps/server/src/infrastructure/mock-yandex-gpt-gateway.js
   apps/server/src/infrastructure/yc-speech-kit-gateway.js
   apps/server/src/infrastructure/yc-yandex-gpt-gateway.js
+  apps/server/src/infrastructure/smart-asr-gateway.js
+  apps/server/src/infrastructure/groq-whisper-gateway.js
+  apps/server/src/infrastructure/pyannote-diarization.js
   apps/server/src/infrastructure/llm/yandex-gpt-client.js
   apps/server/src/infrastructure/llm/prompts.js
 )
