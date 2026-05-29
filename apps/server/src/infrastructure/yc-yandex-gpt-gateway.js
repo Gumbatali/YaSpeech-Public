@@ -16,6 +16,7 @@
 import { YandexGptClient } from "./llm/yandex-gpt-client.js";
 import { chunkPhrases, mergeChunkResults } from "../application/transcription/chunker.js";
 import {
+  promptDiarization,
   promptAsrCorrection,
   promptGlossary,
   promptContextAnalysis,
@@ -37,6 +38,105 @@ export class YcYandexGptGateway {
   }
 
   // ============================================================
+  // STAGE A1: GPT Diarization (mono transcripts only)
+  // ============================================================
+
+  /**
+   * Разбивает mono-транскрипт (1 спикер) на реплики по спикерам через GPT.
+   * Пропускается если уже есть >1 спикера (SpeechKit справился сам).
+   *
+   * @param {object} transcript - { phrases, rawText, ... }
+   * @param {string} domain - предметная сфера для промпта
+   * @param {string[]} mentionedPeople - имена из B0-анализа для подсказок
+   * @returns {object} обновлённый transcript с разбивкой по спикерам
+   */
+  async diarizeTranscript(transcript, domain, mentionedPeople = []) {
+    const speakerIds = new Set((transcript.phrases ?? []).map((p) => p.speakerId));
+    if (speakerIds.size > 1) {
+      logger.info("GPT A1: skipped (already multi-speaker)", { speakers: speakerIds.size });
+      return transcript;
+    }
+
+    const rawText = transcript.rawText ?? "";
+    if (rawText.trim().length < 200) {
+      logger.info("GPT A1: skipped (transcript too short for diarization)");
+      return transcript;
+    }
+
+    logger.info("GPT A1: diarization", { chars: rawText.length, domain });
+
+    // Убираем метку единственного спикера перед подачей в GPT
+    const cleanText = rawText
+      .replace(/^Спикер \d+:\s*/gm, "")
+      .trim();
+
+    const { system, user, options } = promptDiarization({
+      transcriptText: cleanText.slice(0, 20_000),
+      domain,
+      mentionedPeople
+    });
+
+    const raw = await this.client.complete(system, user, options);
+    const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1");
+
+    const segments = Array.isArray(result.segments) ? result.segments : [];
+    if (segments.length < 2) {
+      logger.warn("GPT A1: returned <2 segments, keeping original", {
+        segments: segments.length
+      });
+      return transcript;
+    }
+
+    // Собираем уникальных спикеров и маппинг label → id
+    const speakerLabels = [...new Set(segments.map((s) => s.speaker).filter(Boolean))];
+    const labelToId = new Map(
+      speakerLabels.map((label, i) => [label, `speaker-${i + 1}`])
+    );
+
+    // Пересчитываем временны́е метки пропорционально длине текста
+    const totalDurationMs = Math.max(
+      ...((transcript.phrases ?? []).map((p) => p.endTimeMs ?? 0)),
+      0
+    );
+    const totalChars = segments.reduce((s, seg) => s + (seg.text?.length ?? 0), 0) || 1;
+
+    let offsetMs = 0;
+    const phrases = segments
+      .filter((seg) => seg.text?.trim())
+      .map((seg) => {
+        const charRatio = (seg.text?.length ?? 0) / totalChars;
+        const durationMs = Math.round(totalDurationMs * charRatio);
+        const phrase = {
+          speakerId: labelToId.get(seg.speaker) ?? "speaker-1",
+          speakerLabel: seg.speaker ?? "Спикер 1",
+          speakerTag: (seg.speaker ?? "1").replace(/\D/g, "") || "1",
+          detectedName: null,
+          startTimeMs: offsetMs,
+          endTimeMs: offsetMs + durationMs,
+          text: seg.text.trim()
+        };
+        offsetMs += durationMs;
+        return phrase;
+      });
+
+    const newRawText = phrases
+      .map((p) => `${p.speakerLabel}: ${p.text}`)
+      .join("\n");
+
+    logger.info("GPT A1: diarization done", {
+      segments: phrases.length,
+      speakers: speakerLabels.length
+    });
+
+    return {
+      ...transcript,
+      phrases,
+      rawText: newRawText,
+      diarizedByGpt: true
+    };
+  }
+
+  // ============================================================
   // STAGE A: ASR Correction
   // ============================================================
 
@@ -44,7 +144,7 @@ export class YcYandexGptGateway {
    * Исправляет ASR-ошибки путём параллельной обработки чанков.
    * Возвращает исправленный rawText и обогащённые phrases.
    */
-  async correctTranscript(transcript, domain) {
+  async correctTranscript(transcript, domain, projectGlossary = null) {
     const chunks = chunkPhrases(transcript.phrases ?? []);
 
     if (chunks.length === 1 && chunks[0].text.length < 2000) {
@@ -53,15 +153,49 @@ export class YcYandexGptGateway {
       return { correctedText: chunks[0].text, glossary: null };
     }
 
-    logger.info("GPT A2: correcting", { chunks: chunks.length, domain });
+    logger.info("GPT A2+A3: correcting", { chunks: chunks.length, domain });
 
-    // Параллельная коррекция всех чанков
+    // Pass A3 СНАЧАЛА: глоссарий на сыром тексте
+    // Если есть накопленный глоссарий проекта — используем его как основу
+    let glossary = projectGlossary ?? null;
+    const rawTranscriptText = chunks.map((c) => c.text).join("\n");
+
+    if (rawTranscriptText.length > 2000) {
+      logger.info("GPT A3: extracting glossary from raw transcript", {
+        hasProjectGlossary: !!projectGlossary,
+        projectTerms: projectGlossary?.terms?.length ?? 0
+      });
+      const { system: gSys, user: gUsr, options: gOpts } = promptGlossary({
+        correctedText: rawTranscriptText,
+        domain
+      });
+      const glossaryRaw = await this.client.complete(gSys, gUsr, gOpts);
+      const meetingGlossary = YandexGptClient.parseJson(glossaryRaw, { terms: [], abbreviations: {} }, "A3");
+      logger.info("GPT A3: done", { terms: meetingGlossary.terms?.length ?? 0 });
+
+      // Мержим глоссарий встречи с накопленным проектным
+      if (projectGlossary) {
+        const termMap = new Map(projectGlossary.terms.map((t) => [t.term, t]));
+        for (const t of (meetingGlossary.terms ?? [])) {
+          if (!termMap.has(t.term)) termMap.set(t.term, t);
+        }
+        glossary = {
+          terms: [...termMap.values()],
+          abbreviations: { ...projectGlossary.abbreviations, ...meetingGlossary.abbreviations }
+        };
+      } else {
+        glossary = meetingGlossary;
+      }
+    }
+
+    // Pass A2: коррекция чанков с объединённым глоссарием
     const correctionRequests = chunks.map((chunk) => {
       const { system, user, options } = promptAsrCorrection({
         chunkText: chunk.text,
         domain,
         chunkIndex: chunk.index,
-        totalChunks: chunk.total
+        totalChunks: chunk.total,
+        glossary
       });
       return { system, user, options };
     });
@@ -71,21 +205,16 @@ export class YcYandexGptGateway {
     // Разбираем ответы
     const chunkResults = rawResults.map((raw, i) => {
       const parsed = YandexGptClient.parseJson(raw, { correctedLines: [] }, `A2 chunk ${i}`);
-      const lines = Array.isArray(parsed.correctedLines) ? parsed.correctedLines : [];
+      let lines = Array.isArray(parsed.correctedLines) ? parsed.correctedLines : [];
+      // Если LLM вернул пустой список — fallback на исходный текст чанка
+      if (lines.length === 0) {
+        logger.warn("GPT A2: empty correctedLines, using raw chunk text", { chunkIndex: i });
+        lines = chunks[i].text.split("\n").filter(Boolean);
+      }
       return { phrases: chunks[i].phrases, correctedLines: lines };
     });
 
     const correctedText = mergeChunkResults(chunkResults);
-
-    // Pass A3: глоссарий (только если длинный транскрипт)
-    let glossary = null;
-    if (chunks.length > 1) {
-      logger.info("GPT A3: extracting glossary");
-      const { system, user, options } = promptGlossary({ correctedText, domain });
-      const glossaryRaw = await this.client.complete(system, user, options);
-      glossary = YandexGptClient.parseJson(glossaryRaw, { terms: [], abbreviations: {} }, "A3");
-      logger.info("GPT A3: done", { terms: glossary.terms?.length ?? 0 });
-    }
 
     return { correctedText, glossary };
   }
@@ -175,12 +304,25 @@ export class YcYandexGptGateway {
 
     const raw = await this.client.complete(system, user, options);
 
+    // Пытаемся вытащить JSON из markdown-блока или напрямую
+    const jsonCandidate = raw
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/, "")
+      .trim();
+
+    const defaultProtocol = {
+      summary: { title: meeting.titleDraft ?? project.name, overview: "" },
+      participants: [], decisions: [], actionItems: [],
+      completedFromPrevious: [], carriedForward: [],
+      openQuestions: [], transcriptHighlights: []
+    };
+
     let protocol;
     try {
-      protocol = JSON.parse(raw);
+      protocol = JSON.parse(jsonCandidate);
     } catch (e) {
-      logger.error("GPT C1: invalid JSON", { error: e.message, preview: raw.slice(0, 500) });
-      throw new Error(`YandexGPT вернул некорректный JSON для протокола: ${e.message}`);
+      logger.error("GPT C1: invalid JSON, using default", { error: e.message, preview: raw.slice(0, 300) });
+      protocol = defaultProtocol;
     }
 
     // Гарантируем все поля
@@ -298,26 +440,38 @@ export class YcYandexGptGateway {
    * Stage A+B: коррекция ASR + контекстный анализ + идентификация спикеров.
    * Вызывается после SpeechKit, до показа черновика пользователю.
    */
-  async generateDraft({ project, transcript, meeting }) {
-    // B0: предварительный контекст для определения домена (нужен для A2)
+  async generateDraft({ project, transcript, meeting, projectGlossary = null }) {
+    // B0: предварительный контекст для определения домена (нужен для A1 и A2)
     const quickContext = await this.analyzeContext({
       correctedText: transcript.rawText.slice(0, 8000),
       projectName: project.name
     });
 
-    // A2+A3: коррекция с учётом домена
     const domain = quickContext.domain || "общий";
-    const { correctedText, glossary } = await this.correctTranscript(transcript, domain);
+    const mentionedPeople = quickContext.mentionedEntities?.people ?? [];
+
+    // A1: GPT-диаризация (только если mono — всё в 1 спикере)
+    const diarizedTranscript = await this.diarizeTranscript(transcript, domain, mentionedPeople);
+
+    // A2+A3: коррекция с учётом домена + накопленный глоссарий проекта
+    const { correctedText, glossary } = await this.correctTranscript(diarizedTranscript, domain, projectGlossary);
 
     // B1: полный контекст уже на исправленном тексте
-    const context = correctedText !== transcript.rawText
+    const context = correctedText !== diarizedTranscript.rawText
       ? await this.analyzeContext({ correctedText, projectName: project.name })
       : quickContext;
 
-    // B2: идентификация спикеров
+    // При poor quality — продолжаем, но логируем. Предупреждение попадёт в context.
+    if (context.transcriptQuality === "poor") {
+      logger.warn("GPT B1: poor transcript quality, continuing with best effort", {
+        note: context.confidenceNote
+      });
+    }
+
+    // B2: идентификация спикеров (используем diarizedTranscript — уже с несколькими спикерами)
     const speakerDrafts = await this.identifySpeakers({
       correctedText,
-      transcript,
+      transcript: diarizedTranscript,
       project,
       context
     });
@@ -334,7 +488,7 @@ export class YcYandexGptGateway {
       correctedText,
       glossary: glossary ?? undefined,
       transcriptPreview: correctedText.slice(0, 2000),
-      transcriptSegments: (transcript.phrases ?? []).map((p) => {
+      transcriptSegments: (diarizedTranscript.phrases ?? []).map((p) => {
         const draft = speakerDrafts.find((s) => s.id === p.speakerId);
         return {
           speakerId: p.speakerId,
@@ -350,7 +504,7 @@ export class YcYandexGptGateway {
    * Stage C+D: генерация финального протокола.
    * Вызывается после подтверждения черновика пользователем.
    */
-  async generateProtocol({ meeting, project, transcript, previousProtocol = null }) {
+  async generateProtocol({ meeting, project, transcript, previousProtocol = null, projectGlossary = null }) {
     // Используем correctedText из meeting если есть (был сохранён в gptContext)
     const correctedText = meeting.gptContext?.correctedText
       ?? transcript.rawText.slice(0, MAX_TRANSCRIPT_CHARS);
@@ -383,7 +537,9 @@ export class YcYandexGptGateway {
     protocol = await this.qaProtocol({ protocol, correctedText, context });
 
     const protocolText = buildProtocolText(protocol, meeting, project, context);
-    return { protocol, protocolText };
+    // Возвращаем глоссарий из meeting.gptContext чтобы pipeline мог его накопить
+    const glossary = meeting.gptContext?.glossary ?? null;
+    return { protocol, protocolText, glossary };
   }
 
   _deriveDraftTitle(context, project) {

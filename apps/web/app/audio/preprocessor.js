@@ -2,16 +2,23 @@
  * Audio preprocessing pipeline для записей с диктофона/телефона.
  * Все операции работают с Float32Array PCM-сэмплами.
  *
- * Пайплайн:
- *   decode → mono → resample(16kHz) → highPass(80Hz) → normalize → noiseGate → vadTrim
+ * Пайплайн (минималистичный — только обязательные шаги для телефонных звонков):
+ *   decode → mono → resample(16kHz) → spectralSubtract(мягко) → encode
+ *
+ * Убрано как бесполезное для телефонных звонков:
+ *   - highPass: телефон уже фильтрует низкие частоты аппаратно
+ *   - normalizeRms: SpeechKit/Whisper справляется с громкостью сам
+ *   - noiseGate: при -65dB почти ничего не режет, но рискует съесть начало слов
  */
 
-const TARGET_SAMPLE_RATE = 16_000; // SpeechKit оптимум
-const HIGH_PASS_HZ = 60;            // мягче — отрезаем только глубокий рокот
-const TARGET_RMS = 0.08;            // ~-22 dBFS — без агрессивного буста
-const NOISE_GATE_DB = -55;          // консервативно: давим только реально тихие участки
-const NOISE_GATE_ATTACK_MS = 10;
-const NOISE_GATE_RELEASE_MS = 150;  // длиннее release — не режет хвосты слов
+const TARGET_SAMPLE_RATE = 16_000; // требование SpeechKit/Whisper
+
+// Параметры спектрального шумоподавления (FFT)
+// alpha=1.3 вместо 2.0 — мягче, не ест тихие слоги
+const SPECTRAL_FFT_SIZE = 512;
+const SPECTRAL_NOISE_PROFILE_MS = 500; // первые 500 мс используем для профиля шума
+const SPECTRAL_SUBTRACT_ALPHA = 1.3;   // было 2.0 — снизили чтобы не резать тихую речь
+const SPECTRAL_FLOOR = 0.01;            // минимум спектра (предотвращает "музыкальный шум")
 
 function dbToLinear(db) {
   return Math.pow(10, db / 20);
@@ -123,6 +130,131 @@ function normalizeRms(samples, targetRms) {
     result[i] = Math.max(-1, Math.min(1, v));
   }
   return result;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Spectral Subtraction — убирает стационарный шум (вентилятор, гул, фон)
+// Алгоритм: FFT radix-2, Hann window, overlap-add synthesis.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * FFT radix-2 (Cooley-Tukey, in-place).
+ * re / im — массивы Float32Array длиной N (степень 2).
+ */
+function fft(re, im) {
+  const N = re.length;
+  // Bit-reversal permutation
+  let j = 0;
+  for (let i = 1; i < N; i++) {
+    let bit = N >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  // Butterfly computation
+  for (let len = 2; len <= N; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wRe = Math.cos(ang);
+    const wIm = Math.sin(ang);
+    for (let i = 0; i < N; i += len) {
+      let curRe = 1, curIm = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const uRe = re[i + k];
+        const uIm = im[i + k];
+        const vRe = re[i + k + len / 2] * curRe - im[i + k + len / 2] * curIm;
+        const vIm = re[i + k + len / 2] * curIm + im[i + k + len / 2] * curRe;
+        re[i + k] = uRe + vRe;
+        im[i + k] = uIm + vIm;
+        re[i + k + len / 2] = uRe - vRe;
+        im[i + k + len / 2] = uIm - vIm;
+        const newCurRe = curRe * wRe - curIm * wIm;
+        curIm = curRe * wIm + curIm * wRe;
+        curRe = newCurRe;
+      }
+    }
+  }
+}
+
+function ifft(re, im) {
+  // Inverse: conjugate → fft → conjugate → divide by N
+  for (let i = 0; i < im.length; i++) im[i] = -im[i];
+  fft(re, im);
+  for (let i = 0; i < im.length; i++) { im[i] = -im[i] / re.length; re[i] /= re.length; }
+}
+
+/**
+ * Спектральное шумоподавление через вычитание усреднённого профиля шума.
+ *
+ * @param {Float32Array} samples - входное аудио
+ * @param {number} sampleRate
+ * @returns {Float32Array}
+ */
+function spectralSubtract(samples, sampleRate) {
+  const N = SPECTRAL_FFT_SIZE;
+  const hop = N >> 1; // 50% overlap
+
+  // 1. Строим профиль шума из первых SPECTRAL_NOISE_PROFILE_MS
+  const noiseFrames = Math.floor((SPECTRAL_NOISE_PROFILE_MS / 1000) * sampleRate / hop);
+  const noiseProfile = new Float32Array(N);
+
+  const hann = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    hann[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
+  }
+
+  let framesCount = 0;
+  for (let start = 0; start + N <= samples.length && framesCount < noiseFrames; start += hop) {
+    const re = new Float32Array(N);
+    const im = new Float32Array(N);
+    for (let i = 0; i < N; i++) re[i] = samples[start + i] * hann[i];
+    fft(re, im);
+    for (let i = 0; i < N; i++) {
+      noiseProfile[i] += re[i] * re[i] + im[i] * im[i]; // accumulate power
+    }
+    framesCount++;
+  }
+  if (framesCount > 0) {
+    for (let i = 0; i < N; i++) noiseProfile[i] /= framesCount;
+  }
+
+  // 2. Обрабатываем сигнал: вычитаем профиль шума из каждого кадра
+  const output = new Float32Array(samples.length);
+  const windowSum = new Float32Array(samples.length);
+
+  for (let start = 0; start + N <= samples.length; start += hop) {
+    const re = new Float32Array(N);
+    const im = new Float32Array(N);
+    for (let i = 0; i < N; i++) re[i] = samples[start + i] * hann[i];
+    fft(re, im);
+
+    // Вычитаем профиль шума
+    for (let i = 0; i < N; i++) {
+      const mag2 = re[i] * re[i] + im[i] * im[i];
+      const noiseMag2 = noiseProfile[i] * SPECTRAL_SUBTRACT_ALPHA;
+      const cleanMag2 = Math.max(mag2 - noiseMag2, SPECTRAL_FLOOR * SPECTRAL_FLOOR * mag2);
+      const scale = mag2 > 1e-12 ? Math.sqrt(cleanMag2 / mag2) : 0;
+      re[i] *= scale;
+      im[i] *= scale;
+    }
+
+    ifft(re, im);
+
+    // Overlap-add с Hann окном
+    for (let i = 0; i < N; i++) {
+      output[start + i] += re[i] * hann[i];
+      windowSum[start + i] += hann[i] * hann[i];
+    }
+  }
+
+  // Нормализуем по сумме окон
+  for (let i = 0; i < output.length; i++) {
+    if (windowSum[i] > 1e-6) output[i] /= windowSum[i];
+  }
+
+  return output;
 }
 
 /**
@@ -250,7 +382,7 @@ export async function preprocessAudio(file, onProgress) {
   // ВАЖНО: убрали VAD trim — он может удалить участки которые SpeechKit бы распознал.
   // SpeechKit умеет сам разбивать на фразы по паузам. Наша задача — нормализовать
   // громкость и убрать низкочастотный шум, не более того.
-  const stages = ["decode", "mono", "resample", "highpass", "normalize", "gate", "encode"];
+  const stages = ["decode", "mono", "resample", "highpass", "spectral", "normalize", "gate", "encode"];
   let stageIdx = 0;
   const tick = (label) => {
     stageIdx++;
@@ -270,15 +402,8 @@ export async function preprocessAudio(file, onProgress) {
   samples = resample(samples, originalSampleRate, TARGET_SAMPLE_RATE);
   tick("Ресемплинг 16kHz");
 
-  samples = highPassFilter(samples, TARGET_SAMPLE_RATE, HIGH_PASS_HZ);
-  tick("Фильтр низких частот");
-
-  samples = normalizeRms(samples, TARGET_RMS);
-  tick("Нормализация громкости");
-
-  samples = noiseGate(samples, TARGET_SAMPLE_RATE, NOISE_GATE_DB,
-    NOISE_GATE_ATTACK_MS, NOISE_GATE_RELEASE_MS);
-  tick("Подавление фонового шума");
+  samples = spectralSubtract(samples, TARGET_SAMPLE_RATE);
+  tick("Шумоподавление");
 
   const wavBuffer = encodeWavMono(samples, TARGET_SAMPLE_RATE);
   tick("Кодирование WAV");

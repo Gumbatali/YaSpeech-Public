@@ -1,5 +1,9 @@
 /**
  * Создаёт зависимости для Cloud Functions из переменных окружения.
+ *
+ * ASR_PROVIDER:
+ *   "speechkit" (default) — Яндекс SpeechKit
+ *   "groq"                — Groq Whisper large-v3 (требует GROQ_API_KEY)
  */
 import { YcArtifactStorage } from "../infrastructure/yc-artifact-storage.js";
 import { YcProjectRepository } from "../infrastructure/yc-project-repository.js";
@@ -8,6 +12,7 @@ import { YmqQueueRunner } from "../infrastructure/ymq-queue-runner.js";
 import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.js";
 import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
 import { YcSpeechKitGateway } from "../infrastructure/yc-speech-kit-gateway.js";
+import { GroqWhisperGateway } from "../infrastructure/groq-whisper-gateway.js";
 import { YcYandexGptGateway } from "../infrastructure/yc-yandex-gpt-gateway.js";
 import { MeetingPipelineService } from "../application/meeting-pipeline-service.js";
 
@@ -36,12 +41,20 @@ export function makeDeps() {
   const clock             = new RuntimeClock();
   const idGenerator       = new RuntimeIdGenerator();
 
-  const folderId = process.env.YC_FOLDER_ID || "b1gu902hilj9930q2ebn";
-  const useMocks = process.env.USE_MOCKS === "true";
+  const folderId    = process.env.YC_FOLDER_ID || "b1gu902hilj9930q2ebn";
+  const useMocks    = process.env.USE_MOCKS === "true";
+  const asrProvider = process.env.ASR_PROVIDER ?? "speechkit"; // "speechkit" | "groq"
 
-  const speechKitGateway = useMocks
-    ? new MockSpeechKitGateway()
-    : new YcSpeechKitGateway({ bucket });
+  let speechKitGateway;
+  if (useMocks) {
+    speechKitGateway = new MockSpeechKitGateway();
+  } else if (asrProvider === "groq") {
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (!groqApiKey) throw new Error("GROQ_API_KEY required when ASR_PROVIDER=groq");
+    speechKitGateway = new GroqWhisperGateway({ apiKey: groqApiKey, artifactStorage });
+  } else {
+    speechKitGateway = new YcSpeechKitGateway({ bucket });
+  }
 
   const yandexGptGateway = useMocks
     ? new MockYandexGptGateway()

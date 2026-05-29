@@ -56,4 +56,45 @@ export class YcProjectRepository {
     const next = all.filter((p) => p.id !== projectId);
     await this.storage.writeJson("projects/index.json", next);
   }
+
+  // ── Глоссарий проекта ──────────────────────────────────────────
+  // Накапливаем термины из всех встреч — чем больше встреч, тем точнее
+
+  async getGlossary(projectId) {
+    return this.storage.readJson(`projects/${projectId}/_glossary.json`);
+  }
+
+  async mergeGlossary(projectId, newGlossary) {
+    if (!newGlossary?.terms?.length && !Object.keys(newGlossary?.abbreviations ?? {}).length) return;
+
+    const existing = await this.getGlossary(projectId) ?? { terms: [], abbreviations: {} };
+
+    // Объединяем термины: дедупликация по term
+    const termMap = new Map(existing.terms.map((t) => [t.term, t]));
+    for (const t of (newGlossary.terms ?? [])) {
+      if (termMap.has(t.term)) {
+        // Дополняем варианты написания
+        const merged = termMap.get(t.term);
+        const allVariants = new Set([...merged.variants, ...t.variants]);
+        termMap.set(t.term, { ...merged, variants: [...allVariants] });
+      } else {
+        termMap.set(t.term, t);
+      }
+    }
+
+    // Объединяем аббревиатуры
+    const mergedAbbreviations = {
+      ...existing.abbreviations,
+      ...(newGlossary.abbreviations ?? {})
+    };
+
+    const merged = {
+      terms: [...termMap.values()],
+      abbreviations: mergedAbbreviations,
+      updatedAt: new Date().toISOString()
+    };
+
+    await this.storage.writeJson(`projects/${projectId}/_glossary.json`, merged);
+    return merged;
+  }
 }

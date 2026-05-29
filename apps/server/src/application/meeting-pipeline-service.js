@@ -113,7 +113,7 @@ export class MeetingPipelineService {
       const code = error.code ??
         (failedMeeting.currentStage === "protocol_generating" ? "YANDEX_GPT_ERROR" : "SPEECHKIT_ERROR");
 
-      logger.error("processMeeting: failed", { meetingId, code, error: error.message });
+      logger.error(`processMeeting: failed [${code}] ${error.message}`, { meetingId });
 
       await this.meetingRepository.save({
         ...failedMeeting,
@@ -140,16 +140,65 @@ export class MeetingPipelineService {
     // Postprocessing — чистим, склеиваем, переименовываем спикеров
     const transcript = postprocessTranscript(rawTranscript);
 
+    // ── Hard gate: проверка качества расшифровки ─────────────────────────────
+    const wordCount = (rawTranscript.rawText ?? "").trim().split(/\s+/).filter(Boolean).length;
+    if (rawTranscript.phrases.length === 0 || wordCount < 20) {
+      const err = new Error(
+        "Не удалось распознать речь в записи. " +
+        "Проверьте: запись не пустая, звук достаточно громкий, язык — русский."
+      );
+      err.code = "POOR_TRANSCRIPT";
+      throw err;
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Сохраняем и сырой, и обработанный — для отладки и retry
     await this.artifactStorage.writeJson(meeting.artifacts.transcriptKey, transcript);
     const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
     await this.artifactStorage.writeJson(rawKey, rawTranscript);
+    logger.info("prepareDraft: transcript saved", {
+      phrases: rawTranscript.phrases.length,
+      wordCount: (rawTranscript.rawText ?? "").trim().split(/\s+/).filter(Boolean).length,
+      rawTextPreview: rawTranscript.rawText.slice(0, 200)
+    });
+
+    // Загружаем накопленный глоссарий проекта для улучшения A2-коррекции
+    const projectGlossary = await this.projectRepository.getGlossary(meeting.projectId).catch(() => null);
 
     const draft = await this.yandexGptGateway.generateDraft({
       meeting,
       project,
-      transcript
+      transcript,
+      projectGlossary
     });
+
+    // Если GPT-диаризация сработала — перезаписываем transcript.json с разбивкой по спикерам
+    if (draft.transcriptSegments?.length > 0) {
+      const speakerIds = new Set(draft.transcriptSegments.map((s) => s.speakerId));
+      if (speakerIds.size > 1) {
+        const diarizedPhrases = draft.transcriptSegments.map((seg) => ({
+          speakerId: seg.speakerId,
+          speakerLabel: seg.speakerLabel,
+          detectedName: seg.guessedName ?? null,
+          startTimeMs: 0,
+          endTimeMs: 0,
+          text: seg.text
+        }));
+        const diarizedRawText = diarizedPhrases
+          .map((p) => `${p.speakerLabel}: ${p.text}`)
+          .join("\n");
+        await this.artifactStorage.writeJson(meeting.artifacts.transcriptKey, {
+          ...transcript,
+          phrases: diarizedPhrases,
+          rawText: diarizedRawText,
+          diarizedByGpt: true
+        });
+        logger.info("prepareDraft: transcript updated with GPT diarization", {
+          speakers: speakerIds.size,
+          segments: diarizedPhrases.length
+        });
+      }
+    }
 
     const draftMeeting = {
       ...(await this.meetingRepository.getById(meeting.id)),
@@ -158,6 +207,8 @@ export class MeetingPipelineService {
       speakerDrafts: draft.speakerDrafts,
       transcriptPreview: draft.transcriptPreview,
       transcriptSegments: draft.transcriptSegments,
+      // Сырые сегменты из SpeechKit (до LLM-коррекции) — для вкладки "Дословно" в UI
+      rawTranscriptSegments: rawTranscript.phrases ?? [],
       gptContext: {
         ...draft.context,
         correctedText: draft.correctedText // сохраняем исправленный текст для pass C
@@ -176,10 +227,17 @@ export class MeetingPipelineService {
       throw new Error("Transcript not found for protocol generation.");
     }
 
-    // Загружаем последний завершённый протокол проекта для сверки задач
+    // Загружаем предыдущий протокол и накопленный глоссарий проекта параллельно
     let previousProtocol = null;
+    let projectGlossary = null;
     try {
-      const allMeetings = await this.meetingRepository.listByProject(meeting.projectId);
+      const [allMeetings, glossary] = await Promise.all([
+        this.meetingRepository.listByProject(meeting.projectId),
+        this.projectRepository.getGlossary(meeting.projectId)
+      ]);
+
+      projectGlossary = glossary;
+
       const prevMeeting = allMeetings
         .filter((m) => m.id !== meeting.id && m.status === "done")
         .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
@@ -196,12 +254,18 @@ export class MeetingPipelineService {
       // не критично — продолжаем без предыдущего протокола
     }
 
-    const { protocol, protocolText } = await this.yandexGptGateway.generateProtocol({
+    const { protocol, protocolText, glossary: newGlossary } = await this.yandexGptGateway.generateProtocol({
       meeting,
       project,
       transcript,
-      previousProtocol
+      previousProtocol,
+      projectGlossary
     });
+
+    // Сохраняем обновлённый глоссарий проекта в фоне (не блокируем сохранение протокола)
+    if (newGlossary) {
+      this.projectRepository.mergeGlossary(meeting.projectId, newGlossary).catch(() => {});
+    }
 
     await this.artifactStorage.writeJson(meeting.artifacts.protocolJsonKey, protocol);
     await this.artifactStorage.writeText(meeting.artifacts.protocolTextKey, protocolText);

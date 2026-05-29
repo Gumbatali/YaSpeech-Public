@@ -142,14 +142,22 @@ export class YandexGptClient {
    * Безопасный JSON parse с логированием.
    */
   static parseJson(raw, fallback, label) {
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      logger.error(`YandexGPT parse error [${label}]`, {
-        error: e.message,
-        preview: raw.slice(0, 400)
-      });
-      return fallback;
+    // Пробуем напрямую, потом стрипаем markdown-обёртку ```json...```
+    const candidates = [
+      raw,
+      stripMarkdown(raw),
+      // Если GPT вернул текст с JSON внутри — извлекаем первый {...} или [...]
+      (raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])/)?.[0] ?? "")
+    ];
+    for (const candidate of candidates) {
+      if (!candidate.trim()) continue;
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        // пробуем следующий вариант
+      }
     }
+    logger.error(`YandexGPT parse error [${label}]: ${raw.slice(0, 200)}`);
+    return fallback;
   }
 }
