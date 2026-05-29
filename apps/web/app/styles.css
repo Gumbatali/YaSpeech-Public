@@ -834,3 +834,97 @@ button { cursor: pointer; }
   color: var(--color-text, #111);
   font-style: italic;
 }
+
+/* ── Transcript version toggle (Дословно / LLM восстановил) ── */
+.transcript-version-toggle {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  background: var(--color-surface-alt, #f3f4f6);
+  border-radius: 8px;
+  padding: 3px;
+  width: fit-content;
+}
+
+.tvt-btn {
+  padding: 0.3rem 0.875rem;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--color-text-muted, #6b7280);
+  transition: background 150ms, color 150ms;
+}
+
+.tvt-btn:hover:not(:disabled) {
+  background: rgba(0,0,0,0.05);
+  color: var(--color-text, #111);
+}
+
+.tvt-btn--active {
+  background: #fff;
+  color: var(--color-text, #111);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.tvt-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Poor transcript error block ── */
+.poor-transcript-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  background: #fff8f0;
+  border: 1.5px solid #f59e0b;
+  border-radius: 12px;
+  margin-top: 1rem;
+}
+
+.poor-transcript-icon {
+  font-size: 2rem;
+}
+
+.poor-transcript-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.poor-transcript-body {
+  font-size: 0.9rem;
+  color: #78350f;
+  line-height: 1.5;
+}
+
+.poor-transcript-hints {
+  font-size: 0.85rem;
+  color: #6b7280;
+  line-height: 1.6;
+}
+
+.poor-transcript-hints ul {
+  margin: 0.25rem 0 0 1.1rem;
+  padding: 0;
+}
+
+/* ── Quality warning banner ── */
+.quality-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.6rem 0.875rem;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #92400e;
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}

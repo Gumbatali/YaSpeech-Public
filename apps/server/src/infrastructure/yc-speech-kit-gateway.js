@@ -1,21 +1,28 @@
+/**
+ * SpeechKit v3 async recognition.
+ *
+ * Ключевые отличия от v2:
+ *   - literatureText: true — расставляет знаки препинания, нормализует числа
+ *   - Диаризация через channelTag (0/1) — несколько спикеров
+ *   - Реальные временные метки для каждого слова
+ *
+ * ВАЖНО: v3 возвращает результаты НЕ через op.response, а через отдельный
+ *   endpoint /stt/v3/getRecognition?operationId={id} в формате NDJSON.
+ *
+ * API: https://stt.api.cloud.yandex.net/stt/v3/recognizeFileAsync
+ * Result: https://stt.api.cloud.yandex.net/stt/v3/getRecognition?operationId={id}
+ * Polling: https://operation.api.cloud.yandex.net/operations/{id}
+ *
+ * Формат аудио: наш препроцессор отдаёт WAV (RIFF + PCM 16kHz mono).
+ *   audioFormat.containerAudio.containerAudioType = "WAV"
+ */
+
 import { getIamToken, invalidateIamToken } from "../shared/iam-token.js";
 import { logger } from "../shared/logger.js";
 
-const SPEECHKIT_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize";
-const OPERATION_URL = "https://operation.api.cloud.yandex.net/operations";
-
-// SpeechKit v2 поддерживает только: LINEAR16_PCM, OGG_OPUS, MP3
-// Для остальных форматов не указываем encoding — автоопределение по URI
-function resolveEncoding(fileName) {
-  const ext = (fileName ?? "").split(".").pop().toLowerCase();
-  const map = {
-    mp3: "MP3",
-    ogg: "OGG_OPUS",
-    opus: "OGG_OPUS",
-    wav: "LINEAR16_PCM"
-  };
-  return map[ext] ?? null; // null = не указываем, SpeechKit сам определит
-}
+const SPEECHKIT_V3_URL     = "https://stt.api.cloud.yandex.net/stt/v3/recognizeFileAsync";
+const SPEECHKIT_V3_GET_URL = "https://stt.api.cloud.yandex.net/stt/v3/getRecognition";
+const OPERATION_URL        = "https://operation.api.cloud.yandex.net/operations";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,80 +37,220 @@ export class YcSpeechKitGateway {
     let iamToken = await getIamToken();
 
     const audioUri = `https://storage.yandexcloud.net/${this.bucket}/${meeting.artifacts.audioOriginalKey}`;
-    const encoding = resolveEncoding(meeting.audioFile?.originalFileName);
+    logger.info("SpeechKit v3: starting recognition", { meetingId: meeting.id, audioUri });
 
-    logger.info("SpeechKit: starting recognition", {
-      meetingId: meeting.id,
-      audioUri,
-      encoding: encoding ?? "auto"
-    });
-
-    // v2 longRunningRecognize поддерживает только стандартный набор полей.
-    // literatureText / speechAdaptation — это v3, при попытке их добавить
-    // v2 либо игнорирует, либо возвращает урезанный результат. Не используем.
     const makeRequest = async (token) => {
-      return fetch(SPEECHKIT_URL, {
+      return fetch(SPEECHKIT_V3_URL, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: {
-            specification: {
-              languageCode: "ru-RU",
-              model: "general",
-              ...(encoding ? { audioEncoding: encoding } : {}),
-              speakerLabeling: "ENABLED",
-              rawResults: false,
-              partialResults: false
-            }
+          uri: audioUri,
+          recognitionModel: {
+            model: "general",
+            audioFormat: {
+              // Браузер загружает WAV (RIFF-контейнер + PCM 16kHz mono)
+              containerAudio: { containerAudioType: "WAV" }
+            },
+            textNormalization: {
+              textNormalization: "TEXT_NORMALIZATION_ENABLED",
+              profanityFilter: false,
+              literatureText: true
+            },
+            languageRestriction: {
+              restrictionType: "WHITELIST",
+              languageCode: ["ru-RU"]
+            },
+            audioProcessingType: "FULL_DATA"
           },
-          audio: { uri: audioUri }
+          speakerLabeling: {
+            speakerLabeling: "SPEAKER_LABELING_ENABLED"
+          }
         })
       });
     };
 
-    // Запускаем асинхронное распознавание
     let startRes = await makeRequest(iamToken);
-
     if (startRes.status === 401) {
       invalidateIamToken();
       iamToken = await getIamToken();
       startRes = await makeRequest(iamToken);
     }
-
     if (!startRes.ok) {
       const text = await startRes.text().catch(() => "");
-      logger.error("SpeechKit: start failed", { meetingId: meeting.id, status: startRes.status, body: text });
-      throw new Error(`SpeechKit start failed ${startRes.status}: ${text}`);
+      logger.error(`SpeechKit v3: start failed ${startRes.status} ${text}`, { meetingId: meeting.id });
+      throw new Error(`SpeechKit v3 start failed ${startRes.status}: ${text}`);
     }
 
     const operation = await startRes.json();
     const operationId = operation.id;
     if (!operationId) {
-      throw new Error(`SpeechKit: no operation id in response: ${JSON.stringify(operation)}`);
+      throw new Error(`SpeechKit v3: no operation id: ${JSON.stringify(operation)}`);
+    }
+    logger.info("SpeechKit v3: operation created, polling...", { meetingId: meeting.id, operationId });
+
+    // Ждём завершения операции (до 25 минут, поллинг каждые 3 сек)
+    await this.waitOperation(operationId, 500, 3000, iamToken);
+
+    // Забираем результаты через getRecognition (NDJSON stream)
+    const chunks = await this.fetchRecognition(operationId, iamToken, meeting.id);
+
+    logger.info("SpeechKit v3: recognition fetched", {
+      meetingId: meeting.id,
+      chunksCount: chunks.length
+    });
+
+    if (chunks.length === 0) {
+      logger.warn("SpeechKit v3: empty chunks, falling back to v2", { meetingId: meeting.id });
+      return this.processMeetingV2({ meeting, project, iamToken: await getIamToken(), audioUri });
     }
 
-    logger.info("SpeechKit: operation created, polling...", { meetingId: meeting.id, operationId });
+    const transcript = this.parseTranscript(chunks, meeting);
+    logger.info("SpeechKit v3: done", {
+      meetingId: meeting.id,
+      phrases: transcript.phrases.length,
+      speakers: new Set(transcript.phrases.map((p) => p.speakerId)).size
+    });
 
-    // Ждём завершения (до 25 минут)
-    const response = await this.pollOperation(operationId, 500, 3000);
-
-    // Преобразуем в наш формат
-    const transcript = this.parseTranscript(response, meeting);
     return { jobId: operationId, transcript };
   }
 
-  async pollOperation(operationId, maxAttempts, intervalMs) {
+  /**
+   * Ожидает завершения операции через operation API.
+   * Возвращает когда done=true, бросает ошибку если op.error.
+   */
+  async waitOperation(operationId, maxAttempts, intervalMs, iamToken) {
+    let token = iamToken;
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(intervalMs);
 
+      let res = await fetch(`${OPERATION_URL}/${operationId}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 401) {
+        invalidateIamToken();
+        token = await getIamToken();
+        res = await fetch(`${OPERATION_URL}/${operationId}`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`SpeechKit poll failed ${res.status}: ${text}`);
+      }
+
+      const op = await res.json();
+      if (op.done) {
+        if (op.error) {
+          throw new Error(`SpeechKit error: ${JSON.stringify(op.error)}`);
+        }
+        return; // готово
+      }
+    }
+    throw new Error("SpeechKit recognition timed out after 25 minutes");
+  }
+
+  /**
+   * Забирает чанки через getRecognition endpoint (NDJSON stream).
+   * Каждая строка — JSON объект с result.final или result.speakerLabels.
+   */
+  async fetchRecognition(operationId, iamToken, meetingId) {
+    let token = iamToken;
+    let res = await fetch(`${SPEECHKIT_V3_GET_URL}?operationId=${operationId}`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (res.status === 401) {
+      invalidateIamToken();
+      token = await getIamToken();
+      res = await fetch(`${SPEECHKIT_V3_GET_URL}?operationId=${operationId}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      logger.error(`SpeechKit v3: getRecognition failed ${res.status} ${text}`, { meetingId });
+      return [];
+    }
+
+    const body = await res.text();
+    const chunks = [];
+
+    for (const line of body.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try { obj = JSON.parse(trimmed); } catch { continue; }
+
+      const result = obj?.result ?? {};
+      const final = result.final;
+      if (!final) continue;
+
+      const alts = final.alternatives ?? [];
+      if (!alts.length) continue;
+
+      const text = alts[0].text ?? "";
+      if (!text.trim()) continue;
+
+      chunks.push({
+        // channelTag: "0" или "1" — основной источник разделения спикеров
+        channelTag: final.channelTag ?? result.channelTag ?? "0",
+        speakerTag: null, // speakerLabels в отдельных событиях, пока не используем
+        alternatives: alts,
+        words: alts[0].words ?? []
+      });
+    }
+
+    return chunks;
+  }
+
+  // ── Fallback: v2 longRunningRecognize ──────────────────────────────────────
+  async processMeetingV2({ meeting, iamToken, audioUri }) {
+    const V2_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize";
+    logger.info("SpeechKit v2 fallback: starting", { meetingId: meeting.id });
+
+    const res = await fetch(V2_URL, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${iamToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          specification: {
+            languageCode: "ru-RU",
+            model: "general:rc",
+            audioEncoding: "LINEAR16_PCM",
+            sampleRateHertz: 16000,
+            audioChannelCount: 1,
+            speakerLabeling: "ENABLED",
+            rawResults: false,
+            partialResults: false
+          }
+        },
+        audio: { uri: audioUri }
+      })
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`SpeechKit v2 fallback failed ${res.status}: ${text}`);
+    }
+
+    const op = await res.json();
+    // v2 использует старый pollOperation — результат в op.response
+    const v2Result = await this.pollOperationV2(op.id, 500, 3000);
+    const rawChunks = Array.isArray(v2Result) ? v2Result : (v2Result?.chunks ?? []);
+
+    logger.info("SpeechKit v2 fallback: done", { meetingId: meeting.id, chunks: rawChunks.length });
+    return { jobId: op.id, transcript: this.parseTranscriptV2(rawChunks, meeting) };
+  }
+
+  async pollOperationV2(operationId, maxAttempts, intervalMs) {
+    for (let i = 0; i < maxAttempts; i++) {
+      await sleep(intervalMs);
       let iamToken = await getIamToken();
       let res = await fetch(`${OPERATION_URL}/${operationId}`, {
         headers: { "Authorization": `Bearer ${iamToken}` }
       });
-
       if (res.status === 401) {
         invalidateIamToken();
         iamToken = await getIamToken();
@@ -111,72 +258,107 @@ export class YcSpeechKitGateway {
           headers: { "Authorization": `Bearer ${iamToken}` }
         });
       }
-
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`SpeechKit poll failed ${res.status}: ${text}`);
+        throw new Error(`SpeechKit v2 poll failed ${res.status}: ${text}`);
       }
-
       const op = await res.json();
-
       if (op.done) {
-        if (op.error) {
-          throw new Error(`SpeechKit error: ${JSON.stringify(op.error)}`);
-        }
-        return op.response;
+        if (op.error) throw new Error(`SpeechKit v2 error: ${JSON.stringify(op.error)}`);
+        const raw = op.response;
+        return raw?.chunks ?? raw?.result?.chunks ?? (Array.isArray(raw) ? raw : []);
       }
     }
-    throw new Error("SpeechKit recognition timed out after 25 minutes");
+    throw new Error("SpeechKit v2 recognition timed out");
   }
 
-  parseTranscript(response, meeting) {
-    const chunks = response.chunks ?? [];
-
-    // Группируем последовательные реплики по speakerTag
+  parseTranscriptV2(chunks, meeting) {
     const grouped = [];
     for (const chunk of chunks) {
       const text = chunk.alternatives?.[0]?.text ?? "";
       if (!text.trim()) continue;
-
       const speakerTag = chunk.speakerTag ?? chunk.channelTag ?? "1";
       const last = grouped.at(-1);
-
-      // Склеиваем подряд идущие реплики одного спикера
       if (last && last.speakerTag === speakerTag) {
         last.text += " " + text;
       } else {
         grouped.push({ speakerTag, text });
       }
     }
-
-    // Формируем уникальных спикеров
-    const speakerIds = [...new Set(grouped.map((g) => g.speakerTag))];
-
-    const phrases = grouped.map((segment, index) => {
-      const speakerIndex = speakerIds.indexOf(segment.speakerTag);
-      const speakerId = `speaker-${speakerIndex + 1}`;
-      const speakerLabel = `Спикер ${speakerIndex + 1}`;
+    const speakerIds = [...new Set(grouped.map((g) => g.speakerTag))].sort();
+    const phrases = grouped.map((seg, index) => {
+      const idx = speakerIds.indexOf(seg.speakerTag);
       return {
-        speakerId,
-        speakerLabel,
-        speakerTag: segment.speakerTag,
+        speakerId: `speaker-${idx + 1}`,
+        speakerLabel: `Спикер ${idx + 1}`,
+        speakerTag: seg.speakerTag,
         detectedName: null,
         startTimeMs: index * 1000,
         endTimeMs: (index + 1) * 1000,
-        text: segment.text
+        text: seg.text
+      };
+    });
+    const rawText = phrases.map((p) => `${p.speakerLabel}: ${p.text}`).join("\n");
+    return { jobId: meeting.id, meetingId: meeting.id, rawText, phrases, generatedAt: new Date().toISOString() };
+  }
+
+  /**
+   * Парсит чанки от SpeechKit v3 getRecognition.
+   *
+   * Формат чанка (после fetchRecognition):
+   * {
+   *   channelTag: "0" | "1",
+   *   alternatives: [{ words: [{text, startTimeMs, endTimeMs}], text }],
+   *   words: [{text, startTimeMs, endTimeMs}]
+   * }
+   *
+   * Временны́е метки — числа в миллисекундах (не строки "1.234s" как в старом API).
+   */
+  parseTranscript(chunks, meeting) {
+    if (!Array.isArray(chunks) || chunks.length === 0) {
+      return { jobId: meeting.id, meetingId: meeting.id, rawText: "", phrases: [], generatedAt: new Date().toISOString() };
+    }
+
+    const grouped = [];
+    for (const chunk of chunks) {
+      const alt = chunk.alternatives?.[0];
+      const text = alt?.text ?? "";
+      if (!text.trim()) continue;
+
+      const speakerTag = chunk.channelTag ?? "0";
+
+      // Временны́е метки: числа в мс
+      const words = chunk.words ?? alt?.words ?? [];
+      const startMs = words.length ? (parseInt(words[0].startTimeMs ?? 0) || 0) : null;
+      const endMs   = words.length ? (parseInt(words.at(-1).endTimeMs ?? 0) || 0) : null;
+
+      const last = grouped.at(-1);
+      if (last && last.speakerTag === speakerTag && startMs !== null && last.endMs !== null
+          && startMs - last.endMs < 2000) {
+        last.text += " " + text;
+        last.endMs = endMs;
+      } else {
+        grouped.push({ speakerTag, text, startMs, endMs });
+      }
+    }
+
+    const speakerIds = [...new Set(grouped.map((g) => g.speakerTag))].sort();
+
+    const phrases = grouped.map((seg) => {
+      const idx = speakerIds.indexOf(seg.speakerTag);
+      return {
+        speakerId: `speaker-${idx + 1}`,
+        speakerLabel: `Спикер ${idx + 1}`,
+        speakerTag: seg.speakerTag,
+        detectedName: null,
+        startTimeMs: seg.startMs ?? 0,
+        endTimeMs: seg.endMs ?? 0,
+        text: seg.text
       };
     });
 
-    const rawText = phrases
-      .map((p) => `${p.speakerLabel}: ${p.text}`)
-      .join("\n");
+    const rawText = phrases.map((p) => `${p.speakerLabel}: ${p.text}`).join("\n");
 
-    return {
-      jobId: meeting.id,
-      meetingId: meeting.id,
-      rawText,
-      phrases,
-      generatedAt: new Date().toISOString()
-    };
+    return { jobId: meeting.id, meetingId: meeting.id, rawText, phrases, generatedAt: new Date().toISOString() };
   }
 }

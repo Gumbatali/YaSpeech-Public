@@ -232,6 +232,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     const [confirmingDraft, setConfirmingDraft] = useState(false);
     const [showProjectComposer, setShowProjectComposer] = useState(false);
     const [resultTab, setResultTab] = useState("summary"); // "summary" | "transcript"
+    const [transcriptVersion, setTranscriptVersion] = useState("llm"); // "raw" | "llm"
     const [recording, setRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const recorderRef = React.useRef(null);
@@ -563,6 +564,17 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
           setNotice(`Обработка аудио: ${stage} (${percent}%)`);
         });
         file = processed;
+
+        // DEV: скачать обработанный WAV для прослушивания
+        if (window.location.hostname === "localhost" || window.location.search.includes("debug_audio")) {
+          const url = URL.createObjectURL(file);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `processed_${Date.now()}.wav`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }
+
         setNotice(`Готово. Загружаю файл (${(file.size / 1024).toFixed(0)} КБ)…`);
       } catch (e) {
         setError("Не удалось обработать аудио: " + e.message +
@@ -1115,16 +1127,37 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
             </div>
 
             ${activeMeeting?.status === "failed"
-              ? html`
-                  <div className="button-row">
-                    <button className="primary-button" onClick=${retryMeeting}>
-                      Попробовать снова
-                    </button>
-                    <button className="ghost-button" onClick=${openProjectHome}>
-                      К проекту
-                    </button>
-                  </div>
-                `
+              ? activeMeeting?.error?.code === "POOR_TRANSCRIPT"
+                ? html`
+                    <div className="poor-transcript-block">
+                      <div className="poor-transcript-icon">🎙️</div>
+                      <div className="poor-transcript-title">Не удалось распознать речь</div>
+                      <div className="poor-transcript-body">
+                        ${activeMeeting.error.message || "Качество записи недостаточно для расшифровки."}
+                      </div>
+                      <div className="poor-transcript-hints">
+                        <b>Что можно сделать:</b>
+                        <ul>
+                          <li>Записывать ближе к источнику звука</li>
+                          <li>Убрать фоновый шум (закрыть окно, выключить кондиционер)</li>
+                          <li>Проверить что файл не повреждён</li>
+                        </ul>
+                      </div>
+                      <div className="button-row">
+                        <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+                      </div>
+                    </div>
+                  `
+                : html`
+                    <div className="button-row">
+                      <button className="primary-button" onClick=${retryMeeting}>
+                        Попробовать снова
+                      </button>
+                      <button className="ghost-button" onClick=${openProjectHome}>
+                        К проекту
+                      </button>
+                    </div>
+                  `
               : null}
           </section>
         </section>
@@ -1143,6 +1176,14 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 <div className="eyebrow">Черновик встречи</div>
                 <h2>Проверьте название и спикеров</h2>
               </div>
+              ${activeMeeting?.gptContext?.transcriptQuality === "poor" ? html`
+                <div className="quality-warning">
+                  ⚠️ <b>Низкое качество записи</b> — протокол может быть неточным.
+                  ${activeMeeting.gptContext.confidenceNote
+                    ? html` <span>${activeMeeting.gptContext.confidenceNote}</span>`
+                    : null}
+                </div>
+              ` : null}
               <p className="panel-copy">
                 Если нужно, поправьте подписи. После подтверждения соберём
                 итоговый протокол.
@@ -1218,8 +1259,20 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       return (label ?? "?").replace("Спикер ", "С").slice(0, 2).toUpperCase();
     }
 
-    function renderTranscriptTab() {
-      const segments = activeMeeting?.transcriptSegments ?? [];
+    function parseLlmTranscript(correctedText) {
+      if (!correctedText) return [];
+      return correctedText
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line, i) => {
+          const m = line.match(/^(Спикер\s+\S+):\s*(.+)$/);
+          if (m) return { speakerId: `speaker-${i}`, speakerLabel: m[1], text: m[2] };
+          return { speakerId: "speaker-1", speakerLabel: "", text: line };
+        });
+    }
+
+    function renderTranscriptSegments(segments) {
       if (!segments.length) {
         return html`<div className="empty-state">Расшифровка недоступна.</div>`;
       }
@@ -1227,18 +1280,48 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         <div className="transcript-full">
           ${segments.map((seg, i) => {
             const color = speakerColor(seg.speakerId);
-            const label = seg.guessedName || seg.speakerLabel || seg.speakerId;
+            const label = seg.guessedName || seg.speakerLabel || seg.speakerId || "";
             const initial = speakerInitial(label);
             return html`
               <div key=${i} className="tf-row">
-                <div className="tf-avatar" style=${{ background: color }}>${initial}</div>
+                ${label ? html`<div className="tf-avatar" style=${{ background: color }}>${initial}</div>` : null}
                 <div className="tf-body">
-                  <div className="tf-name" style=${{ color }}>${label}</div>
+                  ${label ? html`<div className="tf-name" style=${{ color }}>${label}</div>` : null}
                   <div className="tf-text">${seg.text}</div>
                 </div>
               </div>
             `;
           })}
+        </div>
+      `;
+    }
+
+    function renderTranscriptTab() {
+      const rawSegments = activeMeeting?.rawTranscriptSegments ?? activeMeeting?.transcriptSegments ?? [];
+      const llmSegments = parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
+      const hasLlm = llmSegments.length > 0;
+
+      const activeSegments = (transcriptVersion === "llm" && hasLlm)
+        ? llmSegments
+        : rawSegments;
+
+      return html`
+        <div>
+          <div className="transcript-version-toggle">
+            <button
+              className=${"tvt-btn" + (transcriptVersion === "raw" ? " tvt-btn--active" : "")}
+              onClick=${() => setTranscriptVersion("raw")}
+            >Дословно</button>
+            <button
+              className=${"tvt-btn" + (transcriptVersion === "llm" ? " tvt-btn--active" : "")}
+              onClick=${() => setTranscriptVersion("llm")}
+              disabled=${!hasLlm}
+            >LLM восстановил</button>
+          </div>
+          ${transcriptVersion === "llm" && !hasLlm
+            ? html`<div className="empty-state">LLM-коррекция ещё не готова.</div>`
+            : renderTranscriptSegments(activeSegments)
+          }
         </div>
       `;
     }
@@ -1318,6 +1401,11 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   ? html`<span className="meeting-time-line">${formatMeetingTimeRange(activeMeeting)}</span>`
                   : null}
               </div>
+              ${activeMeeting?.gptContext?.transcriptQuality === "poor" ? html`
+                <div className="quality-warning">
+                  ⚠️ <b>Низкое качество записи</b> — данные могут быть неточными или неполными.
+                </div>
+              ` : null}
               <p className="panel-copy">${protocol.summary.overview}</p>
             </div>
 
