@@ -494,6 +494,53 @@ button { cursor: pointer; }
   gap: 0.25rem;
 }
 
+.file-processing-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.file-processing-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(110, 141, 255, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.file-processing-stage {
+  font-size: 0.8rem;
+  color: var(--text-muted, #888);
+}
+
+.file-ready-status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.file-ready-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
 /* ==============================
    Status Chip
    ============================== */
@@ -626,6 +673,19 @@ button { cursor: pointer; }
 .banner-error {
   color: var(--error);
   border-color: rgba(216, 74, 58, 0.18);
+}
+
+.banner-shake {
+  animation: shake 0.4s ease;
+}
+
+@keyframes shake {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-8px); }
+  40%  { transform: translateX(7px); }
+  60%  { transform: translateX(-5px); }
+  80%  { transform: translateX(4px); }
+  100% { transform: translateX(0); }
 }
 
 .empty-state {

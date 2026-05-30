@@ -10,12 +10,12 @@ cd "$ROOT"
 TARGET="${1:-all}"
 
 # ── environment ──────────────────────────────────────────────
-SA_ID="ajesrklt6nieo3idkus2"
-BUCKET="yaspeech-artifacts"
-QUEUE_URL="https://message-queue.api.cloud.yandex.net/b1gbt4f8teak4qu5r9qc/dj60000000nodhlg00p3/yaspeech-meetings"
-KEY_ID="YCAJEczgB9wh9S_VPL4FSwyPN"
-SECRET="YCM_4pVKwi_cDNGcgZpFOZ_ewoygqWTUyxL7elQq"
-FOLDER_ID="b1gu902hilj9930q2ebn"
+SA_ID="ajem1e69rh25r9rm8tq9"
+BUCKET="yaspeech-artifacts-st"
+QUEUE_URL="https://message-queue.api.cloud.yandex.net/b1gpfeic18udd35ml48p/dj60000000otg1k906h0/yaspeech-queue"
+KEY_ID="YCAJEelRXFDMI3ZSTgtr-acje"
+SECRET="YCP3-wm2sXFe8ec2C7vqFtyz_KTFE8zB1i5wX0_E"
+FOLDER_ID="b1gonke5uolgak15ba6d"
 API_KEY="f403d7a06f56dbdd9e5ede22a468091f4b494f995c452ae9"
 
 SHARED_FILES=(
@@ -99,10 +99,35 @@ deploy_worker() {
   echo "   ✓ worker deployed"
 }
 
+upload_frontend() {
+  echo "📤 Uploading frontend to yaspeech-frontend-st..."
+  python3 - <<PYEOF
+import boto3
+s3 = boto3.Session(
+    aws_access_key_id="$KEY_ID",
+    aws_secret_access_key="$SECRET",
+    region_name="ru-central1"
+).client("s3", endpoint_url="https://storage.yandexcloud.net")
+files = {
+    "index.html":                    ("apps/web/index.html",                    "text/html; charset=utf-8"),
+    "app/app.js":                    ("apps/web/app/app.js",                    "application/javascript; charset=utf-8"),
+    "app/styles.css":                ("apps/web/app/styles.css",                "text/css; charset=utf-8"),
+    "app/ui-model.js":               ("apps/web/app/ui-model.js",               "application/javascript; charset=utf-8"),
+    "app/audio/preprocessor.js":     ("apps/web/app/audio/preprocessor.js",     "application/javascript; charset=utf-8"),
+    "app/audio/quality-analyzer.js": ("apps/web/app/audio/quality-analyzer.js", "application/javascript; charset=utf-8"),
+}
+for key, (path, ct) in files.items():
+    with open(path, "rb") as f:
+        s3.put_object(Bucket="yaspeech-frontend-st", Key=key, Body=f.read(), ContentType=ct)
+    print(f"   ✓ {key}")
+PYEOF
+}
+
 case "$TARGET" in
   api)
     build_api
     deploy_api
+    upload_frontend
     ;;
   worker)
     build_worker
@@ -113,9 +138,10 @@ case "$TARGET" in
     deploy_api
     build_worker
     deploy_worker
+    upload_frontend
     ;;
 esac
 
 echo ""
 echo "✅ Deploy complete!"
-echo "   https://d5dqn5neqeb4a027grnq.6brbn2wz.apigw.yandexcloud.net"
+echo "   https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net"

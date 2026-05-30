@@ -584,7 +584,7 @@ function buildProtocolText(protocol, meeting, project, context) {
   if (protocol.actionItems.length > 0) {
     lines.push("── ЗАДАЧИ ──────────────────────────────────");
     protocol.actionItems.forEach((a, i) =>
-      lines.push(`  ${i + 1}. [${a.owner}] ${a.task}  →  до ${a.deadline}`)
+      lines.push(`  ${i + 1}. [${a.owner}] ${a.task}  →  до ${a.deadline ?? "—"}`)
     );
     lines.push("");
   }
@@ -606,7 +606,7 @@ function buildProtocolText(protocol, meeting, project, context) {
   if (protocol.carriedForward?.length > 0) {
     lines.push("── ПЕРЕНЕСЕНО ──────────────────────────────");
     protocol.carriedForward.forEach((a, i) =>
-      lines.push(`  ${i + 1}. ➜  [${a.owner}] ${a.task}  →  до ${a.deadline}`)
+      lines.push(`  ${i + 1}. ➜  [${a.owner}] ${a.task}  →  до ${a.deadline ?? "—"}`)
     );
     lines.push("");
   }

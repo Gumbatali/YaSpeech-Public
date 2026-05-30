@@ -233,10 +233,30 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     const [showProjectComposer, setShowProjectComposer] = useState(false);
     const [resultTab, setResultTab] = useState("summary"); // "summary" | "transcript"
     const [transcriptVersion, setTranscriptVersion] = useState("llm"); // "raw" | "llm"
+    const [fileProcessing, setFileProcessing] = useState(false);
+    const [fileProcessingStage, setFileProcessingStage] = useState("");
     const [recording, setRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const recorderRef = React.useRef(null);
     const timerRef = React.useRef(null);
+    const noticeTimerRef = React.useRef(null);
+
+    function showNotice(msg, ms = 3000) {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+      setNotice(msg);
+      noticeTimerRef.current = setTimeout(() => setNotice(""), ms);
+    }
+
+    const errorTimerRef = React.useRef(null);
+    const [errorShake, setErrorShake] = useState(false);
+
+    function showError(msg, ms = 4000) {
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+      setError(msg);
+      setErrorShake(false);
+      requestAnimationFrame(() => setErrorShake(true));
+      errorTimerRef.current = setTimeout(() => { setError(""); setErrorShake(false); }, ms);
+    }
     const streamRef = React.useRef(null);
 
     useEffect(() => {
@@ -420,7 +440,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         });
         setProjectForm(createProjectForm());
         setShowProjectComposer(false);
-        setNotice("Проект создан.");
+        showNotice("Проект создан.");
         await refreshProjects({ selectProjectId: payload.project.id });
         setRequestedScreen("");
       } catch (caughtError) {
@@ -466,7 +486,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
           members: cleanedMembers
         });
         setTeamDraft(payload.project.team);
-        setNotice("Участники проекта сохранены.");
+        showNotice("Участники проекта сохранены.");
         await refreshProjects({ selectProjectId: selectedProjectId });
       } catch (caughtError) {
         setError(caughtError.message);
@@ -543,12 +563,15 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
 
     async function handleFileSelect(file) {
+      setFileProcessing(true);
+      setFileProcessingStage("Анализ записи…");
+
       // 1. Анализируем качество ДО обработки — чтобы предупредить юзера
       let qualityReport = null;
       try {
-        setNotice("Анализ записи…");
+        showNotice("Анализ записи…", 10000);
         qualityReport = await analyzeAudioQuality(file);
-        setNotice(describeQuality(qualityReport));
+        showNotice(describeQuality(qualityReport), 10000);
         if (qualityReport.quality === "poor") {
           setError("Качество записи низкое — результат распознавания может быть плохим. " +
             describeQuality(qualityReport));
@@ -559,9 +582,11 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
       // 2. Прогоняем через полный preprocessing pipeline
       try {
-        setNotice("Обработка аудио: декодирование…");
+        setFileProcessingStage("Декодирование…");
+        showNotice("Обработка аудио: декодирование…", 10000);
         const processed = await preprocessAudio(file, (stage, percent) => {
-          setNotice(`Обработка аудио: ${stage} (${percent}%)`);
+          setFileProcessingStage(`${stage} (${percent}%)`);
+          showNotice(`Обработка аудио: ${stage} (${percent}%)`, 10000);
         });
         file = processed;
 
@@ -575,12 +600,19 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
           setTimeout(() => URL.revokeObjectURL(url), 5000);
         }
 
-        setNotice(`Готово. Загружаю файл (${(file.size / 1024).toFixed(0)} КБ)…`);
+        showNotice(`Файл готов к загрузке на расшифровку`, 3000);
       } catch (e) {
+        setFileProcessing(false);
+        setFileProcessingStage("");
         setError("Не удалось обработать аудио: " + e.message +
           ". Попробуйте сохранить в MP3 или WAV.");
         return;
       }
+
+      setFileProcessing(false);
+      setFileProcessingStage("");
+      setNotice("");
+      setError("");
 
       setMeetingForm((current) => ({ ...current, file, durationSeconds: null, startTime: null, endTime: null }));
       const dur = qualityReport?.durationSeconds ?? await getAudioDuration(file);
@@ -603,7 +635,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       }
 
       if (!meetingForm.file) {
-        setError("Сначала выберите файл.");
+        showError("Сначала выберите файл.");
         return;
       }
 
@@ -662,7 +694,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         setUploadProgress(0);
         // Файл залит — теперь переходим на экран с этапами
         setActiveMeeting(uploaded.meeting);
-        setNotice("Запись загружена.");
+        showNotice("Запись загружена.");
         setMeetingForm(createMeetingForm());
         await refreshMeetings(selectedProjectId);
       } catch (caughtError) {
@@ -696,7 +728,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
           speakerDrafts: draftForm.speakerDrafts
         });
         setActiveMeeting(payload.meeting);
-        setNotice("Черновик подтверждён.");
+        showNotice("Черновик подтверждён.");
       } catch (caughtError) {
         setError(caughtError.message);
       } finally {
@@ -712,7 +744,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       try {
         const payload = await api.retryMeeting(activeMeeting.id);
         setActiveMeeting(payload.meeting);
-        setNotice("Повторная обработка запущена.");
+        showNotice("Повторная обработка запущена.");
       } catch (caughtError) {
         setError(caughtError.message);
       }
@@ -722,7 +754,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       try {
         setError("");
         await api.deleteProject(projectId);
-        setNotice("Проект удалён.");
+        showNotice("Проект удалён.");
         const payload = await api.listProjects();
         setProjects(payload.projects);
       } catch (caughtError) {
@@ -734,7 +766,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       try {
         setError("");
         await api.deleteMeeting(meetingId);
-        setNotice("Встреча удалена.");
+        showNotice("Встреча удалена.");
         await refreshMeetings(selectedProjectId);
         if (activeMeeting?.id === meetingId) {
           setActiveMeeting(null);
@@ -752,7 +784,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       try {
         const protocolText = await api.getProtocolText(activeMeeting.id);
         await navigator.clipboard.writeText(protocolText);
-        setNotice("Протокол скопирован.");
+        showNotice("Протокол скопирован.");
       } catch (caughtError) {
         setError(caughtError.message);
       }
@@ -777,10 +809,10 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       }
     }
 
-    function downloadTranscript() {
-      const segments = activeMeeting?.transcriptSegments;
+    function downloadTranscriptRaw() {
+      const segments = activeMeeting?.rawTranscriptSegments ?? activeMeeting?.transcriptSegments;
       if (!segments?.length) {
-        setError("Расшифровка недоступна.");
+        setError("Сырая расшифровка недоступна.");
         return;
       }
       const lines = segments.map((s) => {
@@ -788,7 +820,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         return `${name}:\n${s.text}`;
       });
       const text = [
-        `Расшифровка встречи`,
+        `Расшифровка встречи (исходная, без LLM-коррекции)`,
         `Проект: ${activeMeeting.projectId}`,
         `Дата: ${activeMeeting.date}`,
         ``,
@@ -798,7 +830,34 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `transcript-${activeMeeting.projectId}-${activeMeeting.date}.txt`;
+      anchor.download = `transcript-raw-${activeMeeting.projectId}-${activeMeeting.date}.txt`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadTranscriptLlm() {
+      const correctedText = activeMeeting?.gptContext?.correctedText;
+      const segments = parseLlmTranscript(correctedText);
+      if (!segments?.length) {
+        setError("LLM-расшифровка недоступна.");
+        return;
+      }
+      const lines = segments.map((s) => {
+        const name = s.guessedName || s.speakerLabel || s.speakerId;
+        return `${name}:\n${s.text}`;
+      });
+      const text = [
+        `Расшифровка встречи (LLM-восстановление)`,
+        `Проект: ${activeMeeting.projectId}`,
+        `Дата: ${activeMeeting.date}`,
+        ``,
+        ...lines
+      ].join("\n\n");
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `transcript-llm-${activeMeeting.projectId}-${activeMeeting.date}.txt`;
       anchor.click();
       URL.revokeObjectURL(url);
     }
@@ -806,7 +865,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     function renderNoticeArea() {
       return html`
         ${notice ? html`<div className="banner banner-ok">${notice}</div>` : null}
-        ${error ? html`<div className="banner banner-error">${error}</div>` : null}
+        ${error ? html`<div className=${"banner banner-error" + (errorShake ? " banner-shake" : "")}>${error}</div>` : null}
       `;
     }
 
@@ -993,12 +1052,26 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
             </div>
 
             <div className="file-picker-meta">
-              <strong>${meetingForm.file ? meetingForm.file.name : "Файл пока не выбран"}</strong>
-              <span>
-                ${meetingForm.file
-                  ? (meetingForm.file.size / (1024 * 1024)).toFixed(1) + " МБ · готов к загрузке"
-                  : "MP3, M4A, WAV, OGG, FLAC, AAC · максимум 1 ГБ"}
-              </span>
+              ${fileProcessing
+                ? html`
+                    <div className="file-processing-status">
+                      <span className="file-processing-spinner"></span>
+                      <strong>Обрабатываем файл…</strong>
+                    </div>
+                    <span className="file-processing-stage">${fileProcessingStage}</span>
+                  `
+                : meetingForm.file
+                  ? html`
+                      <div className="file-ready-status">
+                        <span className="file-ready-icon">✓</span>
+                        <strong>${meetingForm.file.name}</strong>
+                      </div>
+                      <span>${(meetingForm.file.size / (1024 * 1024)).toFixed(1)} МБ · готов к загрузке</span>
+                    `
+                  : html`
+                      <strong>Файл пока не выбран</strong>
+                      <span>MP3, M4A, WAV, OGG, FLAC, AAC · максимум 1 ГБ</span>
+                    `}
             </div>
           </div>
 
@@ -1350,7 +1423,9 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   <li key=${i} className="action-item">
                     <span className="action-owner">${item.owner}</span>
                     <span className="action-task">${item.task}</span>
-                    <span className="action-deadline">до ${item.deadline}</span>
+                    ${item.deadline
+                      ? html`<span className="action-deadline">до ${item.deadline}</span>`
+                      : html`<span className="action-deadline action-deadline--empty">срок не указан</span>`}
                   </li>`)}</ul>`
               : html`<p className="empty-hint">Задач не зафиксировано</p>`}
           </section>
@@ -1427,7 +1502,8 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
                 </div>`
               : html`<div className="button-row">
-                  <button className="primary-button" onClick=${downloadTranscript}>Скачать расшифровку</button>
+                  <button className="primary-button" onClick=${downloadTranscriptLlm}>Скачать LLM-версию</button>
+                  <button className="ghost-button" onClick=${downloadTranscriptRaw}>Скачать исходную</button>
                   <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
                 </div>`}
 
