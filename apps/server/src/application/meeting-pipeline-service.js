@@ -211,7 +211,8 @@ export class MeetingPipelineService {
       rawTranscriptSegments: rawTranscript.phrases ?? [],
       gptContext: {
         ...draft.context,
-        correctedText: draft.correctedText // сохраняем исправленный текст для pass C
+        correctedText: draft.correctedText, // сохраняем исправленный текст для pass C
+        glossary: draft.glossary ?? null    // сохраняем глоссарий для накопления в проекте
       },
       status: "draft_ready",
       currentStage: "draft_ready",

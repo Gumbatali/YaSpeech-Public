@@ -73,9 +73,9 @@ export class YcProjectRepository {
     const termMap = new Map(existing.terms.map((t) => [t.term, t]));
     for (const t of (newGlossary.terms ?? [])) {
       if (termMap.has(t.term)) {
-        // Дополняем варианты написания
+        // Дополняем варианты написания (variants может отсутствовать если GPT не вернул поле)
         const merged = termMap.get(t.term);
-        const allVariants = new Set([...merged.variants, ...t.variants]);
+        const allVariants = new Set([...(merged.variants ?? []), ...(t.variants ?? [])]);
         termMap.set(t.term, { ...merged, variants: [...allVariants] });
       } else {
         termMap.set(t.term, t);
