@@ -1063,7 +1063,11 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 : meetingForm.file
                   ? html`
                       <div className="file-ready-status">
-                        <span className="file-ready-icon">✓</span>
+                        <span className="file-ready-icon">
+                          <svg width="11" height="9" viewBox="0 0 11 9" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 4L4 7.5L10 1" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </span>
                         <strong>${meetingForm.file.name}</strong>
                       </div>
                       <span>${(meetingForm.file.size / (1024 * 1024)).toFixed(1)} МБ · готов к загрузке</span>
