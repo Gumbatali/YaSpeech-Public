@@ -401,6 +401,43 @@ button { cursor: pointer; }
   color: var(--ink);
 }
 
+.speaker-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.speaker-unidentified {
+  font-size: 0.75rem;
+  color: #aaa;
+  font-weight: 400;
+}
+
+.speaker-confidence {
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.speaker-confidence--high {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.speaker-confidence--medium {
+  background: rgba(234, 179, 8, 0.1);
+  color: #a16207;
+}
+
+.speaker-reasoning {
+  font-size: 0.75rem;
+  color: #aaa;
+  line-height: 1.4;
+  margin-top: 0.1rem;
+}
+
 /* ==============================
    File Picker
    ============================== */

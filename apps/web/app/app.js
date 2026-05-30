@@ -1283,12 +1283,24 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
               ${draftForm.speakerDrafts.map(
                 (speaker, index) => html`
                   <label key=${speaker.id || index} className="speaker-item">
-                    <span>${speaker.label}</span>
+                    <div className="speaker-item-header">
+                      <span>${speaker.label}</span>
+                      ${!speaker.guessedName
+                        ? html`<span className="speaker-unidentified">Не удалось определить</span>`
+                        : speaker.confidence === "high"
+                          ? html`<span className="speaker-confidence speaker-confidence--high">уверен</span>`
+                          : speaker.confidence === "medium"
+                            ? html`<span className="speaker-confidence speaker-confidence--medium">предположение</span>`
+                            : null}
+                    </div>
                     <input
                       value=${speaker.guessedName ?? ""}
-                      placeholder="Имя или подпись"
+                      placeholder=${speaker.guessedName ? "Имя или подпись" : "Введите имя вручную"}
                       onInput=${(event) => updateDraftSpeaker(index, event.target.value)}
                     />
+                    ${speaker.reasoning && speaker.reasoning !== "fallback"
+                      ? html`<span className="speaker-reasoning">${speaker.reasoning}</span>`
+                      : null}
                   </label>
                 `
               )}
