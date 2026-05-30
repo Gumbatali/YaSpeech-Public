@@ -25,6 +25,7 @@ export class SmartAsrGateway {
    */
   constructor({ groqApiKey, hfToken, speechKitBucket, artifactStorage }) {
     this.artifactStorage = artifactStorage;
+    this.speechKitBucket = speechKitBucket; // нужен для fallback при ошибке Groq
 
     // Транскрипция
     if (groqApiKey) {

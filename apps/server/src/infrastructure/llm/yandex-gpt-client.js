@@ -126,16 +126,32 @@ export class YandexGptClient {
   }
 
   /**
-   * Выполняет несколько completion запросов параллельно.
+   * Выполняет несколько completion запросов с ограничением параллелизма.
    * Используется для обработки чанков транскрипта.
+   * Лимит 3 одновременных запроса — предотвращает 429 при длинных встречах.
    *
    * @param {Array<{system: string, user: string, options?: object}>} requests
+   * @param {number} concurrency — макс. параллельных запросов (default: 3)
    * @returns {Promise<string[]>}
    */
-  async completeBatch(requests) {
-    return Promise.all(
-      requests.map(({ system, user, options }) => this.complete(system, user, options))
+  async completeBatch(requests, concurrency = 3) {
+    const results = new Array(requests.length);
+    let index = 0;
+
+    async function worker(self) {
+      while (index < requests.length) {
+        const i = index++;
+        const { system, user, options } = requests[i];
+        results[i] = await self.complete(system, user, options);
+      }
+    }
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, requests.length) },
+      () => worker(this)
     );
+    await Promise.all(workers);
+    return results;
   }
 
   /**

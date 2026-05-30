@@ -33,13 +33,19 @@ export class YcArtifactStorage {
   }
 
   async readJson(key) {
+    let res;
     try {
-      const res = await this._get(key);
-      if (!res.ok) return null;
-      return res.json();
-    } catch {
-      return null;
+      res = await this._get(key);
+    } catch (e) {
+      // Сетевая ошибка — пробрасываем, чтобы репозитории не перезаписали индексы пустыми массивами
+      throw new Error(`S3 GET network error [${key}]: ${e.message}`);
     }
+    if (res.status === 404) return null; // файл не существует — штатная ситуация
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`S3 GET failed [${key}]: ${res.status} ${text.slice(0, 200)}`);
+    }
+    return res.json();
   }
 
   async writeJson(key, data) {
@@ -52,13 +58,18 @@ export class YcArtifactStorage {
   }
 
   async readText(key) {
+    let res;
     try {
-      const res = await this._get(key);
-      if (!res.ok) return null;
-      return res.text();
-    } catch {
-      return null;
+      res = await this._get(key);
+    } catch (e) {
+      throw new Error(`S3 GET network error [${key}]: ${e.message}`);
     }
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`S3 GET failed [${key}]: ${res.status} ${text.slice(0, 200)}`);
+    }
+    return res.text();
   }
 
   /** Returns a ReadableStream (Web Streams API) */
