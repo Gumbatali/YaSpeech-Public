@@ -62,6 +62,30 @@ export function createMeeting({
   };
 }
 
+/**
+ * Встреча переходит в режим поллинга ASR.
+ * Сохраняем operationId и момент старта для timeout-защиты.
+ */
+export function markAsrStarted(meeting, operationId, updatedAt) {
+  return {
+    ...meeting,
+    status: "speechkit_processing",
+    currentStage: "speechkit_processing",
+    asrOperationId: operationId,
+    asrStartedAt: updatedAt,
+    asrPollCount: 0,
+    updatedAt
+  };
+}
+
+export function incrementAsrPoll(meeting, updatedAt) {
+  return {
+    ...meeting,
+    asrPollCount: (meeting.asrPollCount ?? 0) + 1,
+    updatedAt
+  };
+}
+
 export function markMeetingUploaded(meeting, sizeBytes, updatedAt, durationSeconds) {
   if (meeting.status !== "uploading" && meeting.status !== "draft") {
     return {

@@ -1,4 +1,21 @@
 export class MockSpeechKitGateway {
+  /**
+   * Стартует «фиктивное» распознавание. Сразу возвращает mock operationId.
+   */
+  async startRecognition({ meeting }) {
+    return { operationId: `mock-op-${meeting.id}` };
+  }
+
+  /**
+   * Mock-поллинг: всегда возвращает done: true с полным транскриптом.
+   * project опционален — передаётся из pipeline для генерации реалистичных спикеров.
+   */
+  async pollRecognitionOnce({ meeting, project = null, operationId: _operationId }) {
+    const p = project ?? { team: [], name: "mock" };
+    const { transcript } = await this.processMeeting({ meeting, project: p });
+    return { done: true, jobId: `job-${meeting.id}`, transcript };
+  }
+
   async processMeeting({ meeting, project }) {
     const scopedTeam = project.team.filter((member) =>
       meeting.participantIds.includes(member.id)

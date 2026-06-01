@@ -6,7 +6,9 @@ export class LocalQueueRunner {
     this.idleWaiters = [];
   }
 
-  enqueue(key, task) {
+  // options: { delaySeconds?, phase? } — delay игнорируется локально,
+  // phase используется пайплайном для маршрутизации через task-замыкание
+  enqueue(key, task, _options = {}) {
     if (this.runningKeys.has(key)) {
       return;
     }
