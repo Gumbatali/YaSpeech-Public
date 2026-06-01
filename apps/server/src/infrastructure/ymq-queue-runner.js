@@ -20,14 +20,22 @@ export class YmqQueueRunner {
     this.path      = url.pathname;
   }
 
-  async enqueue(taskId, _fn) {
-    const meetingId = taskId.replace("meeting:", "");
+  /**
+   * @param {string} taskId  — идентификатор задачи (напр. "meeting:abc123")
+   * @param {Function} _fn   — колбэк для LocalQueueRunner (YMQ игнорирует)
+   * @param {{ delaySeconds?: number, phase?: string | null }} [options]
+   */
+  async enqueue(taskId, _fn, options = {}) {
+    const meetingId    = taskId.replace(/^meeting:/, "").replace(/:.*$/, "");
+    const phase        = options.phase ?? null;
+    const delaySeconds = options.delaySeconds ?? 0;
+    const messageBody  = JSON.stringify({ meetingId, ...(phase ? { phase } : {}) });
     try {
-      await this._send(JSON.stringify({ meetingId }));
-      logger.info("YMQ: message sent", { meetingId });
+      await this._send(messageBody, delaySeconds);
+      logger.info("YMQ: message sent", { meetingId, phase, delaySeconds });
     } catch (err) {
-      logger.error("YMQ: failed to enqueue meeting", { meetingId, error: err.message });
-      throw err; // пробрасываем — caller должен знать об ошибке
+      logger.error("YMQ: failed to enqueue meeting", { meetingId, phase, error: err.message });
+      throw err;
     }
   }
 
@@ -36,12 +44,17 @@ export class YmqQueueRunner {
 
   // ── private ────────────────────────────────────────────────────────────────
 
-  async _send(messageBody) {
+  async _send(messageBody, delaySeconds = 0) {
     const params = new URLSearchParams({
       Action:      "SendMessage",
       MessageBody: messageBody,
       Version:     "2012-11-05",
     });
+
+    if (delaySeconds > 0) {
+      params.set("DelaySeconds", String(Math.min(delaySeconds, 900))); // SQS max = 900
+    }
+
     const body        = params.toString();
     const contentType = "application/x-www-form-urlencoded";
 

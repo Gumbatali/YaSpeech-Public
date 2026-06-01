@@ -18,7 +18,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         ...init,
         headers: {
           "content-type": "application/json",
-          ...(window.__API_KEY__ ? { "x-api-key": window.__API_KEY__ } : {}),
           ...(init.headers ?? {})
         }
       });
@@ -116,11 +115,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
 
     async getProtocolText(meetingId) {
-      const response = await fetch(`/api/meetings/${meetingId}/protocol.txt`, {
-        headers: {
-          ...(window.__API_KEY__ ? { "x-api-key": window.__API_KEY__ } : {})
-        }
-      });
+      const response = await fetch(`/api/meetings/${meetingId}/protocol.txt`);
       if (!response.ok) {
         throw new Error("Не удалось получить текст протокола.");
       }

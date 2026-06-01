@@ -1,6 +1,9 @@
 #!/bin/bash
 # YaSpeech deploy script
 # Usage: ./scripts/deploy.sh [api|worker|all]
+#
+# Перед запуском скопируй scripts/.env.deploy.example → scripts/.env.deploy
+# и заполни значениями. Файл .env.deploy НЕ коммитится в git.
 set -e
 
 YC=~/yandex-cloud/bin/yc
@@ -9,15 +12,30 @@ cd "$ROOT"
 
 TARGET="${1:-all}"
 
-# ── environment ──────────────────────────────────────────────
-SA_ID="ajem1e69rh25r9rm8tq9"
-BUCKET="yaspeech-artifacts-st"
-QUEUE_URL="https://message-queue.api.cloud.yandex.net/b1gpfeic18udd35ml48p/dj60000000otg1k906h0/yaspeech-queue"
-KEY_ID="YCAJEelRXFDMI3ZSTgtr-acje"
-SECRET="YCP3-wm2sXFe8ec2C7vqFtyz_KTFE8zB1i5wX0_E"
-FOLDER_ID="b1gonke5uolgak15ba6d"
-API_KEY="f403d7a06f56dbdd9e5ede22a468091f4b494f995c452ae9"
+# ── Загружаем секреты из .env.deploy ─────────────────────────────────────────
+ENV_FILE="$ROOT/scripts/.env.deploy"
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "❌  Файл $ENV_FILE не найден."
+  echo "    Скопируй scripts/.env.deploy.example → scripts/.env.deploy и заполни значения."
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$ENV_FILE"
 
+# Проверяем что все обязательные переменные заданы
+: "${SA_ID:?Не задана переменная SA_ID в .env.deploy}"
+: "${BUCKET:?Не задана переменная BUCKET в .env.deploy}"
+: "${QUEUE_URL:?Не задана переменная QUEUE_URL в .env.deploy}"
+: "${KEY_ID:?Не задана переменная KEY_ID в .env.deploy}"
+: "${SECRET:?Не задана переменная SECRET в .env.deploy}"
+: "${FOLDER_ID:?Не задана переменная FOLDER_ID в .env.deploy}"
+: "${FRONTEND_BUCKET:?Не задана переменная FRONTEND_BUCKET в .env.deploy}"
+
+# ── Версия для cache-busting ──────────────────────────────────────────────────
+VERSION=$(git rev-parse --short HEAD 2>/dev/null || date +%s)
+echo "📌 Версия: $VERSION"
+
+# ── Список файлов для обеих функций ──────────────────────────────────────────
 SHARED_FILES=(
   package.json
   apps/server/src/functions/make-deps.js
@@ -74,7 +92,6 @@ deploy_api() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
-    --environment API_KEY="$API_KEY" \
     --service-account-id "$SA_ID" \
     2>&1 | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ api deployed"
@@ -87,7 +104,7 @@ deploy_worker() {
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
-    --execution-timeout 600s \
+    --execution-timeout 60s \
     --source-path /tmp/worker.zip \
     --environment YC_STORAGE_BUCKET="$BUCKET" \
     --environment YC_QUEUE_URL="$QUEUE_URL" \
@@ -100,27 +117,51 @@ deploy_worker() {
 }
 
 upload_frontend() {
-  echo "📤 Uploading frontend to yaspeech-frontend-st..."
-  python3 - <<PYEOF
-import boto3
+  echo "📤 Uploading frontend to $FRONTEND_BUCKET (v=$VERSION)..."
+
+  # Подставляем версию в index.html (из плейсхолдера __BUILD__)
+  TMP_HTML=$(mktemp /tmp/yaspeech-index-XXXXXX.html)
+  sed "s/__BUILD__/$VERSION/g" apps/web/index.html > "$TMP_HTML"
+
+  python3 - "$TMP_HTML" "$KEY_ID" "$SECRET" "$FRONTEND_BUCKET" "$VERSION" <<'PYEOF'
+import sys, boto3
+
+tmp_html, key_id, secret, bucket, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+
 s3 = boto3.Session(
-    aws_access_key_id="$KEY_ID",
-    aws_secret_access_key="$SECRET",
+    aws_access_key_id=key_id,
+    aws_secret_access_key=secret,
     region_name="ru-central1"
 ).client("s3", endpoint_url="https://storage.yandexcloud.net")
-files = {
-    "index.html":                    ("apps/web/index.html",                    "text/html; charset=utf-8"),
+
+# index.html — всегда свежий
+with open(tmp_html, "rb") as f:
+    s3.put_object(
+        Bucket=bucket, Key="index.html", Body=f.read(),
+        ContentType="text/html; charset=utf-8",
+        CacheControl="no-cache"
+    )
+print("   ✓ index.html")
+
+# Статические ассеты — кэшируем агрессивно (URL версионирован)
+assets = {
     "app/app.js":                    ("apps/web/app/app.js",                    "application/javascript; charset=utf-8"),
     "app/styles.css":                ("apps/web/app/styles.css",                "text/css; charset=utf-8"),
     "app/ui-model.js":               ("apps/web/app/ui-model.js",               "application/javascript; charset=utf-8"),
     "app/audio/preprocessor.js":     ("apps/web/app/audio/preprocessor.js",     "application/javascript; charset=utf-8"),
     "app/audio/quality-analyzer.js": ("apps/web/app/audio/quality-analyzer.js", "application/javascript; charset=utf-8"),
 }
-for key, (path, ct) in files.items():
+for key, (path, ct) in assets.items():
     with open(path, "rb") as f:
-        s3.put_object(Bucket="yaspeech-frontend-st", Key=key, Body=f.read(), ContentType=ct)
+        s3.put_object(
+            Bucket=bucket, Key=key, Body=f.read(),
+            ContentType=ct,
+            CacheControl="public, max-age=31536000, immutable"
+        )
     print(f"   ✓ {key}")
 PYEOF
+
+  rm -f "$TMP_HTML"
 }
 
 case "$TARGET" in
@@ -143,5 +184,4 @@ case "$TARGET" in
 esac
 
 echo ""
-echo "✅ Deploy complete!"
-echo "   https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net"
+echo "✅ Deploy complete! (v=$VERSION)"

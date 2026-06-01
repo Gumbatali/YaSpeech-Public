@@ -8,3 +8,6 @@ npm-debug.log*
 *.wav
 *.ogg
 *.docx
+
+# Секреты деплоя — никогда не коммитить
+scripts/.env.deploy

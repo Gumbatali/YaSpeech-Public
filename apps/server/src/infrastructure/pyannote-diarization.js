@@ -108,7 +108,10 @@ export class PyannoteDiarization {
     });
 
     if (res.status === 503) {
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch((err) => {
+        logger.warn("Pyannote: could not parse 503 body", { error: err.message });
+        return {};
+      });
       throw new Error(`loading: ${data.estimated_time ?? "unknown"} sec`);
     }
 

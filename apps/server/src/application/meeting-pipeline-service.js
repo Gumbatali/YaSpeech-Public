@@ -2,6 +2,10 @@ import {
   FinalizeProtocolUseCase,
   RetryMeetingUseCase
 } from "../../../../packages/core/src/index.js";
+import {
+  markAsrStarted,
+  incrementAsrPoll
+} from "../../../../packages/core/src/domain/meeting.js";
 import { logger } from "../shared/logger.js";
 import { postprocessTranscript } from "./transcript-postprocessor.js";
 
@@ -26,8 +30,19 @@ export class MeetingPipelineService {
 
   async enqueueProcessing(meetingId) {
     await this.queueRunner.enqueue(`meeting:${meetingId}`, async () => {
-      await this.processMeeting(meetingId);
+      await this.processMeeting(meetingId, null);
     });
+  }
+
+  /**
+   * Enqueue конкретной фазы с задержкой (для split-ASR поллинга).
+   */
+  async _enqueuePhase(meetingId, phase, delaySeconds = 0) {
+    await this.queueRunner.enqueue(
+      `meeting:${meetingId}:${phase}`,
+      async () => { await this.processMeeting(meetingId, phase); },
+      { delaySeconds, phase, meetingId }
+    );
   }
 
   async retry(meetingId) {
@@ -83,10 +98,19 @@ export class MeetingPipelineService {
     return updatedMeeting;
   }
 
-  async processMeeting(meetingId) {
+  /**
+   * Главный роутер. Вызывается воркером, принимает phase из сообщения очереди.
+   *
+   * Маршрутизация по статусу meeting + phase:
+   *   "uploaded"              + (null | "start")  → startAsrPhase
+   *   "speechkit_processing"  + "poll-asr"        → pollAsrPhase
+   *   "protocol_generating"   + any               → generateProtocol
+   */
+  async processMeeting(meetingId, phase = null) {
     const meeting = await this.meetingRepository.getById(meetingId);
-    if (!meeting || !["uploaded", "protocol_generating"].includes(meeting.status)) {
-      logger.warn("processMeeting: skipped", { meetingId, status: meeting?.status });
+    const VALID_STATUSES = ["uploaded", "speechkit_processing", "protocol_generating"];
+    if (!meeting || !VALID_STATUSES.includes(meeting.status)) {
+      logger.warn("processMeeting: skipped", { meetingId, status: meeting?.status, phase });
       return;
     }
 
@@ -95,17 +119,27 @@ export class MeetingPipelineService {
       throw new Error(`Project not found for meeting ${meetingId}`);
     }
 
-    logger.info("processMeeting: start", { meetingId, status: meeting.status, projectId: meeting.projectId });
+    logger.info("processMeeting: start", { meetingId, status: meeting.status, phase, projectId: meeting.projectId });
 
     try {
-      if (meeting.status === "uploaded") {
-        await this.prepareDraft(meeting, project);
-        logger.info("processMeeting: draft ready", { meetingId });
+      if (meeting.status === "uploaded" && (phase === null || phase === "start")) {
+        await this.startAsrPhase(meeting, project);
+        logger.info("processMeeting: ASR started, poll enqueued", { meetingId });
         return;
       }
 
-      await this.generateProtocol(meeting, project);
-      logger.info("processMeeting: protocol done", { meetingId });
+      if (meeting.status === "speechkit_processing" && phase === "poll-asr") {
+        await this.pollAsrPhase(meeting, project);
+        return;
+      }
+
+      if (meeting.status === "protocol_generating") {
+        await this.generateProtocol(meeting, project);
+        logger.info("processMeeting: protocol done", { meetingId });
+        return;
+      }
+
+      logger.warn("processMeeting: unhandled state", { meetingId, status: meeting.status, phase });
     } catch (error) {
       const failedMeeting = await this.meetingRepository.getById(meetingId);
       if (!failedMeeting) throw error;
@@ -124,7 +158,11 @@ export class MeetingPipelineService {
     }
   }
 
-  async prepareDraft(meeting, project) {
+  /**
+   * Фаза 1 — запускаем ASR и немедленно выходим.
+   * Время работы: секунды (только HTTP-запрос к SpeechKit).
+   */
+  async startAsrPhase(meeting, project) {
     await this.meetingRepository.save({
       ...meeting,
       status: "speechkit_processing",
@@ -132,10 +170,60 @@ export class MeetingPipelineService {
       updatedAt: this.clock.now().toISOString()
     });
 
-    const { jobId, transcript: rawTranscript } = await this.speechKitGateway.processMeeting({
-      meeting,
-      project
-    });
+    const { operationId } = await this.speechKitGateway.startRecognition({ meeting, project });
+
+    const updatedMeeting = markAsrStarted(meeting, operationId, this.clock.now().toISOString());
+    await this.meetingRepository.save(updatedMeeting);
+
+    // Ставим poll в очередь с задержкой 15 сек
+    await this._enqueuePhase(meeting.id, "poll-asr", 15);
+    logger.info("startAsrPhase: done", { meetingId: meeting.id, operationId });
+  }
+
+  /**
+   * Фаза 2 — однократный опрос ASR.
+   * Не готово → re-enqueue; готово → продолжаем в prepareDraft.
+   * Время работы: секунды (один HTTP-запрос).
+   */
+  async pollAsrPhase(meeting, project) {
+    const operationId  = meeting.asrOperationId;
+    const asrStartedAt = meeting.asrStartedAt ? new Date(meeting.asrStartedAt) : null;
+    const ASR_TIMEOUT_MS = 40 * 60 * 1000; // 40 минут — hard ceiling
+
+    if (!operationId) {
+      throw new Error(`pollAsrPhase: no asrOperationId on meeting ${meeting.id}`);
+    }
+
+    // Timeout-защита: если ASR зависло — фейлим встречу
+    if (asrStartedAt && Date.now() - asrStartedAt.getTime() > ASR_TIMEOUT_MS) {
+      const err = new Error("SpeechKit: recognition timed out after 40 minutes");
+      err.code = "SPEECHKIT_TIMEOUT";
+      throw err;
+    }
+
+    const result = await this.speechKitGateway.pollRecognitionOnce({ meeting, project, operationId });
+
+    if (!result.done) {
+      // Не готово — incrementируем счётчик и перепланируем через 15 сек
+      const polled = incrementAsrPoll(meeting, this.clock.now().toISOString());
+      await this.meetingRepository.save(polled);
+      logger.info("pollAsrPhase: not ready, re-enqueue", {
+        meetingId: meeting.id, pollCount: polled.asrPollCount
+      });
+      await this._enqueuePhase(meeting.id, "poll-asr", 15);
+      return;
+    }
+
+    // ASR готов — передаём управление в prepareDraftFromTranscript
+    logger.info("pollAsrPhase: ASR done, continuing to draft", { meetingId: meeting.id });
+    await this.prepareDraftFromTranscript(meeting, project, result.jobId, result.transcript);
+  }
+
+  /**
+   * Продолжение после получения транскрипта от ASR.
+   * Вызывается из pollAsrPhase когда ASR готов.
+   */
+  async prepareDraftFromTranscript(meeting, project, jobId, rawTranscript) {
 
     // Postprocessing — чистим, склеиваем, переименовываем спикеров
     const transcript = postprocessTranscript(rawTranscript);
@@ -163,7 +251,13 @@ export class MeetingPipelineService {
     });
 
     // Загружаем накопленный глоссарий проекта для улучшения A2-коррекции
-    const projectGlossary = await this.projectRepository.getGlossary(meeting.projectId).catch(() => null);
+    const projectGlossary = await this.projectRepository.getGlossary(meeting.projectId).catch((err) => {
+      logger.warn("pipeline: failed to load project glossary, continuing without it", {
+        projectId: meeting.projectId,
+        error: err.message
+      });
+      return null;
+    });
 
     const draft = await this.yandexGptGateway.generateDraft({
       meeting,
@@ -265,7 +359,12 @@ export class MeetingPipelineService {
 
     // Сохраняем обновлённый глоссарий проекта в фоне (не блокируем сохранение протокола)
     if (newGlossary) {
-      this.projectRepository.mergeGlossary(meeting.projectId, newGlossary).catch(() => {});
+      this.projectRepository.mergeGlossary(meeting.projectId, newGlossary).catch((err) => {
+        logger.error("pipeline: failed to merge glossary (background)", {
+          projectId: meeting.projectId,
+          error: err.message
+        });
+      });
     }
 
     await this.artifactStorage.writeJson(meeting.artifacts.protocolJsonKey, protocol);
