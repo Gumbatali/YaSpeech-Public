@@ -11,8 +11,8 @@
 
 ## Что ещё не сделано
 
-- настоящие адаптеры к `SpeechSense`;
-- настоящие адаптеры к `AI Studio`;
+- настоящие адаптеры к `SpeechKit`;
+- настоящие адаптеры к `YandexGPT`;
 - реальное облачное развёртывание;
 - production-конфиг и IAM;
 - observability-панель уровня production.
@@ -28,8 +28,8 @@
 
 ### Этап 2. Реальные интеграции
 
-- заменить mock `SpeechSenseGateway`;
-- заменить mock `AiStudioGateway`;
+- заменить mock `SpeechKitGateway`;
+- заменить mock `YandexGptGateway`;
 - добавить конфиг окружения;
 - провести первый end-to-end прогон на реальном аудио.
 

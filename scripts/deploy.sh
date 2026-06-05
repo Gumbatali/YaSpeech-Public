@@ -30,6 +30,8 @@ source "$ENV_FILE"
 : "${SECRET:?Не задана переменная SECRET в .env.deploy}"
 : "${FOLDER_ID:?Не задана переменная FOLDER_ID в .env.deploy}"
 : "${FRONTEND_BUCKET:?Не задана переменная FRONTEND_BUCKET в .env.deploy}"
+: "${SESSION_SECRET:?Не задана переменная SESSION_SECRET в .env.deploy}"
+: "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
 VERSION=$(git rev-parse --short HEAD 2>/dev/null || date +%s)
@@ -44,12 +46,15 @@ SHARED_FILES=(
   apps/server/src/shared/sign-v4.js
   apps/server/src/shared/logger.js
   apps/server/src/shared/iam-token.js
+  apps/server/src/shared/password.js
+  apps/server/src/shared/session.js
   apps/server/src/application/meeting-pipeline-service.js
   apps/server/src/application/transcript-postprocessor.js
   apps/server/src/application/transcription/chunker.js
   apps/server/src/infrastructure/yc-artifact-storage.js
   apps/server/src/infrastructure/yc-project-repository.js
   apps/server/src/infrastructure/yc-meeting-repository.js
+  apps/server/src/infrastructure/yc-user-repository.js
   apps/server/src/infrastructure/ymq-queue-runner.js
   apps/server/src/infrastructure/mock-speech-kit-gateway.js
   apps/server/src/infrastructure/mock-yandex-gpt-gateway.js
@@ -92,6 +97,8 @@ deploy_api() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
+    --environment "SESSION_SECRET=$SESSION_SECRET" \
+    --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
     --service-account-id "$SA_ID" \
     2>&1 | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ api deployed"
@@ -164,15 +171,31 @@ PYEOF
   rm -f "$TMP_HTML"
 }
 
+update_gateway() {
+  local SPEC="$ROOT/infra/api-gateway.yaml"
+  if [[ -f "$SPEC" ]]; then
+    echo "🌐 Updating API Gateway..."
+    $YC serverless api-gateway update --name yaspeech-gateway --spec "$SPEC" \
+      2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    echo "   ✓ gateway updated"
+  else
+    echo "   ⚠️  infra/api-gateway.yaml not found, skipping gateway update"
+  fi
+}
+
 case "$TARGET" in
   api)
     build_api
     deploy_api
     upload_frontend
+    update_gateway
     ;;
   worker)
     build_worker
     deploy_worker
+    ;;
+  gateway)
+    update_gateway
     ;;
   all|*)
     build_api
@@ -180,6 +203,7 @@ case "$TARGET" in
     build_worker
     deploy_worker
     upload_frontend
+    update_gateway
     ;;
 esac
 

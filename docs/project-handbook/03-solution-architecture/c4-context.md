@@ -8,12 +8,12 @@ flowchart LR
   Manager["Менеджер / владелец продукта"] --> System
   Admin["Облачный администратор"] --> System
 
-  System --> SpeechSense["Yandex SpeechSense"]
-  System --> AIStudio["Yandex AI Studio"]
+  System --> SpeechKit["Yandex SpeechKit"]
+  System --> AIStudio["Yandex YandexGPT"]
   System --> ObjectStorage["Yandex Object Storage"]
   System --> CloudServices["Yandex Cloud serverless-сервисы"]
 
-  SpeechSense --> AIStudio
+  SpeechKit --> AIStudio
 ```
 
 ## Пояснение

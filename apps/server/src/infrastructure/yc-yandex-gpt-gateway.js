@@ -482,6 +482,8 @@ export class YcYandexGptGateway {
         id: s.id,
         label: s.label,
         guessedName: s.guessedName,
+        guessedRole: s.guessedRole ?? null,
+        dialogueRole: s.dialogueRole ?? null,
         confidence: s.confidence ?? "low"
       })),
       context,

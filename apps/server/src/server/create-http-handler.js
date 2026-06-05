@@ -4,16 +4,36 @@ import {
   CreateMeetingUseCase,
   CreateProjectUseCase,
   MarkUploadCompletedUseCase,
-  UpdateProjectTeamUseCase
+  UpdateProjectTeamUseCase,
+  RegisterUserUseCase,
+  LoginUserUseCase,
+  publicUser
 } from "../../../../packages/core/src/index.js";
+import {
+  banUser,
+  unbanUser,
+  setRole,
+  checkTranscriptionQuota,
+  incrementTranscriptionUsed,
+  setTranscriptionQuota,
+  resetTranscriptionUsed
+} from "../../../../packages/core/src/domain/user.js";
 import {
   badRequest,
   notFound,
   readJsonRequestBody,
   sendJson,
   sendText,
-  serverError
+  serverError,
+  UserError
 } from "../shared/http.js";
+import {
+  verifySessionToken,
+  parseCookies,
+  createSessionToken,
+  setSessionCookie,
+  clearSessionCookie
+} from "../shared/session.js";
 
 function splitPathname(pathname) {
   return pathname.split("/").filter(Boolean);
@@ -44,12 +64,16 @@ function getContentType(filePath) {
 export function createHttpHandler({
   projectRepository,
   meetingRepository,
+  userRepository,
   artifactStorage,
   pipelineService,
   clock,
   idGenerator,
   webRootDirectory,
-  apiKey
+  sessionSecret,
+  adminLogin,
+  passwordHasher,
+  passwordVerifier
 }) {
   const createProject = new CreateProjectUseCase(
     projectRepository,
@@ -66,6 +90,22 @@ export function createHttpHandler({
   );
   const markUploadCompleted = new MarkUploadCompletedUseCase(meetingRepository, clock);
 
+  /**
+   * Читает сессионную cookie и возвращает текущего пользователя или null.
+   * Если SESSION_SECRET не задан → auth отключён (local dev).
+   */
+  async function resolveCurrentUser(request) {
+    if (!sessionSecret) return null;
+    const cookies = parseCookies(request.headers.cookie ?? "");
+    const token = cookies.session;
+    if (!token) return null;
+    const userId = verifySessionToken(token, sessionSecret);
+    if (!userId) return null;
+    const user = await userRepository.findById(userId);
+    if (!user || user.status === "banned") return null;
+    return user;
+  }
+
   return async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     const parts = splitPathname(url.pathname);
@@ -80,14 +120,185 @@ export function createHttpHandler({
       return;
     }
 
-    // API key protection — только для /api/* маршрутов
-    if (apiKey && parts[0] === "api" && request.headers["x-api-key"] !== apiKey) {
-      response.writeHead(401, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "Unauthorized" }));
-      return;
-    }
-
     try {
+      // ── Auth routes (без проверки сессии) ────────────────────────────────────
+
+      if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "register"
+          && request.method === "POST") {
+        const payload = await readJsonRequestBody(request);
+        const registerUseCase = new RegisterUserUseCase(
+          userRepository, passwordHasher, clock, idGenerator, adminLogin
+        );
+        let regUser;
+        try {
+          regUser = await registerUseCase.execute({
+            login: payload.login ?? "",
+            password: payload.password ?? ""
+          });
+        } catch (e) {
+          badRequest(response, e.message);
+          return;
+        }
+        if (sessionSecret) {
+          const token = createSessionToken(regUser.id, sessionSecret);
+          setSessionCookie(response, token);
+        }
+        sendJson(response, 201, { user: regUser });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "login"
+          && request.method === "POST") {
+        const payload = await readJsonRequestBody(request);
+        const loginUseCase = new LoginUserUseCase(userRepository, passwordVerifier);
+        let loginUser;
+        try {
+          loginUser = await loginUseCase.execute({
+            login: payload.login ?? "",
+            password: payload.password ?? ""
+          });
+        } catch (e) {
+          // 401 для неверных данных, 403 для бана
+          const status = e.message.includes("заблокирован") ? 403 : 401;
+          response.writeHead(status, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: e.message }));
+          return;
+        }
+        if (sessionSecret) {
+          const token = createSessionToken(loginUser.id, sessionSecret);
+          setSessionCookie(response, token);
+        }
+        sendJson(response, 200, { user: loginUser });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "logout"
+          && request.method === "POST") {
+        clearSessionCookie(response);
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "me"
+          && request.method === "GET") {
+        const currentUser = await resolveCurrentUser(request);
+        if (!currentUser) {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "Не авторизован." }));
+          return;
+        }
+        sendJson(response, 200, { user: publicUser(currentUser) });
+        return;
+      }
+
+      // ── Session middleware для всех /api/* кроме /api/auth/* ─────────────────
+      let currentUser = null;
+      if (parts[0] === "api" && parts[1] !== "auth") {
+        if (sessionSecret) {
+          currentUser = await resolveCurrentUser(request);
+          if (!currentUser) {
+            response.writeHead(401, { "content-type": "application/json" });
+            response.end(JSON.stringify({ error: "Требуется авторизация." }));
+            return;
+          }
+        }
+      }
+
+      // ── Admin routes ──────────────────────────────────────────────────────────
+
+      if (parts[0] === "api" && parts[1] === "admin") {
+        if (!currentUser || currentUser.role !== "admin") {
+          response.writeHead(403, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "Доступ запрещён." }));
+          return;
+        }
+
+        // GET /api/admin/users
+        if (parts[2] === "users" && parts.length === 3 && request.method === "GET") {
+          const users = (await userRepository.list()).map(publicUser);
+          sendJson(response, 200, { users });
+          return;
+        }
+
+        // POST /api/admin/users/:id/ban
+        if (parts[2] === "users" && parts[4] === "ban" && request.method === "POST") {
+          const targetUser = await userRepository.findById(parts[3]);
+          if (!targetUser) { notFound(response); return; }
+          if (targetUser.id === currentUser.id) {
+            badRequest(response, "Нельзя заблокировать самого себя.");
+            return;
+          }
+          const banned = banUser(targetUser, clock.now().toISOString());
+          await userRepository.save(banned);
+          sendJson(response, 200, { user: publicUser(banned) });
+          return;
+        }
+
+        // POST /api/admin/users/:id/unban
+        if (parts[2] === "users" && parts[4] === "unban" && request.method === "POST") {
+          const targetUser = await userRepository.findById(parts[3]);
+          if (!targetUser) { notFound(response); return; }
+          const unbanned = unbanUser(targetUser, clock.now().toISOString());
+          await userRepository.save(unbanned);
+          sendJson(response, 200, { user: publicUser(unbanned) });
+          return;
+        }
+
+        // PATCH /api/admin/users/:id/role
+        if (parts[2] === "users" && parts[4] === "role" && request.method === "PATCH") {
+          const targetUser = await userRepository.findById(parts[3]);
+          if (!targetUser) { notFound(response); return; }
+          const payload = await readJsonRequestBody(request);
+          const newRole = payload.role;
+
+          // Защита: нельзя разжаловать последнего админа
+          if (targetUser.role === "admin" && newRole === "member") {
+            const adminCount = await userRepository.countByRole("admin");
+            if (adminCount <= 1) {
+              badRequest(response, "Нельзя разжаловать последнего администратора.");
+              return;
+            }
+          }
+
+          const updated = setRole(targetUser, newRole, clock.now().toISOString());
+          await userRepository.save(updated);
+          sendJson(response, 200, { user: publicUser(updated) });
+          return;
+        }
+
+        // PATCH /api/admin/users/:id/quota  — установить квоту (quota: null|number)
+        if (parts[2] === "users" && parts[4] === "quota" && request.method === "PATCH") {
+          const targetUser = await userRepository.findById(parts[3]);
+          if (!targetUser) { notFound(response); return; }
+          const payload = await readJsonRequestBody(request);
+          // payload.quota: null = безлимит, целое число ≥ 0 = лимит
+          const quota = payload.quota === null ? null : Number(payload.quota);
+          if (quota !== null && (!Number.isInteger(quota) || quota < 0)) {
+            badRequest(response, "quota должна быть целым числом ≥ 0 или null.");
+            return;
+          }
+          const updated = setTranscriptionQuota(targetUser, quota, clock.now().toISOString());
+          await userRepository.save(updated);
+          sendJson(response, 200, { user: publicUser(updated) });
+          return;
+        }
+
+        // POST /api/admin/users/:id/quota/reset  — сбросить счётчик использования
+        if (parts[2] === "users" && parts[4] === "quota" && parts[5] === "reset"
+            && request.method === "POST") {
+          const targetUser = await userRepository.findById(parts[3]);
+          if (!targetUser) { notFound(response); return; }
+          const updated = resetTranscriptionUsed(targetUser, clock.now().toISOString());
+          await userRepository.save(updated);
+          sendJson(response, 200, { user: publicUser(updated) });
+          return;
+        }
+
+        notFound(response);
+        return;
+      }
+
+      // ── Стандартная валидация ID ──────────────────────────────────────────────
       const ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
       if (parts[0] === "api" && parts[1] === "projects" && parts.length > 2) {
@@ -143,7 +354,12 @@ export function createHttpHandler({
       }
 
       if (request.method === "GET" && url.pathname === "/api/projects") {
-        sendJson(response, 200, { projects: await projectRepository.list() });
+        const allProjects = await projectRepository.list();
+        // Администраторы видят всё; обычные пользователи — только свои проекты
+        const projects = (currentUser && currentUser.role === "admin")
+          ? allProjects
+          : allProjects.filter((p) => !p.ownerId || p.ownerId === currentUser?.id);
+        sendJson(response, 200, { projects });
         return;
       }
 
@@ -151,7 +367,8 @@ export function createHttpHandler({
         const payload = await readJsonRequestBody(request);
         const project = await createProject.execute({
           name: payload.name,
-          members: payload.members ?? []
+          members: payload.members ?? [],
+          ownerId: currentUser?.id ?? null
         });
         sendJson(response, 201, { project });
         return;
@@ -284,6 +501,22 @@ export function createHttpHandler({
         parts[3] === "upload-complete" &&
         request.method === "POST"
       ) {
+        // Проверяем квоту расшифровок для текущего пользователя
+        if (currentUser && sessionSecret) {
+          const freshUser = await userRepository.findById(currentUser.id);
+          if (freshUser) {
+            const quotaCheck = checkTranscriptionQuota(freshUser);
+            if (!quotaCheck.allowed) {
+              response.writeHead(402, { "content-type": "application/json" });
+              response.end(JSON.stringify({ error: quotaCheck.reason }));
+              return;
+            }
+            // Инкрементируем счётчик сразу при постановке в обработку
+            const withUsed = incrementTranscriptionUsed(freshUser, clock.now().toISOString());
+            await userRepository.save(withUsed);
+          }
+        }
+
         const payload = await readJsonRequestBody(request);
         const meeting = await markUploadCompleted.execute({
           meetingId: parts[2],
@@ -337,6 +570,164 @@ export function createHttpHandler({
         return;
       }
 
+      // PATCH /api/meetings/:id/transcript — сохранить отредактированный текст расшифровки
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts[3] === "transcript" &&
+        request.method === "PATCH"
+      ) {
+        const meeting = await meetingRepository.getById(parts[2]);
+        if (!meeting) { notFound(response); return; }
+
+        const { rawText } = await readJsonRequestBody(request);
+        if (typeof rawText !== "string" || !rawText.trim()) {
+          badRequest(response, "rawText обязателен.");
+          return;
+        }
+
+        // Парсим строки вида "Спикер 1: текст" обратно в phrases
+        const phrases = rawText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const m = line.match(/^(.{1,50}):\s*(.+)$/);
+            if (m) return { speakerLabel: m[1], speakerId: m[1].toLowerCase().replace(/\s+/g, "-"), text: m[2] };
+            return { speakerLabel: "", speakerId: "speaker-1", text: line };
+          });
+
+        const existing = await artifactStorage.readJson(meeting.artifacts.transcriptKey) ?? {};
+        await artifactStorage.writeJson(meeting.artifacts.transcriptKey, {
+          ...existing,
+          rawText: rawText.trim(),
+          phrases,
+          editedByUser: true,
+          editedAt: clock.now().toISOString()
+        });
+
+        // ВАЖНО: UI читает сегменты из объекта встречи, а не из transcript.json.
+        // Обновляем segments + correctedText, иначе правка не видна.
+        const segments = phrases.map((p) => ({
+          speakerId: p.speakerId,
+          speakerLabel: p.speakerLabel,
+          guessedName: null,
+          text: p.text,
+          startTimeMs: null,
+          endTimeMs: null
+        }));
+        const updatedMeeting = {
+          ...meeting,
+          transcriptSegments: segments,
+          rawTranscriptSegments: segments,
+          gptContext: {
+            ...(meeting.gptContext ?? {}),
+            correctedText: rawText.trim()
+          },
+          updatedAt: clock.now().toISOString()
+        };
+        await meetingRepository.save(updatedMeeting);
+
+        sendJson(response, 200, { ok: true, meeting: updatedMeeting });
+        return;
+      }
+
+      // POST /api/meetings/:id/transcript/restore — вернуть исходную расшифровку из .raw.json
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts[3] === "transcript" &&
+        parts[4] === "restore" &&
+        request.method === "POST"
+      ) {
+        const meeting = await meetingRepository.getById(parts[2]);
+        if (!meeting) { notFound(response); return; }
+
+        const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
+        const original = await artifactStorage.readJson(rawKey);
+        if (!original) {
+          badRequest(response, "Исходная расшифровка недоступна для этой встречи.");
+          return;
+        }
+
+        await artifactStorage.writeJson(meeting.artifacts.transcriptKey, {
+          ...original,
+          restoredFromOriginal: true,
+          restoredAt: clock.now().toISOString()
+        });
+
+        // Сбрасываем сегменты на исходные, чтобы UI показал оригинал
+        const segments = (original.phrases ?? []).map((p) => ({
+          speakerId: p.speakerId,
+          speakerLabel: p.speakerLabel,
+          guessedName: p.detectedName ?? null,
+          text: p.text,
+          startTimeMs: p.startTimeMs ?? null,
+          endTimeMs: p.endTimeMs ?? null
+        }));
+        const updated = {
+          ...meeting,
+          rawTranscriptSegments: segments,
+          transcriptSegments: segments,
+          updatedAt: clock.now().toISOString()
+        };
+        await meetingRepository.save(updated);
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      // PATCH /api/meetings/:id/protocol — сохранить отредактированный протокол (action items, дедлайны и т.п.)
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts[3] === "protocol" &&
+        request.method === "PATCH"
+      ) {
+        const meeting = await meetingRepository.getById(parts[2]);
+        if (!meeting) { notFound(response); return; }
+
+        const { protocol } = await readJsonRequestBody(request);
+        if (!protocol || typeof protocol !== "object") {
+          badRequest(response, "protocol обязателен.");
+          return;
+        }
+
+        await artifactStorage.writeJson(meeting.artifacts.protocolJsonKey, protocol);
+
+        const updated = { ...meeting, protocol, updatedAt: clock.now().toISOString() };
+        await meetingRepository.save(updated);
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      // POST /api/meetings/:id/regenerate-protocol — пересобрать протокол из сохранённой расшифровки
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts[3] === "regenerate-protocol" &&
+        request.method === "POST"
+      ) {
+        const meeting = await meetingRepository.getById(parts[2]);
+        if (!meeting) { notFound(response); return; }
+
+        if (!["done", "failed"].includes(meeting.status)) {
+          badRequest(response, "Пересборка доступна только для завершённых или упавших встреч.");
+          return;
+        }
+
+        const updated = {
+          ...meeting,
+          status: "protocol_generating",
+          currentStage: "protocol_generating",
+          updatedAt: clock.now().toISOString(),
+          error: undefined
+        };
+        await meetingRepository.save(updated);
+        pipelineService.enqueueProcessing(parts[2]);
+        sendJson(response, 200, { meeting: updated });
+        return;
+      }
+
       if (
         parts[0] === "api" &&
         parts[1] === "meetings" &&
@@ -356,6 +747,35 @@ export function createHttpHandler({
         }
 
         sendText(response, 200, protocol);
+        return;
+      }
+
+      if (
+        parts[0] === "api" &&
+        parts[1] === "meetings" &&
+        parts[3] === "transcript.txt" &&
+        request.method === "GET"
+      ) {
+        const meeting = await meetingRepository.getById(parts[2]);
+        if (!meeting) {
+          notFound(response);
+          return;
+        }
+
+        const transcript = await artifactStorage.readJson(meeting.artifacts.transcriptKey);
+        if (!transcript) {
+          notFound(response);
+          return;
+        }
+
+        // rawText содержит реплики вида "Спикер N: текст"; если его нет —
+        // собираем из phrases. Для отдачи нужен человекочитаемый текст.
+        const text = transcript.rawText
+          ?? (transcript.phrases ?? [])
+            .map((p) => `${p.speakerLabel ? `${p.speakerLabel}: ` : ""}${p.text}`)
+            .join("\n");
+
+        sendText(response, 200, text);
         return;
       }
 
