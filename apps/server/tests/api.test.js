@@ -248,7 +248,9 @@ test("failed AI generation can be retried to completion", async () => {
       }
     );
 
-    assert.equal(retried.body.meeting.status, "uploaded");
+    // Сбой был на стадии генерации протокола — retry возобновляет именно с неё,
+    // пропуская повторный ASR (оптимизация: не гоняем SpeechKit заново).
+    assert.equal(retried.body.meeting.status, "protocol_generating");
 
     await server.waitForIdle();
 

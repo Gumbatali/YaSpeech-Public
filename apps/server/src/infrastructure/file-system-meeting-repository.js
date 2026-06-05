@@ -68,4 +68,13 @@ export class FileSystemMeetingRepository {
 
     await writeJsonFile(this.meetingsIndexPath(meeting.projectId), nextIndex);
   }
+
+  async delete(meetingId) {
+    const meeting = await this.getById(meetingId);
+    if (!meeting) return;
+
+    const index = await readJsonFile(this.meetingsIndexPath(meeting.projectId), []);
+    const nextIndex = index.filter((entry) => entry.id !== meetingId);
+    await writeJsonFile(this.meetingsIndexPath(meeting.projectId), nextIndex);
+  }
 }
