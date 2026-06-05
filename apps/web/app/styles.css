@@ -1303,6 +1303,80 @@ button { cursor: pointer; }
   color: var(--brand);
 }
 
+.link-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+  text-decoration: none;
+}
+
+.link-button--danger {
+  color: #d14343;
+}
+.link-button--danger:hover {
+  color: #b02020;
+}
+
+/* ==============================
+   Админ-таблица пользователей
+   ============================== */
+.admin-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 0.5rem;
+}
+
+.admin-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 0.9fr 0.9fr 1.8fr;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.65rem 0.5rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  font-size: 0.88rem;
+}
+.admin-row--head {
+  font-weight: 600;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted, #6b7280);
+  border-bottom: 1.5px solid var(--color-border, #e5e7eb);
+}
+.admin-row--busy { opacity: 0.5; }
+
+.admin-login { font-weight: 500; }
+.admin-self { color: var(--color-text-muted, #9ca3af); font-weight: 400; }
+.admin-quota { font-variant-numeric: tabular-nums; }
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+}
+
+.role-badge, .status-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+.role-badge--admin { background: #eef2ff; color: #4f46e5; }
+.role-badge--member { background: #f3f4f6; color: #6b7280; }
+.status-badge--active { background: #ecfdf5; color: #059669; }
+.status-badge--banned { background: #fef2f2; color: #dc2626; }
+
+@media (max-width: 720px) {
+  .admin-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.3rem 0.5rem;
+  }
+  .admin-row--head { display: none; }
+  .admin-actions { grid-column: 1 / -1; }
+}
+
 /* ==============================
    User chip (top-right of projects screen)
    ============================== */
