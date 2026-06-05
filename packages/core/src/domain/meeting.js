@@ -87,7 +87,7 @@ export function incrementAsrPoll(meeting, updatedAt) {
 }
 
 export function markMeetingUploaded(meeting, sizeBytes, updatedAt, durationSeconds) {
-  if (meeting.status !== "uploading" && meeting.status !== "draft") {
+  if (meeting.status !== "uploading" && meeting.status !== "draft_ready") {
     return {
       ...meeting,
       audioFile: {

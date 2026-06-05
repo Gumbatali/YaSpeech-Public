@@ -368,9 +368,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     const [savingTranscript, setSavingTranscript] = useState(false);
     const [regenerating, setRegenerating] = useState(false);
     const [restoringTranscript, setRestoringTranscript] = useState(false);
-    // Редактирование action items (дедлайн + задача + ответственный)
-    const [editingActionIdx, setEditingActionIdx] = useState(null);
-    const [actionEditDraft, setActionEditDraft] = useState({});
     // Редактирование всего саммари (обзор, участники, решения, задачи)
     const [editingSummary, setEditingSummary] = useState(false);
     const [summaryDraft, setSummaryDraft] = useState(null);

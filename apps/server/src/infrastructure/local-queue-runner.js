@@ -17,6 +17,10 @@ export class LocalQueueRunner {
     this.pending.push(async () => {
       try {
         await task();
+      } catch (error) {
+        // Фоновый воркер не должен ронять процесс из-за одной задачи
+        // (например, данные удалены при teardown теста). Логируем и продолжаем.
+        console.error(`[queue] task "${key}" failed: ${error?.message ?? error}`);
       } finally {
         this.runningKeys.delete(key);
       }
