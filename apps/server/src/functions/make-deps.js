@@ -8,6 +8,7 @@
 import { YcArtifactStorage } from "../infrastructure/yc-artifact-storage.js";
 import { YcProjectRepository } from "../infrastructure/yc-project-repository.js";
 import { YcMeetingRepository } from "../infrastructure/yc-meeting-repository.js";
+import { YcUserRepository } from "../infrastructure/yc-user-repository.js";
 import { YmqQueueRunner } from "../infrastructure/ymq-queue-runner.js";
 import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.js";
 import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
@@ -15,6 +16,7 @@ import { YcSpeechKitGateway } from "../infrastructure/yc-speech-kit-gateway.js";
 import { GroqWhisperGateway } from "../infrastructure/groq-whisper-gateway.js";
 import { YcYandexGptGateway } from "../infrastructure/yc-yandex-gpt-gateway.js";
 import { MeetingPipelineService } from "../application/meeting-pipeline-service.js";
+import { hashPassword, verifyPassword } from "../shared/password.js";
 
 class RuntimeClock {
   now() { return new Date(); }
@@ -37,6 +39,7 @@ export function makeDeps() {
   const artifactStorage   = new YcArtifactStorage({ bucket, keyId: storageKeyId, secret: storageSecret });
   const projectRepository = new YcProjectRepository(artifactStorage);
   const meetingRepository = new YcMeetingRepository(artifactStorage);
+  const userRepository    = new YcUserRepository(artifactStorage);
   const queueRunner       = new YmqQueueRunner({ queueUrl, keyId, secret });
   const clock             = new RuntimeClock();
   const idGenerator       = new RuntimeIdGenerator();
@@ -70,7 +73,24 @@ export function makeDeps() {
     clock,
   });
 
-  const apiKey = process.env.API_KEY ?? null;
+  const sessionSecret = process.env.SESSION_SECRET ?? null;
+  const adminLogin    = process.env.ADMIN_LOGIN ?? null;
 
-  return { projectRepository, meetingRepository, artifactStorage, pipelineService, clock, idGenerator, apiKey };
+  // Адаптеры для хэширования паролей (без npm — Node crypto под капотом)
+  const passwordHasher   = { hash: hashPassword };
+  const passwordVerifier = { verify: verifyPassword };
+
+  return {
+    projectRepository,
+    meetingRepository,
+    userRepository,
+    artifactStorage,
+    pipelineService,
+    clock,
+    idGenerator,
+    sessionSecret,
+    adminLogin,
+    passwordHasher,
+    passwordVerifier
+  };
 }

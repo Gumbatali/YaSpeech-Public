@@ -19,8 +19,8 @@ flowchart TB
   end
 
   subgraph AI["AI сервисы"]
-    Speech["SpeechSense"]
-    LLM["AI Studio"]
+    Speech["SpeechKit"]
+    LLM["YandexGPT"]
   end
 
   Browser --> StaticBucket
@@ -52,11 +52,11 @@ flowchart TB
 
 ## Внешние интеграции
 
-### `SpeechSense`
+### `SpeechKit`
 
 Используется для распознавания аудиозаписи и получения транскрипта.
 
-### `AI Studio`
+### `YandexGPT`
 
 Используется после транскрипта для:
 
@@ -79,4 +79,4 @@ flowchart TB
 - Cloud Functions;
 - Object Storage;
 - Message Queue;
-- реальные SpeechSense / AI Studio.
+- реальные SpeechKit / YandexGPT.

@@ -850,11 +850,33 @@ button { cursor: pointer; }
   min-width: 0;
 }
 
+.tf-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
 .tf-name {
   font-size: 0.78rem;
   font-weight: 600;
-  margin-bottom: 0.25rem;
   letter-spacing: 0.01em;
+}
+
+.tf-role {
+  font-size: 0.72rem;
+  color: var(--color-text-muted, #6b7280);
+  background: var(--color-surface-alt, #f3f4f6);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-weight: 500;
+}
+
+.tf-timecode {
+  font-size: 0.72rem;
+  color: var(--color-text-muted, #9ca3af);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .tf-text {
@@ -876,15 +898,32 @@ button { cursor: pointer; }
   margin: 0.25rem 0;
 }
 
+.action-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
 .action-item {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   gap: 0.4rem 0.75rem;
-  align-items: baseline;
-  padding: 0.4rem 0;
+  align-items: center;
+  padding: 0.55rem 0.5rem;
   border-bottom: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms;
 }
 .action-item:last-child { border-bottom: none; }
+.action-item:hover { background: var(--color-surface-alt, #f3f4f6); }
+
+.action-edit-hint {
+  opacity: 0;
+  font-size: 0.75rem;
+  transition: opacity 120ms;
+}
+.action-item:hover .action-edit-hint { opacity: 1; }
 
 .action-owner {
   font-weight: 600;
@@ -899,6 +938,108 @@ button { cursor: pointer; }
   color: var(--color-text-muted, #6b7280);
   white-space: nowrap;
 }
+.action-deadline--empty {
+  color: #4f6ef7;
+  font-size: 0.78rem;
+}
+
+/* Режим редактирования action item */
+.action-item--editing {
+  display: block;
+  cursor: default;
+  background: #f8f9ff;
+  border: 1.5px solid #4f6ef7;
+  padding: 0.875rem 1rem;
+  border-radius: 10px;
+  border-bottom: 1.5px solid #4f6ef7 !important;
+}
+.action-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  gap: 0.5rem;
+}
+@media (max-width: 640px) {
+  .action-edit-grid { grid-template-columns: 1fr; }
+}
+.action-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--color-text-muted, #6b7280);
+  font-weight: 500;
+}
+.action-edit-field input {
+  padding: 0.35rem 0.6rem;
+  border: 1.5px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  font-size: 0.88rem;
+  background: #fff;
+  outline: none;
+}
+.action-edit-field input:focus { border-color: #4f6ef7; }
+.action-edit-btns {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* статичный action item (режим просмотра) — без интерактива */
+.action-item--static {
+  cursor: default;
+  grid-template-columns: auto 1fr auto;
+}
+.action-item--static:hover { background: transparent; }
+
+/* panel-head top row: заголовок + кнопка в одну строку */
+.panel-head-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* ── Редактирование итогов (саммари) ── */
+.summary-edit-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.25rem;
+}
+
+.summary-textarea {
+  width: 100%;
+  padding: 0.75rem 0.9rem;
+  border: 1.5px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  resize: vertical;
+  background: #fff;
+  outline: none;
+  box-sizing: border-box;
+}
+.summary-textarea:focus { border-color: #4f6ef7; }
+
+.edit-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+.edit-row input {
+  flex: 1;
+  padding: 0.4rem 0.65rem;
+  border: 1.5px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: #fff;
+  outline: none;
+}
+.edit-row input:focus { border-color: #4f6ef7; }
+
+.summary-edit .action-item--editing { margin-bottom: 0.6rem; }
 
 .highlights-list {
   display: flex;
@@ -928,11 +1069,76 @@ button { cursor: pointer; }
   font-style: italic;
 }
 
+/* ── Transcript toolbar (toggle + edit/regen actions) ── */
+.transcript-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.transcript-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.ghost-button--sm {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.78rem;
+}
+
+/* Режим редактирования расшифровки */
+.transcript-edit-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.transcript-edit-hint {
+  font-size: 0.83rem;
+  color: var(--color-text-muted, #6b7280);
+  background: #f0f4ff;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  line-height: 1.5;
+}
+
+.transcript-edit-hint code {
+  background: rgba(0,0,0,0.07);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+}
+
+.transcript-editor {
+  width: 100%;
+  min-height: 320px;
+  padding: 0.875rem 1rem;
+  font-family: "Golos Text", ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.65;
+  border: 1.5px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  resize: vertical;
+  background: #fafafa;
+  color: var(--color-text, #111);
+  outline: none;
+  transition: border-color 150ms;
+  box-sizing: border-box;
+}
+
+.transcript-editor:focus {
+  border-color: #4f6ef7;
+  background: #fff;
+}
+
 /* ── Transcript version toggle (Дословно / LLM восстановил) ── */
 .transcript-version-toggle {
   display: flex;
   gap: 0.25rem;
-  margin-bottom: 1rem;
   background: var(--color-surface-alt, #f3f4f6);
   border-radius: 8px;
   padding: 3px;
@@ -1020,4 +1226,118 @@ button { cursor: pointer; }
   color: #92400e;
   line-height: 1.5;
   margin-bottom: 0.5rem;
+}
+
+/* ==============================
+   Auth Screen
+   ============================== */
+.auth-shell {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.auth-card {
+  background: var(--panel);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.auth-logo {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--brand);
+  letter-spacing: -0.01em;
+}
+
+.auth-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--ink);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.auth-error {
+  background: rgba(216, 74, 58, 0.08);
+  border: 1px solid rgba(216, 74, 58, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.88rem;
+  color: var(--error);
+  line-height: 1.45;
+}
+
+.auth-switch {
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: inherit;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:hover {
+  color: var(--brand);
+}
+
+/* ==============================
+   User chip (top-right of projects screen)
+   ============================== */
+.screen-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--bg-deep);
+  border-radius: 100px;
+  padding: 0.3rem 0.75rem 0.3rem 0.9rem;
+  font-size: 0.82rem;
+}
+
+.user-chip-login {
+  color: var(--ink-soft);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-logout {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.user-logout:hover {
+  color: var(--error);
 }

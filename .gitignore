@@ -11,3 +11,9 @@ npm-debug.log*
 
 # Секреты деплоя — никогда не коммитить
 scripts/.env.deploy
+
+# Артефакты бенчмарка (пример-эталон оставляем в репо)
+scripts/benchmark/data/manifest.jsonl
+scripts/benchmark/data/*.flac
+scripts/benchmark/report.json
+scripts/benchmark/report.md

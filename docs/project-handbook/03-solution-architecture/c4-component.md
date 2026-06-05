@@ -14,8 +14,8 @@ flowchart LR
   Pipeline --> MeetingRepo
   Pipeline --> ProjectRepo
   Pipeline --> Storage
-  Pipeline --> SpeechGateway["SpeechSenseGateway"]
-  Pipeline --> AiGateway["AiStudioGateway"]
+  Pipeline --> SpeechGateway["SpeechKitGateway"]
+  Pipeline --> AiGateway["YandexGptGateway"]
   Pipeline --> Queue["QueueRunner"]
 
   Core["packages/core"] --> UseCases

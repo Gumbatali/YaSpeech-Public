@@ -14,8 +14,8 @@ flowchart TD
 
   Queue --> Worker["Cloud Function: Worker"]
   Worker --> Storage
-  Worker --> SpeechSense["SpeechSense"]
-  Worker --> AIStudio["AI Studio"]
+  Worker --> SpeechKit["SpeechKit"]
+  Worker --> AIStudio["YandexGPT"]
 
   ApiFn --> MeetingState["Состояние встречи<br/>meeting.json"]
   Worker --> MeetingState
@@ -35,7 +35,7 @@ flowchart TD
   постановка задач на фоновую обработку.
 - `Cloud Function: Worker`
   оркестрация транскрипции, draft и протокола.
-- `SpeechSense`
+- `SpeechKit`
   распознавание и подготовка транскрипта.
-- `AI Studio`
+- `YandexGPT`
   генерация title draft, speaker draft и протокола.

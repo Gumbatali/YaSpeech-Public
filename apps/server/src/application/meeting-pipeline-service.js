@@ -84,6 +84,8 @@ export class MeetingPipelineService {
             id: speaker.id,
             label: speaker.label,
             guessedName: speaker.guessedName?.trim() || null,
+            guessedRole: speaker.guessedRole?.trim() || null,
+            dialogueRole: speaker.dialogueRole?.trim() || null,
             confidence: speaker.confidence ?? "unknown"
           }))
         : meeting.speakerDrafts,

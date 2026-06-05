@@ -53,10 +53,31 @@ export function badRequest(response, message) {
 }
 
 export function serverError(response, error) {
+  // Бизнес-ошибки (с флагом userFacing) возвращаем как 400, не как 500
+  if (error.userFacing) {
+    sendJson(response, error.statusCode ?? 400, {
+      error: { code: error.code ?? "BAD_REQUEST", message: error.message }
+    });
+    return;
+  }
   sendJson(response, 500, {
     error: {
       code: error.code ?? "INTERNAL_ERROR",
       message: error.message ?? "Internal server error."
     }
   });
+}
+
+/**
+ * Бизнес-ошибка с понятным пользователю сообщением.
+ * Автоматически возвращается как 400 (или другой statusCode).
+ * Использование: throw new UserError("Сообщение") или throw new UserError("...", 401)
+ */
+export class UserError extends Error {
+  constructor(message, statusCode = 400, code = "BAD_REQUEST") {
+    super(message);
+    this.userFacing = true;
+    this.statusCode = statusCode;
+    this.code = code;
+  }
 }

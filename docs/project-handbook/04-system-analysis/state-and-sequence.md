@@ -25,8 +25,8 @@ sequenceDiagram
   participant API as API Backend
   participant S as Storage
   participant Q as Queue / Worker
-  participant SS as SpeechSense
-  participant AI as AI Studio
+  participant SS as SpeechKit
+  participant AI as YandexGPT
 
   U->>W: Выбрать проект и файл
   W->>API: POST /api/meetings

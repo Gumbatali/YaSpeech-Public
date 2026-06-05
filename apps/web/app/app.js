@@ -13,7 +13,11 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
   const html = window.htm.bind(window.React.createElement);
 
   class ApiClient {
-    async json(pathname, init = {}) {
+    constructor(onUnauthorized) {
+      this._onUnauthorized = onUnauthorized;
+    }
+
+    async json(pathname, init = {}, { skipAuthRedirect = false } = {}) {
       const response = await fetch(pathname, {
         ...init,
         headers: {
@@ -22,16 +26,46 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         }
       });
 
+      if (response.status === 401 && !skipAuthRedirect) {
+        this._onUnauthorized?.();
+        throw new Error("Сессия истекла. Войдите снова.");
+      }
+
       if (!response.ok) {
         let message = "Не удалось выполнить запрос.";
         try {
           const body = await response.json();
-          message = body.error?.message ?? message;
+          // Поддерживаем оба формата: { error: "string" } и { error: { message } }
+          message = typeof body.error === "string"
+            ? body.error
+            : (body.error?.message ?? message);
         } catch {}
         throw new Error(message);
       }
 
       return response.json();
+    }
+
+    getMe() {
+      return this.json("/api/auth/me");
+    }
+
+    register(login, password) {
+      return this.json("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ login, password })
+      }, { skipAuthRedirect: true });
+    }
+
+    login(login, password) {
+      return this.json("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ login, password })
+      }, { skipAuthRedirect: true });
+    }
+
+    logout() {
+      return this.json("/api/auth/logout", { method: "POST" });
     }
 
     listProjects() {
@@ -107,6 +141,34 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       return this.json(`/api/meetings/${meetingId}`);
     }
 
+    patchTranscript(meetingId, rawText) {
+      return this.json(`/api/meetings/${meetingId}/transcript`, {
+        method: "PATCH",
+        body: JSON.stringify({ rawText })
+      });
+    }
+
+    patchProtocol(meetingId, protocol) {
+      return this.json(`/api/meetings/${meetingId}/protocol`, {
+        method: "PATCH",
+        body: JSON.stringify({ protocol })
+      });
+    }
+
+    restoreTranscript(meetingId) {
+      return this.json(`/api/meetings/${meetingId}/transcript/restore`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+    }
+
+    regenerateProtocol(meetingId) {
+      return this.json(`/api/meetings/${meetingId}/regenerate-protocol`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+    }
+
     retryMeeting(meetingId) {
       return this.json(`/api/meetings/${meetingId}/retry`, {
         method: "POST",
@@ -132,7 +194,8 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
   }
 
-  const api = new ApiClient();
+  // api инициализируется позже, после определения App (нужен onUnauthorized)
+  let api;
 
   function todayIso() {
     return new Date().toISOString().slice(0, 10);
@@ -211,7 +274,79 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     };
   }
 
+  function LoginScreen({ onAuth }) {
+    const [mode, setMode] = useState("login"); // "login" | "register"
+    const [login, setLogin] = useState("");
+    const [password, setPassword] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+
+    async function handleSubmit(event) {
+      event.preventDefault();
+      if (!login.trim() || !password) { setErr("Заполните все поля."); return; }
+      setBusy(true);
+      setErr("");
+      try {
+        let result;
+        if (mode === "login") {
+          result = await api.login(login.trim(), password);
+        } else {
+          result = await api.register(login.trim(), password);
+        }
+        onAuth(result.user);
+      } catch (e) {
+        setErr(e.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    return html`
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-logo">YaSpeech</div>
+          <h1 className="auth-title">${mode === "login" ? "Вход" : "Регистрация"}</h1>
+          <form className="auth-form" onSubmit=${handleSubmit}>
+            <label className="field">
+              <span>Логин</span>
+              <input
+                type="text"
+                autocomplete="username"
+                value=${login}
+                onInput=${(e) => setLogin(e.target.value)}
+                placeholder="Имя пользователя"
+                disabled=${busy}
+              />
+            </label>
+            <label className="field">
+              <span>Пароль</span>
+              <input
+                type="password"
+                autocomplete=${mode === "login" ? "current-password" : "new-password"}
+                value=${password}
+                onInput=${(e) => setPassword(e.target.value)}
+                placeholder="Минимум 6 символов"
+                disabled=${busy}
+              />
+            </label>
+            ${err ? html`<div className="auth-error">${err}</div>` : null}
+            <button className="primary-button" type="submit" disabled=${busy}>
+              ${busy ? "Подождите…" : mode === "login" ? "Войти" : "Зарегистрироваться"}
+            </button>
+          </form>
+          <div className="auth-switch">
+            ${mode === "login"
+              ? html`Нет аккаунта? <button className="link-button" onClick=${() => { setMode("register"); setErr(""); }}>Создать</button>`
+              : html`Уже есть аккаунт? <button className="link-button" onClick=${() => { setMode("login"); setErr(""); }}>Войти</button>`}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function App() {
+    const [authUser, setAuthUser] = useState(null);
+    const [authChecked, setAuthChecked] = useState(false);
     const [projects, setProjects] = useState([]);
     const [selectedProjectId, setSelectedProjectId] = useState("");
     const [requestedScreen, setRequestedScreen] = useState("projects-home");
@@ -228,6 +363,18 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     const [showProjectComposer, setShowProjectComposer] = useState(false);
     const [resultTab, setResultTab] = useState("summary"); // "summary" | "transcript"
     const [transcriptVersion, setTranscriptVersion] = useState("llm"); // "raw" | "llm"
+    const [editingTranscript, setEditingTranscript] = useState(false);
+    const [transcriptEditText, setTranscriptEditText] = useState("");
+    const [savingTranscript, setSavingTranscript] = useState(false);
+    const [regenerating, setRegenerating] = useState(false);
+    const [restoringTranscript, setRestoringTranscript] = useState(false);
+    // Редактирование action items (дедлайн + задача + ответственный)
+    const [editingActionIdx, setEditingActionIdx] = useState(null);
+    const [actionEditDraft, setActionEditDraft] = useState({});
+    // Редактирование всего саммари (обзор, участники, решения, задачи)
+    const [editingSummary, setEditingSummary] = useState(false);
+    const [summaryDraft, setSummaryDraft] = useState(null);
+    const [savingSummary, setSavingSummary] = useState(false);
     const [fileProcessing, setFileProcessing] = useState(false);
     const [fileProcessingStage, setFileProcessingStage] = useState("");
     const [recording, setRecording] = useState(false);
@@ -285,9 +432,21 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     });
     const stageView = getStageViewModel(activeMeeting);
 
+    // Инициализируем api с колбэком на 401
     useEffect(() => {
-      void bootstrap();
+      api = new ApiClient(() => {
+        setAuthUser(null);
+        setAuthChecked(true);
+      });
+      void checkAuth();
     }, []);
+
+    // Загружаем проекты при авторизации
+    useEffect(() => {
+      if (authUser) {
+        void bootstrap();
+      }
+    }, [authUser?.id]);
 
     useEffect(() => {
       if (!selectedProjectId) {
@@ -326,6 +485,17 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       return () => clearInterval(timer);
     }, [activeMeeting?.id, activeMeeting?.status]);
 
+    async function checkAuth() {
+      try {
+        const payload = await api.getMe();
+        setAuthUser(payload.user);
+      } catch {
+        setAuthUser(null);
+      } finally {
+        setAuthChecked(true);
+      }
+    }
+
     async function bootstrap() {
       try {
         setLoading(true);
@@ -337,6 +507,16 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       } finally {
         setLoading(false);
       }
+    }
+
+    async function handleLogout() {
+      try {
+        await api.logout();
+      } catch {}
+      setAuthUser(null);
+      setProjects([]);
+      setSelectedProjectId("");
+      setActiveMeeting(null);
     }
 
     async function loadProjectContext(projectId) {
@@ -868,7 +1048,13 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       return html`
         <section className="screen projects-screen">
           <header className="screen-header">
-            <div className="brand-mark">YaSpeech</div>
+            <div className="screen-header-top">
+              <div className="brand-mark">YaSpeech</div>
+              <div className="user-chip">
+                <span className="user-chip-login">${authUser?.login ?? ""}</span>
+                <button className="link-button user-logout" onClick=${handleLogout}>Выйти</button>
+              </div>
+            </div>
             <h1>Проекты</h1>
             <p>
               Выберите проект, чтобы загрузить запись встречи и получить
@@ -1244,9 +1430,18 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
           <section className="panel panel-main">
             <div className="panel-head">
-              <div>
-                <div className="eyebrow">Черновик встречи</div>
-                <h2>Проверьте название и спикеров</h2>
+              <div className="panel-head-top">
+                <div>
+                  <div className="eyebrow">Черновик встречи</div>
+                  <h2>Проверьте название и спикеров</h2>
+                </div>
+                <button
+                  className="primary-button"
+                  onClick=${handleConfirmDraft}
+                  disabled=${confirmingDraft}
+                >
+                  ${confirmingDraft ? "Собираем..." : "Собрать протокол"}
+                </button>
               </div>
               ${activeMeeting?.gptContext?.transcriptQuality === "poor" ? html`
                 <div className="quality-warning">
@@ -1335,12 +1530,114 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       "#4f6ef7", "#e05c5c", "#2bba8a", "#e09c2b",
       "#9b59b6", "#16a085", "#d35400", "#2980b9"
     ];
-    function speakerColor(speakerId) {
-      const idx = parseInt((speakerId ?? "0").replace(/\D/g, "") || "0", 10) - 1;
-      return SPEAKER_COLORS[Math.abs(idx) % SPEAKER_COLORS.length];
+
+    /**
+     * Строим карту identity → color прямо из сегментов в порядке первого появления.
+     * Не зависит от speakerDrafts — работает и для raw, и для LLM-версии.
+     * Один и тот же спикер всегда получает один и тот же цвет внутри набора сегментов.
+     */
+    function buildSpeakerColorMap(segments) {
+      const map = new Map();
+      let idx = 0;
+      for (const seg of (segments ?? [])) {
+        const key = (seg.guessedName?.trim()) || seg.speakerLabel || seg.speakerId;
+        if (key && !map.has(key)) {
+          map.set(key, SPEAKER_COLORS[idx % SPEAKER_COLORS.length]);
+          idx++;
+        }
+      }
+      return map;
     }
+
+    function speakerColorFromMap(colorMap, seg) {
+      const keys = [seg.guessedName?.trim(), seg.speakerLabel, seg.speakerId].filter(Boolean);
+      for (const k of keys) {
+        if (colorMap.has(k)) return colorMap.get(k);
+      }
+      // крайний fallback: хэш чтобы незнакомый спикер не менял цвет между рендерами
+      const key = keys[0] ?? "?";
+      const hash = [...key].reduce((a, c) => a + c.charCodeAt(0), 0);
+      return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
+    }
+
     function speakerInitial(label) {
       return (label ?? "?").replace("Спикер ", "С").slice(0, 2).toUpperCase();
+    }
+
+    /**
+     * Строит карту "Спикер N" → { name, role, dialogueRole, display }.
+     *  - name/role берём из speakerDrafts (LLM-идентификация)
+     *  - dialogueRole считаем сами по сегментам: кто начал, у кого больше слов и т.п.
+     *  - display — что показать: "Имя · роль", иначе "Спикер N · роль-в-диалоге"
+     */
+    function buildSpeakerInfoMap(speakerDrafts, segments) {
+      const info = new Map();
+
+      // 1. Имя, проф. роль и роль-в-диалоге из drafts (ключи: label, id, guessedName)
+      (speakerDrafts ?? []).forEach((s) => {
+        const entry = {
+          name: s.guessedName?.trim() || null,
+          role: s.guessedRole?.trim() || null,
+          dialogueRole: s.dialogueRole?.trim() || null // от LLM, если есть
+        };
+        [s.label, s.id, s.guessedName?.trim()].filter(Boolean).forEach((k) => {
+          if (!info.has(k)) info.set(k, entry);
+        });
+      });
+
+      // 2. Роль-в-диалоге: статистика по сегментам
+      const stats = new Map(); // key → { words, firstIdx, count }
+      (segments ?? []).forEach((seg, idx) => {
+        const key = seg.guessedName?.trim() || seg.speakerLabel || seg.speakerId;
+        if (!key) return;
+        const words = (seg.text ?? "").trim().split(/\s+/).filter(Boolean).length;
+        const cur = stats.get(key) ?? { words: 0, firstIdx: idx, count: 0 };
+        cur.words += words;
+        cur.count += 1;
+        stats.set(key, cur);
+      });
+
+      // Самодельная эвристика — только если LLM не дал dialogueRole
+      const ordered = [...stats.entries()].sort((a, b) => a[1].firstIdx - b[1].firstIdx);
+      const maxWords = Math.max(0, ...[...stats.values()].map((v) => v.words));
+      ordered.forEach(([key, st], i) => {
+        const existing = info.get(key) ?? { name: null, role: null, dialogueRole: null };
+        if (existing.dialogueRole) return; // LLM уже описал роль
+        let dialogueRole;
+        if (i === 0) dialogueRole = "начал разговор";
+        else if (st.words === maxWords && maxWords > 0) dialogueRole = "основной спикер";
+        else dialogueRole = "участник";
+        info.set(key, { ...existing, dialogueRole });
+      });
+
+      return info;
+    }
+
+    /** Возвращает { title, subtitle } для шапки реплики спикера. */
+    function resolveSpeakerLabel(speakerInfo, seg) {
+      const rawLabel = seg.guessedName || seg.speakerLabel || seg.speakerId || "";
+      const keys = [seg.guessedName?.trim(), seg.speakerLabel, seg.speakerId].filter(Boolean);
+      let entry = null;
+      for (const k of keys) {
+        if (speakerInfo.has(k)) { entry = speakerInfo.get(k); break; }
+      }
+      if (!entry) return { title: rawLabel, subtitle: null };
+
+      // Приоритет: настоящее имя > проф. роль > роль в диалоге
+      if (entry.name) {
+        return { title: entry.name, subtitle: entry.role || null };
+      }
+      return { title: rawLabel, subtitle: entry.role || entry.dialogueRole || null };
+    }
+
+    function formatTimecode(ms) {
+      if (ms == null) return null;
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+      return `${m}:${String(s).padStart(2, "0")}`;
     }
 
     function parseLlmTranscript(correctedText) {
@@ -1349,28 +1646,39 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
-        .map((line, i) => {
-          const m = line.match(/^(Спикер\s+\S+):\s*(.+)$/);
-          if (m) return { speakerId: `speaker-${i}`, speakerLabel: m[1], text: m[2] };
+        .map((line) => {
+          const m = line.match(/^(.{1,50}):\s*(.+)$/);
+          if (m) {
+            // speakerId = нормализованный label, чтобы colorMap мог его найти
+            const label = m[1].trim();
+            return { speakerId: label, speakerLabel: label, text: m[2] };
+          }
           return { speakerId: "speaker-1", speakerLabel: "", text: line };
         });
     }
 
-    function renderTranscriptSegments(segments) {
+    function renderTranscriptSegments(segments, colorMap, speakerInfo) {
       if (!segments.length) {
         return html`<div className="empty-state">Расшифровка недоступна.</div>`;
       }
       return html`
         <div className="transcript-full">
           ${segments.map((seg, i) => {
-            const color = speakerColor(seg.speakerId);
-            const label = seg.guessedName || seg.speakerLabel || seg.speakerId || "";
-            const initial = speakerInitial(label);
+            const color = colorMap ? speakerColorFromMap(colorMap, seg) : SPEAKER_COLORS[i % SPEAKER_COLORS.length];
+            const { title, subtitle } = speakerInfo
+              ? resolveSpeakerLabel(speakerInfo, seg)
+              : { title: seg.guessedName || seg.speakerLabel || seg.speakerId || "", subtitle: null };
+            const initial = speakerInitial(title);
+            const timecode = formatTimecode(seg.startTimeMs);
             return html`
               <div key=${i} className="tf-row">
-                ${label ? html`<div className="tf-avatar" style=${{ background: color }}>${initial}</div>` : null}
+                ${title ? html`<div className="tf-avatar" style=${{ background: color }}>${initial}</div>` : null}
                 <div className="tf-body">
-                  ${label ? html`<div className="tf-name" style=${{ color }}>${label}</div>` : null}
+                  <div className="tf-meta">
+                    ${title ? html`<div className="tf-name" style=${{ color }}>${title}</div>` : null}
+                    ${subtitle ? html`<span className="tf-role">${subtitle}</span>` : null}
+                    ${timecode ? html`<span className="tf-timecode">${timecode}</span>` : null}
+                  </div>
                   <div className="tf-text">${seg.text}</div>
                 </div>
               </div>
@@ -1384,35 +1692,260 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       const rawSegments = activeMeeting?.rawTranscriptSegments ?? activeMeeting?.transcriptSegments ?? [];
       const llmSegments = parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
       const hasLlm = llmSegments.length > 0;
-
       const activeSegments = (transcriptVersion === "llm" && hasLlm)
         ? llmSegments
         : rawSegments;
 
+      // colorMap строится ПОСЛЕ activeSegments — один проход, первый спикер = color[0] и т.д.
+      const colorMap = buildSpeakerColorMap(activeSegments);
+
+      // Карта обогащения: "Спикер N" → { name, role, dialogueRole }
+      // Имя/роль приходят из speakerDrafts (LLM-идентификация), роль-в-диалоге считаем сами.
+      const speakerInfo = buildSpeakerInfoMap(activeMeeting?.speakerDrafts, activeSegments);
+
+      // Собираем rawText для редактора из активных сегментов
+      function buildRawText(segs) {
+        return segs.map((s) => {
+          const label = s.guessedName || s.speakerLabel || "";
+          return label ? `${label}: ${s.text}` : s.text;
+        }).join("\n");
+      }
+
+      async function handleStartEdit() {
+        setTranscriptEditText(buildRawText(rawSegments));
+        setEditingTranscript(true);
+      }
+
+      async function handleSaveTranscript() {
+        if (!transcriptEditText.trim()) return;
+        setSavingTranscript(true);
+        try {
+          const res = await api.patchTranscript(activeMeeting.id, transcriptEditText);
+          if (res?.meeting) setActiveMeeting(res.meeting);
+          setEditingTranscript(false);
+          setNotice("Расшифровка сохранена. Нажмите «Пересобрать», чтобы обновить протокол.");
+        } catch (e) {
+          setError("Не удалось сохранить расшифровку: " + (e.message ?? e));
+        } finally {
+          setSavingTranscript(false);
+        }
+      }
+
+      async function handleRegenerate() {
+        setRegenerating(true);
+        try {
+          const { meeting } = await api.regenerateProtocol(activeMeeting.id);
+          setActiveMeeting(meeting);
+          setNotice("Протокол пересобирается…");
+        } catch (e) {
+          setError("Не удалось запустить пересборку: " + (e.message ?? e));
+        } finally {
+          setRegenerating(false);
+        }
+      }
+
+      async function handleRestoreOriginal() {
+        if (!confirm("Вернуть исходную расшифровку от системы распознавания? Все ваши правки текста будут потеряны.")) return;
+        setRestoringTranscript(true);
+        try {
+          await api.restoreTranscript(activeMeeting.id);
+          // перечитываем встречу, чтобы подтянуть восстановленные сегменты
+          const { meeting } = await api.getMeeting(activeMeeting.id);
+          setActiveMeeting(meeting);
+          setNotice("Исходная расшифровка восстановлена.");
+        } catch (e) {
+          setError("Не удалось вернуть оригинал: " + (e.message ?? e));
+        } finally {
+          setRestoringTranscript(false);
+        }
+      }
+
+      if (editingTranscript) {
+        return html`
+          <div className="transcript-edit-wrap">
+            <p className="transcript-edit-hint">
+              Отредактируйте текст расшифровки. Формат строки: <code>Имя спикера: текст реплики</code>.
+              После сохранения нажмите «Пересобрать протокол» — LLM переработает протокол на основе исправленного текста.
+            </p>
+            <textarea
+              className="transcript-editor"
+              value=${transcriptEditText}
+              onInput=${(e) => setTranscriptEditText(e.target.value)}
+              rows="20"
+              spellcheck="false"
+            ></textarea>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                onClick=${handleSaveTranscript}
+                disabled=${savingTranscript}
+              >${savingTranscript ? "Сохраняем…" : "Сохранить"}</button>
+              <button
+                className="ghost-button"
+                onClick=${() => setEditingTranscript(false)}
+                disabled=${savingTranscript}
+              >Отмена</button>
+            </div>
+          </div>
+        `;
+      }
+
       return html`
         <div>
-          <div className="transcript-version-toggle">
-            <button
-              className=${"tvt-btn" + (transcriptVersion === "raw" ? " tvt-btn--active" : "")}
-              onClick=${() => setTranscriptVersion("raw")}
-            >Дословно</button>
-            <button
-              className=${"tvt-btn" + (transcriptVersion === "llm" ? " tvt-btn--active" : "")}
-              onClick=${() => setTranscriptVersion("llm")}
-              disabled=${!hasLlm}
-            >LLM восстановил</button>
+          <div className="transcript-toolbar">
+            <div className="transcript-version-toggle">
+              <button
+                className=${"tvt-btn" + (transcriptVersion === "raw" ? " tvt-btn--active" : "")}
+                onClick=${() => setTranscriptVersion("raw")}
+              >Дословно</button>
+              <button
+                className=${"tvt-btn" + (transcriptVersion === "llm" ? " tvt-btn--active" : "")}
+                onClick=${() => setTranscriptVersion("llm")}
+                disabled=${!hasLlm}
+              >LLM восстановил</button>
+            </div>
+            <div className="transcript-actions">
+              <button className="ghost-button ghost-button--sm" onClick=${handleStartEdit}>
+                ✏️ Редактировать
+              </button>
+              <button
+                className="ghost-button ghost-button--sm"
+                onClick=${handleRestoreOriginal}
+                disabled=${restoringTranscript}
+                title="Вернуть исходную расшифровку от системы распознавания"
+              >${restoringTranscript ? "Возвращаем…" : "↩️ Вернуть оригинал"}</button>
+              <button
+                className="ghost-button ghost-button--sm"
+                onClick=${handleRegenerate}
+                disabled=${regenerating}
+                title="Пересобрать протокол на основе текущей расшифровки"
+              >${regenerating ? "Пересобираем…" : "🔄 Пересобрать протокол"}</button>
+            </div>
           </div>
           ${transcriptVersion === "llm" && !hasLlm
             ? html`<div className="empty-state">LLM-коррекция ещё не готова.</div>`
-            : renderTranscriptSegments(activeSegments)
+            : renderTranscriptSegments(activeSegments, colorMap, speakerInfo)
           }
         </div>
       `;
     }
 
     function renderSummaryTab(protocol) {
+      function startEditSummary() {
+        // Глубокая копия редактируемых полей
+        setSummaryDraft({
+          overview: protocol.summary?.overview ?? "",
+          participants: [...(protocol.participants ?? [])],
+          decisions: [...(protocol.decisions ?? [])],
+          actionItems: (protocol.actionItems ?? []).map((a) => ({ ...a }))
+        });
+        setEditingSummary(true);
+      }
+
+      async function saveSummary() {
+        setSavingSummary(true);
+        const newProtocol = {
+          ...protocol,
+          summary: { ...(protocol.summary ?? {}), overview: summaryDraft.overview },
+          participants: summaryDraft.participants.map((p) => p.trim()).filter(Boolean),
+          decisions: summaryDraft.decisions.map((d) => d.trim()).filter(Boolean),
+          actionItems: summaryDraft.actionItems
+        };
+        try {
+          await api.patchProtocol(activeMeeting.id, newProtocol);
+          setActiveMeeting((m) => ({ ...m, protocol: newProtocol }));
+          setEditingSummary(false);
+          setNotice("Итоги сохранены.");
+        } catch (e) {
+          setError("Не удалось сохранить: " + (e.message ?? e));
+        } finally {
+          setSavingSummary(false);
+        }
+      }
+
+      // Хелперы для редактирования списков в драфте
+      const setList = (key, idx, value) =>
+        setSummaryDraft((d) => ({ ...d, [key]: d[key].map((v, i) => (i === idx ? value : v)) }));
+      const addToList = (key, empty) =>
+        setSummaryDraft((d) => ({ ...d, [key]: [...d[key], empty] }));
+      const removeFromList = (key, idx) =>
+        setSummaryDraft((d) => ({ ...d, [key]: d[key].filter((_, i) => i !== idx) }));
+      const setAction = (idx, field, value) =>
+        setSummaryDraft((d) => ({
+          ...d,
+          actionItems: d.actionItems.map((a, i) => (i === idx ? { ...a, [field]: value } : a))
+        }));
+
+      // ── Режим редактирования ──────────────────────────────────────────────
+      if (editingSummary && summaryDraft) {
+        return html`
+          <div className="result-stack summary-edit">
+            <section className="result-block">
+              <div className="eyebrow">Краткий обзор</div>
+              <textarea
+                className="summary-textarea"
+                rows="4"
+                value=${summaryDraft.overview}
+                onInput=${(e) => setSummaryDraft((d) => ({ ...d, overview: e.target.value }))}
+              ></textarea>
+            </section>
+
+            <section className="result-block">
+              <div className="eyebrow">Участники</div>
+              ${summaryDraft.participants.map((p, i) => html`
+                <div key=${i} className="edit-row">
+                  <input value=${p} onInput=${(e) => setList("participants", i, e.target.value)} placeholder="Имя участника" />
+                  <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("participants", i)}>✕</button>
+                </div>`)}
+              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("participants", "")}>+ Добавить участника</button>
+            </section>
+
+            <section className="result-block">
+              <div className="eyebrow">Что решили</div>
+              ${summaryDraft.decisions.map((d, i) => html`
+                <div key=${i} className="edit-row">
+                  <input value=${d} onInput=${(e) => setList("decisions", i, e.target.value)} placeholder="Решение" />
+                  <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("decisions", i)}>✕</button>
+                </div>`)}
+              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("decisions", "")}>+ Добавить решение</button>
+            </section>
+
+            <section className="result-block">
+              <div className="eyebrow">Следующие шаги</div>
+              ${summaryDraft.actionItems.map((item, i) => html`
+                <div key=${i} className="action-item action-item--editing">
+                  <div className="action-edit-grid">
+                    <label className="action-edit-field"><span>Ответственный</span>
+                      <input value=${item.owner ?? ""} onInput=${(e) => setAction(i, "owner", e.target.value)} placeholder="Имя или роль" /></label>
+                    <label className="action-edit-field"><span>Задача</span>
+                      <input value=${item.task ?? ""} onInput=${(e) => setAction(i, "task", e.target.value)} placeholder="Описание задачи" /></label>
+                    <label className="action-edit-field"><span>Срок</span>
+                      <input type="date" value=${item.deadline ?? ""} onInput=${(e) => setAction(i, "deadline", e.target.value || null)} /></label>
+                  </div>
+                  <div className="action-edit-btns">
+                    <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("actionItems", i)}>Удалить задачу</button>
+                  </div>
+                </div>`)}
+              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("actionItems", { owner: "", task: "", deadline: null })}>+ Добавить задачу</button>
+            </section>
+
+            <div className="button-row">
+              <button className="primary-button" onClick=${saveSummary} disabled=${savingSummary}>
+                ${savingSummary ? "Сохраняем…" : "Сохранить итоги"}
+              </button>
+              <button className="ghost-button" onClick=${() => setEditingSummary(false)} disabled=${savingSummary}>Отмена</button>
+            </div>
+          </div>
+        `;
+      }
+
+      // ── Режим просмотра ───────────────────────────────────────────────────
       return html`
         <div className="result-stack">
+          <div className="summary-edit-bar">
+            <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
+          </div>
+
           <section className="result-block">
             <div className="eyebrow">Участники</div>
             ${protocol.participants?.length
@@ -1430,8 +1963,8 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
           <section className="result-block">
             <div className="eyebrow">Следующие шаги</div>
             ${protocol.actionItems?.length
-              ? html`<ul>${protocol.actionItems.map((item, i) => html`
-                  <li key=${i} className="action-item">
+              ? html`<ul className="action-list">${protocol.actionItems.map((item, i) => html`
+                  <li key=${i} className="action-item action-item--static">
                     <span className="action-owner">${item.owner}</span>
                     <span className="action-task">${item.task}</span>
                     ${item.deadline
@@ -1499,7 +2032,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
               <button
                 className=${"tab-btn" + (resultTab === "summary" ? " tab-btn--active" : "")}
                 onClick=${() => setResultTab("summary")}
-              >Саммари</button>
+              >Итоги</button>
               <button
                 className=${"tab-btn" + (resultTab === "transcript" ? " tab-btn--active" : "")}
                 onClick=${() => setResultTab("transcript")}
@@ -1508,7 +2041,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
             ${resultTab === "summary"
               ? html`<div className="button-row">
-                  <button className="primary-button" onClick=${copyProtocol}>Скопировать саммари</button>
+                  <button className="primary-button" onClick=${copyProtocol}>Скопировать итоги</button>
                   <button className="ghost-button" onClick=${downloadProtocol}>Скачать TXT</button>
                   <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
                 </div>`
@@ -1585,6 +2118,20 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
 
     function renderContent() {
+      if (!authChecked) {
+        return html`
+          <section className="screen">
+            <section className="panel">
+              <div className="empty-state">Загружаем…</div>
+            </section>
+          </section>
+        `;
+      }
+
+      if (!authUser) {
+        return html`<${LoginScreen} onAuth=${(user) => setAuthUser(user)} />`;
+      }
+
       if (loading) {
         return html`
           <section className="screen">
