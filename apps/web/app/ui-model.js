@@ -9,6 +9,11 @@ export const TIMELINE_STEPS = [
 const STEP_ORDER = TIMELINE_STEPS.map((step) => step.key);
 
 export function resolveScreen({ selectedProjectId, activeMeeting, requestedScreen }) {
+  // Админка не зависит от выбранного проекта — проверяем первой
+  if (requestedScreen === "admin") {
+    return "admin";
+  }
+
   if (!selectedProjectId || requestedScreen === "projects-home") {
     return "projects-home";
   }
