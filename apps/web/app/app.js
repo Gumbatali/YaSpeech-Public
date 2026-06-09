@@ -1950,10 +1950,35 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       if (editingSummary && summaryDraft) {
         const owners = summaryDraft.participants.filter(Boolean);
 
-        function autoGrow(e) {
-          const el = e.target;
+        // Авто-высота textarea: вызывать и при монтировании (ref), и при вводе
+        function growEl(el) {
+          if (!el) return;
           el.style.height = "auto";
           el.style.height = el.scrollHeight + "px";
+        }
+        function autoGrow(e) { growEl(e.target); }
+
+        // Переименование участника → обновить owner во всех задачах
+        function renameParticipant(i, oldName, newName) {
+          setSummaryDraft((d) => ({
+            ...d,
+            participants: d.participants.map((p, pi) => pi === i ? newName : p),
+            actionItems: d.actionItems.map((a) =>
+              a.owner === oldName ? { ...a, owner: newName } : a
+            )
+          }));
+        }
+
+        // Удаление участника → очистить owner в задачах, где он был
+        function removeParticipant(i) {
+          const name = summaryDraft.participants[i];
+          setSummaryDraft((d) => ({
+            ...d,
+            participants: d.participants.filter((_, pi) => pi !== i),
+            actionItems: d.actionItems.map((a) =>
+              a.owner === name ? { ...a, owner: "" } : a
+            )
+          }));
         }
 
         return html`
@@ -1965,6 +1990,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 className="se-textarea se-textarea--overview"
                 rows="3"
                 value=${summaryDraft.overview}
+                ref=${growEl}
                 onInput=${(e) => { autoGrow(e); setSummaryDraft((d) => ({ ...d, overview: e.target.value })); }}
                 placeholder="Краткое описание встречи"
               ></textarea>
@@ -1980,12 +2006,13 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                       value=${p}
                       style=${{ width: Math.max((p || "").length, 4) + "ch" }}
                       onInput=${(e) => {
-                        setList("participants", i, e.target.value);
-                        e.target.style.width = Math.max(e.target.value.length, 4) + "ch";
+                        const newName = e.target.value;
+                        e.target.style.width = Math.max(newName.length, 4) + "ch";
+                        renameParticipant(i, p, newName);
                       }}
                       placeholder="Имя"
                     />
-                    <button className="se-chip-remove" onClick=${() => removeFromList("participants", i)}>✕</button>
+                    <button className="se-chip-remove" onClick=${() => removeParticipant(i)}>✕</button>
                   </div>`)}
                 <button className="se-chip-add" onClick=${() => addToList("participants", "")}>+ Добавить</button>
               </div>
@@ -2001,6 +2028,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                       className="se-textarea se-textarea--decision"
                       rows="1"
                       value=${d}
+                      ref=${growEl}
                       onInput=${(e) => { autoGrow(e); setList("decisions", i, e.target.value); }}
                       placeholder="Решение"
                     ></textarea>
@@ -2019,6 +2047,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                       className="se-textarea se-textarea--task"
                       rows="2"
                       value=${item.task ?? ""}
+                      ref=${growEl}
                       onInput=${(e) => { autoGrow(e); setAction(i, "task", e.target.value); }}
                       placeholder="Что нужно сделать…"
                     ></textarea>
