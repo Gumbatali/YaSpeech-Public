@@ -1409,3 +1409,302 @@ button { cursor: pointer; }
 .user-logout:hover {
   color: var(--error);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Summary Edit — редизайн редактирования итогов
+   ═══════════════════════════════════════════════════════════ */
+
+/* Режим правки — лёгкий левый акцент */
+.summary-edit {
+  border-left: 3px solid var(--accent);
+  padding-left: 1.25rem;
+  margin-left: -1.25rem;
+}
+
+/* Базовый textarea — «документ-стиль», без тяжёлой рамки */
+.se-textarea {
+  width: 100%;
+  padding: 0.4rem 0;
+  border: none;
+  border-bottom: 1.5px solid transparent;
+  border-radius: 0;
+  font-family: inherit;
+  line-height: 1.55;
+  resize: none;
+  background: transparent;
+  outline: none;
+  box-sizing: border-box;
+  overflow: hidden;
+  transition: border-color 150ms;
+  color: var(--ink);
+  display: block;
+}
+.se-textarea:hover { border-bottom-color: var(--line); }
+.se-textarea:focus { border-bottom-color: var(--accent); }
+
+.se-textarea--overview {
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+  min-height: 3.5rem;
+}
+.se-textarea--decision {
+  font-size: 0.95rem;
+  min-height: 1.5rem;
+}
+.se-textarea--task {
+  font-size: 1rem;
+  font-weight: 500;
+  min-height: 2.4rem;
+  color: var(--ink);
+}
+
+/* ── Участники — чипы ── */
+.se-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.se-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--accent-glow);
+  border: 1.5px solid rgba(110, 141, 255, 0.3);
+  border-radius: 999px;
+  padding: 0.28rem 0.45rem 0.28rem 0.75rem;
+  transition: border-color 150ms;
+}
+.se-chip:focus-within { border-color: var(--accent); }
+
+.se-chip-input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--ink);
+  min-width: 3ch;
+  max-width: 22ch;
+}
+
+.se-chip-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.65rem;
+  padding: 0;
+  opacity: 0.45;
+  transition: opacity 150ms, background 150ms;
+  line-height: 1;
+}
+.se-chip:hover .se-chip-remove,
+.se-chip-remove:focus { opacity: 1; background: rgba(0, 0, 0, 0.08); }
+.se-chip-remove:hover { color: var(--error); }
+
+.se-chip-add {
+  border: 1.5px dashed var(--line-strong);
+  background: transparent;
+  border-radius: 999px;
+  padding: 0.28rem 0.8rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  transition: border-color 150ms, color 150ms;
+}
+.se-chip-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Решения — строки ── */
+.se-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 0.25rem;
+}
+
+.se-decision-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  transition: background 120ms;
+}
+.se-decision-row:hover { background: var(--bg-deep); }
+
+.se-decision-num {
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  padding-top: 0.35rem;
+  min-width: 1.4rem;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Иконка удаления строки — появляется при наведении */
+.se-row-remove {
+  border: none;
+  background: transparent;
+  padding: 0.35rem 0.3rem;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  opacity: 0;
+  flex-shrink: 0;
+  border-radius: 6px;
+  transition: opacity 150ms, color 150ms, background 150ms;
+  line-height: 1;
+}
+.se-decision-row:hover .se-row-remove,
+.se-row-remove:focus { opacity: 1; }
+.se-row-remove:hover { color: var(--error); background: rgba(216, 74, 58, 0.08); }
+
+/* На тач-устройствах — всегда видна (opacity ниже, но не ноль) */
+@media (hover: none) {
+  .se-row-remove { opacity: 0.35; }
+}
+
+/* ── Добавить — пунктирная строка-призрак ── */
+.se-ghost-add {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.75rem;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  width: 100%;
+  text-align: left;
+  transition: border-color 150ms, color 150ms, background 150ms;
+}
+.se-ghost-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+/* ── Задачи — вертикальные карточки ── */
+.se-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.se-action-card {
+  background: var(--panel-strong);
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.875rem 1rem 0.75rem;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.se-action-card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* Мета-строка: ответственный + срок + удалить */
+.se-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+  margin-top: 0.625rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.se-action-meta-field {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.se-meta-label {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.se-meta-input {
+  border: none;
+  border-bottom: 1.5px solid var(--line);
+  background: transparent;
+  outline: none;
+  font-size: 0.88rem;
+  color: var(--ink);
+  padding: 0.1rem 0.2rem;
+  min-width: 0;
+  width: 14ch;
+  transition: border-color 150ms;
+}
+.se-meta-input:focus { border-bottom-color: var(--accent); }
+.se-meta-input::placeholder { color: var(--ink-soft); opacity: 0.6; }
+.se-meta-input--date { width: auto; min-width: 9ch; }
+
+/* Иконка удаления задачи — справа, появляется на hover карточки */
+.se-action-remove {
+  border: none;
+  background: transparent;
+  padding: 0.25rem 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  border-radius: 6px;
+  margin-left: auto;
+  opacity: 0.35;
+  transition: opacity 150ms, color 150ms, background 150ms;
+  line-height: 1;
+}
+.se-action-card:hover .se-action-remove,
+.se-action-remove:focus { opacity: 1; }
+.se-action-remove:hover { color: var(--error); background: rgba(216, 74, 58, 0.08); }
+
+@media (hover: none) {
+  .se-action-remove { opacity: 0.5; }
+}
+
+/* ── Sticky save bar ── */
+.se-sticky-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 0 0.5rem;
+  background: linear-gradient(to bottom, transparent, var(--panel) 45%);
+  margin-top: 1.5rem;
+  z-index: 10;
+}
+
+/* Мобайл — кнопки на всю ширину */
+@media (max-width: 480px) {
+  .se-sticky-bar {
+    flex-direction: column-reverse;
+    gap: 0.5rem;
+  }
+  .se-sticky-bar .primary-button,
+  .se-sticky-bar .ghost-button {
+    width: 100%;
+    text-align: center;
+  }
+  .summary-edit {
+    border-left: none;
+    padding-left: 0;
+    margin-left: 0;
+    border-top: 3px solid var(--accent);
+    padding-top: 1rem;
+  }
+}
