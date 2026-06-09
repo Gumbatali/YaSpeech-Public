@@ -1075,8 +1075,12 @@ button { cursor: pointer; }
 
 .transcript-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+  margin-top: 1.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
 }
 
 .ghost-button--sm {
