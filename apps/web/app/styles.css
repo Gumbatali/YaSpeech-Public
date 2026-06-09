@@ -1410,16 +1410,16 @@ button { cursor: pointer; }
   color: var(--error);
 }
 
-/* Кнопка «Редактировать итоги»: на десктопе — в тулбаре, на мобайле — внизу */
+/* Кнопка «Редактировать итоги» — всегда снизу контента */
 .edit-btn--mobile-wrap {
-  display: none;
-  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--line);
 }
 @media (max-width: 600px) {
-  .edit-btn--desktop { display: none !important; }
-  .edit-btn--mobile-wrap { display: block; }
+  .edit-btn--mobile-wrap { justify-content: stretch; }
   .edit-btn--mobile-wrap .ghost-button { width: 100%; justify-content: center; }
 }
 
