@@ -4,19 +4,42 @@ export class YcMeetingRepository {
   }
 
   async getById(meetingId) {
+    // Fast path: глобальный индекс (есть у всех встреч сохранённых новым кодом)
     const global = await this.storage.readJson("meetings/index.json");
-    if (!global) return null;
-    const entry = global.find((m) => m.id === meetingId);
-    if (!entry) return null;
-
-    // Новый путь: baseKey хранится в индексе
-    if (entry.baseKey) {
-      return this.storage.readJson(`${entry.baseKey}/meeting.json`);
+    if (global) {
+      const entry = global.find((m) => m.id === meetingId);
+      if (entry) {
+        if (entry.baseKey) {
+          return this.storage.readJson(`${entry.baseKey}/meeting.json`);
+        }
+        // Запись есть, но без baseKey — старый формат глобального индекса
+        return this.storage.readJson(
+          `projects/${entry.projectId}/meetings/${meetingId}/meeting.json`
+        );
+      }
     }
-    // Fallback: старый путь (meetings/{uuid}/meeting.json)
-    return this.storage.readJson(
-      `projects/${entry.projectId}/meetings/${meetingId}/meeting.json`
-    );
+
+    // Fallback: сканируем проектные индексы.
+    // Нужен для встреч, созданных до введения глобального индекса:
+    // у них есть projects/{projectId}/meetings/index.json, но нет meetings/index.json.
+    const projects = await this.storage.readJson("projects/index.json");
+    if (!projects) return null;
+
+    for (const project of projects) {
+      const projectMeetings = await this.storage.readJson(
+        `projects/${project.id}/meetings/index.json`
+      );
+      if (!projectMeetings) continue;
+
+      const found = projectMeetings.find((m) => m.id === meetingId);
+      if (found) {
+        return this.storage.readJson(
+          `projects/${project.id}/meetings/${meetingId}/meeting.json`
+        );
+      }
+    }
+
+    return null;
   }
 
   async listByProject(projectId) {
@@ -63,21 +86,39 @@ export class YcMeetingRepository {
   }
 
   async delete(meetingId) {
+    // Определяем projectId: сначала из глобального индекса, затем — сканирование
+    let projectId = null;
+
     const global = (await this.storage.readJson("meetings/index.json")) ?? [];
-    const entry = global.find((m) => m.id === meetingId);
+    const globalEntry = global.find((m) => m.id === meetingId);
 
-    if (entry) {
-      // Remove from project index
-      const projectIndex = await this.listByProject(entry.projectId);
-      const nextProjectIndex = projectIndex.filter((m) => m.id !== meetingId);
-      await this.storage.writeJson(
-        `projects/${entry.projectId}/meetings/index.json`,
-        nextProjectIndex
-      );
-
-      // Remove from global index
+    if (globalEntry) {
+      projectId = globalEntry.projectId;
+      // Удаляем из глобального индекса
       const nextGlobal = global.filter((m) => m.id !== meetingId);
       await this.storage.writeJson("meetings/index.json", nextGlobal);
+    } else {
+      // Fallback: ищем в проектных индексах (встречи до глобального индекса)
+      const projects = (await this.storage.readJson("projects/index.json")) ?? [];
+      for (const project of projects) {
+        const projectMeetings = await this.storage.readJson(
+          `projects/${project.id}/meetings/index.json`
+        );
+        if (projectMeetings?.some((m) => m.id === meetingId)) {
+          projectId = project.id;
+          break;
+        }
+      }
     }
+
+    if (!projectId) return;
+
+    // Удаляем из проектного индекса
+    const projectIndex = await this.listByProject(projectId);
+    const nextProjectIndex = projectIndex.filter((m) => m.id !== meetingId);
+    await this.storage.writeJson(
+      `projects/${projectId}/meetings/index.json`,
+      nextProjectIndex
+    );
   }
 }

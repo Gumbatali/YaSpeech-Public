@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { createTestServer } from "../src/test-server.js";
 
 async function withServer(options, run) {
@@ -11,7 +11,7 @@ async function withServer(options, run) {
 
   try {
     await server.start();
-    await run(server);
+    await run(server, dataDir);
   } finally {
     await server.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -261,5 +261,74 @@ test("failed AI generation can be retried to completion", async () => {
 
     assert.equal(done.body.meeting.status, "done");
     assert.equal(done.body.meeting.error, undefined);
+  });
+});
+
+test("old meeting (legacy path, no global index) can be opened via GET /api/meetings/:id", async () => {
+  await withServer({}, async (server, dataDir) => {
+    // Заранее засеваем в dataDir встречу в СТАРОМ формате:
+    //   projects/{projectId}/meetings/{meetingId}/meeting.json
+    // без глобального meetings/index.json
+
+    const projectId = "legacy-project";
+    const meetingId = "legacy-meeting-001";
+    const meetingDir = path.join(dataDir, "projects", projectId, "meetings", meetingId);
+    await mkdir(meetingDir, { recursive: true });
+
+    const legacyMeeting = {
+      id: meetingId,
+      projectId,
+      projectName: "Legacy проект",
+      date: "2025-01-15",
+      status: "done",
+      currentStage: "done",
+      updatedAt: "2025-01-15T10:00:00.000Z",
+      protocol: {
+        summary: { title: "Старый протокол", text: "Обсудили архитектуру." },
+        participants: ["Иванов"],
+        decisions: [{ text: "Перейти на микросервисы" }],
+        actionItems: []
+      },
+      artifacts: {
+        audioOriginalKey: `projects/${projectId}/meetings/${meetingId}/audio-original.mp3`,
+        transcriptKey:    `projects/${projectId}/meetings/${meetingId}/transcript.json`,
+        protocolJsonKey:  `projects/${projectId}/meetings/${meetingId}/protocol.json`,
+        protocolTextKey:  `projects/${projectId}/meetings/${meetingId}/protocol.txt`,
+        manifestKey:      `projects/${projectId}/meetings/${meetingId}/meeting.json`,
+        // baseKey намеренно ОТСУТСТВУЕТ — это legacy формат
+      }
+    };
+
+    await writeFile(
+      path.join(meetingDir, "meeting.json"),
+      JSON.stringify(legacyMeeting, null, 2)
+    );
+
+    // Проектный индекс — есть (содержит краткую запись)
+    const projectMeetingsDir = path.join(dataDir, "projects", projectId, "meetings");
+    await writeFile(
+      path.join(projectMeetingsDir, "index.json"),
+      JSON.stringify([{ id: meetingId, projectId, date: "2025-01-15", status: "done" }])
+    );
+
+    // Проект-уровневый индекс
+    const projectsDir = path.join(dataDir, "projects");
+    await writeFile(
+      path.join(projectsDir, "index.json"),
+      JSON.stringify([{ id: projectId, name: "Legacy проект" }])
+    );
+
+    // Глобального meetings/index.json НЕТ — имитируем старое состояние
+
+    // Открываем встречу через API
+    const { response, body } = await requestJson(
+      server,
+      `/api/meetings/${meetingId}`
+    );
+
+    assert.equal(response.status, 200, "должна открыться с 200");
+    assert.equal(body.meeting.id, meetingId, "id совпадает");
+    assert.equal(body.meeting.status, "done", "статус done");
+    assert.equal(body.meeting.protocol.summary.title, "Старый протокол", "протокол доступен");
   });
 });
