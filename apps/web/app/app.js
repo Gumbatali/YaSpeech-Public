@@ -1914,12 +1914,18 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
       async function saveSummary() {
         setSavingSummary(true);
+        const cleanParticipants = summaryDraft.participants.map((p) => p.trim()).filter(Boolean);
+        const participantSet = new Set(cleanParticipants);
         const newProtocol = {
           ...protocol,
           summary: { ...(protocol.summary ?? {}), overview: summaryDraft.overview },
-          participants: summaryDraft.participants.map((p) => p.trim()).filter(Boolean),
+          participants: cleanParticipants,
           decisions: summaryDraft.decisions.map((d) => d.trim()).filter(Boolean),
-          actionItems: summaryDraft.actionItems
+          // Если owner не в текущем списке участников — очищаем
+          actionItems: summaryDraft.actionItems.map((a) => ({
+            ...a,
+            owner: participantSet.has(a.owner) ? a.owner : ""
+          }))
         };
         try {
           await api.patchProtocol(activeMeeting.id, newProtocol);
@@ -1958,20 +1964,33 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         }
         function autoGrow(e) { growEl(e.target); }
 
-        // Участники — простые обновления. Owner теперь select из списка,
-        // поэтому никакой синхронизации по имени не нужно.
+        // При переименовании участника — обновляем и задачи с тем же owner.
+        // Читаем oldName из d(), а не из замыкания, чтобы избежать stale closure.
         function renameParticipant(idx, newName) {
-          setSummaryDraft((d) => ({
-            ...d,
-            participants: d.participants.map((p, pi) => pi === idx ? newName : p)
-          }));
+          setSummaryDraft((d) => {
+            const oldName = d.participants[idx];
+            return {
+              ...d,
+              participants: d.participants.map((p, pi) => pi === idx ? newName : p),
+              actionItems: d.actionItems.map((a) =>
+                a.owner === oldName ? { ...a, owner: newName } : a
+              )
+            };
+          });
         }
 
+        // При удалении участника — очищаем owner в его задачах.
         function removeParticipant(idx) {
-          setSummaryDraft((d) => ({
-            ...d,
-            participants: d.participants.filter((_, pi) => pi !== idx)
-          }));
+          setSummaryDraft((d) => {
+            const name = d.participants[idx];
+            return {
+              ...d,
+              participants: d.participants.filter((_, pi) => pi !== idx),
+              actionItems: d.actionItems.map((a) =>
+                a.owner === name ? { ...a, owner: "" } : a
+              )
+            };
+          });
         }
 
         return html`
