@@ -1654,6 +1654,23 @@ button { cursor: pointer; }
 .se-meta-input::placeholder { color: var(--ink-soft); opacity: 0.6; }
 .se-meta-input--date { width: auto; min-width: 9ch; }
 
+.se-meta-select {
+  border: none;
+  border-bottom: 1.5px solid var(--line);
+  background: transparent;
+  outline: none;
+  font-size: 0.88rem;
+  font-family: inherit;
+  color: var(--ink);
+  padding: 0.1rem 0.25rem;
+  cursor: pointer;
+  max-width: 16ch;
+  transition: border-color 150ms;
+  appearance: auto;
+}
+.se-meta-select:focus { border-bottom-color: var(--accent); }
+.se-meta-select option[value=""] { color: var(--ink-soft); }
+
 /* Иконка удаления задачи — справа, появляется на hover карточки */
 .se-action-remove {
   border: none;

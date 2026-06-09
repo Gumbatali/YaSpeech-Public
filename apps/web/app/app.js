@@ -1958,34 +1958,20 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         }
         function autoGrow(e) { growEl(e.target); }
 
-        // Переименование участника → обновить owner во всех задачах.
-        // Читаем oldName из d (текущего стейта), а не из замыкания — иначе
-        // при быстром вводе p устаревает и цепочка ломается.
+        // Участники — простые обновления. Owner теперь select из списка,
+        // поэтому никакой синхронизации по имени не нужно.
         function renameParticipant(idx, newName) {
-          setSummaryDraft((d) => {
-            const oldName = d.participants[idx];
-            return {
-              ...d,
-              participants: d.participants.map((p, pi) => pi === idx ? newName : p),
-              actionItems: d.actionItems.map((a) =>
-                a.owner === oldName ? { ...a, owner: newName } : a
-              )
-            };
-          });
+          setSummaryDraft((d) => ({
+            ...d,
+            participants: d.participants.map((p, pi) => pi === idx ? newName : p)
+          }));
         }
 
-        // Удаление участника → очистить owner в задачах, где он был
         function removeParticipant(idx) {
-          setSummaryDraft((d) => {
-            const name = d.participants[idx];
-            return {
-              ...d,
-              participants: d.participants.filter((_, pi) => pi !== idx),
-              actionItems: d.actionItems.map((a) =>
-                a.owner === name ? { ...a, owner: "" } : a
-              )
-            };
-          });
+          setSummaryDraft((d) => ({
+            ...d,
+            participants: d.participants.filter((_, pi) => pi !== idx)
+          }));
         }
 
         return html`
@@ -2061,16 +2047,14 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                     <div className="se-action-meta">
                       <div className="se-action-meta-field">
                         <span className="se-meta-label">👤</span>
-                        <input
-                          list=${"owners-" + i}
-                          className="se-meta-input"
+                        <select
+                          className="se-meta-select"
                           value=${item.owner ?? ""}
-                          onInput=${(e) => setAction(i, "owner", e.target.value)}
-                          placeholder="Ответственный"
-                        />
-                        <datalist id=${"owners-" + i}>
-                          ${owners.map((o, j) => html`<option key=${j} value=${o} />`)}
-                        </datalist>
+                          onChange=${(e) => setAction(i, "owner", e.target.value)}
+                        >
+                          <option value="">— не назначен —</option>
+                          ${owners.map((o, j) => html`<option key=${j} value=${o}>${o}</option>`)}
+                        </select>
                       </div>
                       <div className="se-action-meta-field">
                         <span className="se-meta-label">📅</span>
