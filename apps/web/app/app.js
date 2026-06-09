@@ -2022,10 +2022,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       // ── Режим просмотра ───────────────────────────────────────────────────
       return html`
         <div className="result-stack">
-          <div className="summary-edit-bar">
-            <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
-          </div>
-
           <section className="result-block">
             <div className="eyebrow">Участники</div>
             ${protocol.participants?.length
@@ -2124,6 +2120,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   <button className="primary-button" onClick=${copyProtocol}>Скопировать итоги</button>
                   <button className="ghost-button" onClick=${downloadProtocol}>Скачать TXT</button>
                   <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+                  ${!editingSummary ? html`<button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>` : null}
                 </div>`
               : html`<div className="button-row">
                   <button className="primary-button" onClick=${downloadTranscriptLlm}>Скачать LLM-версию</button>

@@ -1001,12 +1001,6 @@ button { cursor: pointer; }
 }
 
 /* ── Редактирование итогов (саммари) ── */
-.summary-edit-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 0.25rem;
-}
-
 .summary-textarea {
   width: 100%;
   padding: 0.75rem 0.9rem;
