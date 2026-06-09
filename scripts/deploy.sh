@@ -34,7 +34,10 @@ source "$ENV_FILE"
 : "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
-VERSION=$(git rev-parse --short HEAD 2>/dev/null || date +%s)
+# git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
+# (которые кэшируют ассеты как immutable) гарантированно тянут свежий URL.
+GIT_SHORT=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
+VERSION="${GIT_SHORT}-$(date +%s)"
 echo "📌 Версия: $VERSION"
 
 # ── Список файлов для обеих функций ──────────────────────────────────────────
@@ -196,6 +199,9 @@ case "$TARGET" in
     ;;
   gateway)
     update_gateway
+    ;;
+  frontend|web)
+    upload_frontend
     ;;
   all|*)
     build_api
