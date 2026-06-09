@@ -1911,16 +1911,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
 
     function renderSummaryTab(protocol) {
-      function startEditSummary() {
-        // Глубокая копия редактируемых полей
-        setSummaryDraft({
-          overview: protocol.summary?.overview ?? "",
-          participants: [...(protocol.participants ?? [])],
-          decisions: [...(protocol.decisions ?? [])],
-          actionItems: (protocol.actionItems ?? []).map((a) => ({ ...a }))
-        });
-        setEditingSummary(true);
-      }
 
       async function saveSummary() {
         setSavingSummary(true);
@@ -2067,6 +2057,16 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
     function renderResultScreen() {
       const protocol = activeMeeting?.protocol;
+
+      function startEditSummary() {
+        setSummaryDraft({
+          overview: protocol.summary?.overview ?? "",
+          participants: [...(protocol.participants ?? [])],
+          decisions: [...(protocol.decisions ?? [])],
+          actionItems: (protocol.actionItems ?? []).map((a) => ({ ...a }))
+        });
+        setEditingSummary(true);
+      }
       if (!protocol) {
         return html`
           <section className="screen project-screen">
