@@ -773,7 +773,7 @@ button { cursor: pointer; }
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .result-block:last-child {
+  .result-block:last-of-type {
     grid-column: 1 / -1;
   }
 }
@@ -943,47 +943,6 @@ button { cursor: pointer; }
   font-size: 0.78rem;
 }
 
-/* Режим редактирования action item */
-.action-item--editing {
-  display: block;
-  cursor: default;
-  background: #f8f9ff;
-  border: 1.5px solid #4f6ef7;
-  padding: 0.875rem 1rem;
-  border-radius: 10px;
-  border-bottom: 1.5px solid #4f6ef7 !important;
-}
-.action-edit-grid {
-  display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  gap: 0.5rem;
-}
-@media (max-width: 640px) {
-  .action-edit-grid { grid-template-columns: 1fr; }
-}
-.action-edit-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.82rem;
-  color: var(--color-text-muted, #6b7280);
-  font-weight: 500;
-}
-.action-edit-field input {
-  padding: 0.35rem 0.6rem;
-  border: 1.5px solid var(--color-border, #e5e7eb);
-  border-radius: 6px;
-  font-size: 0.88rem;
-  background: #fff;
-  outline: none;
-}
-.action-edit-field input:focus { border-color: #4f6ef7; }
-.action-edit-btns {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
 /* статичный action item (режим просмотра) — без интерактива */
 .action-item--static {
   cursor: default;
@@ -999,41 +958,6 @@ button { cursor: pointer; }
   gap: 1rem;
   flex-wrap: wrap;
 }
-
-/* ── Редактирование итогов (саммари) ── */
-.summary-textarea {
-  width: 100%;
-  padding: 0.75rem 0.9rem;
-  border: 1.5px solid var(--color-border, #e5e7eb);
-  border-radius: 10px;
-  font-family: inherit;
-  font-size: 0.92rem;
-  line-height: 1.6;
-  resize: vertical;
-  background: #fff;
-  outline: none;
-  box-sizing: border-box;
-}
-.summary-textarea:focus { border-color: #4f6ef7; }
-
-.edit-row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.4rem;
-}
-.edit-row input {
-  flex: 1;
-  padding: 0.4rem 0.65rem;
-  border: 1.5px solid var(--color-border, #e5e7eb);
-  border-radius: 6px;
-  font-size: 0.9rem;
-  background: #fff;
-  outline: none;
-}
-.edit-row input:focus { border-color: #4f6ef7; }
-
-.summary-edit .action-item--editing { margin-bottom: 0.6rem; }
 
 .highlights-list {
   display: flex;
