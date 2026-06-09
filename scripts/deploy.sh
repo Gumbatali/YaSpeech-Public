@@ -155,11 +155,14 @@ print("   ✓ index.html")
 
 # Статические ассеты — кэшируем агрессивно (URL версионирован)
 assets = {
-    "app/app.js":                    ("apps/web/app/app.js",                    "application/javascript; charset=utf-8"),
-    "app/styles.css":                ("apps/web/app/styles.css",                "text/css; charset=utf-8"),
-    "app/ui-model.js":               ("apps/web/app/ui-model.js",               "application/javascript; charset=utf-8"),
-    "app/audio/preprocessor.js":     ("apps/web/app/audio/preprocessor.js",     "application/javascript; charset=utf-8"),
-    "app/audio/quality-analyzer.js": ("apps/web/app/audio/quality-analyzer.js", "application/javascript; charset=utf-8"),
+    "app/app.js":                         ("apps/web/app/app.js",                    "application/javascript; charset=utf-8"),
+    "app/styles.css":                     ("apps/web/app/styles.css",                "text/css; charset=utf-8"),
+    "app/ui-model.js":                    ("apps/web/app/ui-model.js",               "application/javascript; charset=utf-8"),
+    "app/audio/preprocessor.js":          ("apps/web/app/audio/preprocessor.js",     "application/javascript; charset=utf-8"),
+    "app/audio/quality-analyzer.js":      ("apps/web/app/audio/quality-analyzer.js", "application/javascript; charset=utf-8"),
+    "lib/react.production.min.js":        ("apps/web/lib/react.production.min.js",   "application/javascript; charset=utf-8"),
+    "lib/react-dom.production.min.js":    ("apps/web/lib/react-dom.production.min.js", "application/javascript; charset=utf-8"),
+    "lib/htm.umd.js":                     ("apps/web/lib/htm.umd.js",               "application/javascript; charset=utf-8"),
 }
 for key, (path, ct) in assets.items():
     with open(path, "rb") as f:
