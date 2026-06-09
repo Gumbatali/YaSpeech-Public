@@ -1948,62 +1948,115 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
 
       // ── Режим редактирования ──────────────────────────────────────────────
       if (editingSummary && summaryDraft) {
+        const owners = summaryDraft.participants.filter(Boolean);
+
+        function autoGrow(e) {
+          const el = e.target;
+          el.style.height = "auto";
+          el.style.height = el.scrollHeight + "px";
+        }
+
         return html`
           <div className="result-stack summary-edit">
+
             <section className="result-block">
               <div className="eyebrow">Краткий обзор</div>
               <textarea
-                className="summary-textarea"
-                rows="4"
+                className="se-textarea se-textarea--overview"
+                rows="3"
                 value=${summaryDraft.overview}
-                onInput=${(e) => setSummaryDraft((d) => ({ ...d, overview: e.target.value }))}
+                onInput=${(e) => { autoGrow(e); setSummaryDraft((d) => ({ ...d, overview: e.target.value })); }}
+                placeholder="Краткое описание встречи"
               ></textarea>
             </section>
 
             <section className="result-block">
               <div className="eyebrow">Участники</div>
-              ${summaryDraft.participants.map((p, i) => html`
-                <div key=${i} className="edit-row">
-                  <input value=${p} onInput=${(e) => setList("participants", i, e.target.value)} placeholder="Имя участника" />
-                  <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("participants", i)}>✕</button>
-                </div>`)}
-              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("participants", "")}>+ Добавить участника</button>
+              <div className="se-chips">
+                ${summaryDraft.participants.map((p, i) => html`
+                  <div key=${i} className="se-chip">
+                    <input
+                      className="se-chip-input"
+                      value=${p}
+                      style=${{ width: Math.max((p || "").length, 4) + "ch" }}
+                      onInput=${(e) => {
+                        setList("participants", i, e.target.value);
+                        e.target.style.width = Math.max(e.target.value.length, 4) + "ch";
+                      }}
+                      placeholder="Имя"
+                    />
+                    <button className="se-chip-remove" onClick=${() => removeFromList("participants", i)}>✕</button>
+                  </div>`)}
+                <button className="se-chip-add" onClick=${() => addToList("participants", "")}>+ Добавить</button>
+              </div>
             </section>
 
             <section className="result-block">
               <div className="eyebrow">Что решили</div>
-              ${summaryDraft.decisions.map((d, i) => html`
-                <div key=${i} className="edit-row">
-                  <input value=${d} onInput=${(e) => setList("decisions", i, e.target.value)} placeholder="Решение" />
-                  <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("decisions", i)}>✕</button>
-                </div>`)}
-              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("decisions", "")}>+ Добавить решение</button>
+              <div className="se-decisions">
+                ${summaryDraft.decisions.map((d, i) => html`
+                  <div key=${i} className="se-decision-row">
+                    <span className="se-decision-num">${i + 1}.</span>
+                    <textarea
+                      className="se-textarea se-textarea--decision"
+                      rows="1"
+                      value=${d}
+                      onInput=${(e) => { autoGrow(e); setList("decisions", i, e.target.value); }}
+                      placeholder="Решение"
+                    ></textarea>
+                    <button className="se-row-remove" onClick=${() => removeFromList("decisions", i)} title="Удалить">🗑</button>
+                  </div>`)}
+                <button className="se-ghost-add" onClick=${() => addToList("decisions", "")}>+ Добавить решение</button>
+              </div>
             </section>
 
             <section className="result-block">
               <div className="eyebrow">Следующие шаги</div>
-              ${summaryDraft.actionItems.map((item, i) => html`
-                <div key=${i} className="action-item action-item--editing">
-                  <div className="action-edit-grid">
-                    <label className="action-edit-field"><span>Ответственный</span>
-                      <input value=${item.owner ?? ""} onInput=${(e) => setAction(i, "owner", e.target.value)} placeholder="Имя или роль" /></label>
-                    <label className="action-edit-field"><span>Задача</span>
-                      <input value=${item.task ?? ""} onInput=${(e) => setAction(i, "task", e.target.value)} placeholder="Описание задачи" /></label>
-                    <label className="action-edit-field"><span>Срок</span>
-                      <input type="date" value=${item.deadline ?? ""} onInput=${(e) => setAction(i, "deadline", e.target.value || null)} /></label>
-                  </div>
-                  <div className="action-edit-btns">
-                    <button className="ghost-button ghost-button--sm" onClick=${() => removeFromList("actionItems", i)}>Удалить задачу</button>
-                  </div>
-                </div>`)}
-              <button className="ghost-button ghost-button--sm" onClick=${() => addToList("actionItems", { owner: "", task: "", deadline: null })}>+ Добавить задачу</button>
+              <div className="se-actions">
+                ${summaryDraft.actionItems.map((item, i) => html`
+                  <div key=${i} className="se-action-card">
+                    <textarea
+                      className="se-textarea se-textarea--task"
+                      rows="2"
+                      value=${item.task ?? ""}
+                      onInput=${(e) => { autoGrow(e); setAction(i, "task", e.target.value); }}
+                      placeholder="Что нужно сделать…"
+                    ></textarea>
+                    <div className="se-action-meta">
+                      <div className="se-action-meta-field">
+                        <span className="se-meta-label">👤</span>
+                        <input
+                          list=${"owners-" + i}
+                          className="se-meta-input"
+                          value=${item.owner ?? ""}
+                          onInput=${(e) => setAction(i, "owner", e.target.value)}
+                          placeholder="Ответственный"
+                        />
+                        <datalist id=${"owners-" + i}>
+                          ${owners.map((o, j) => html`<option key=${j} value=${o} />`)}
+                        </datalist>
+                      </div>
+                      <div className="se-action-meta-field">
+                        <span className="se-meta-label">📅</span>
+                        <input
+                          type="date"
+                          className="se-meta-input se-meta-input--date"
+                          value=${item.deadline ?? ""}
+                          onInput=${(e) => setAction(i, "deadline", e.target.value || null)}
+                        />
+                      </div>
+                      <button className="se-action-remove" onClick=${() => removeFromList("actionItems", i)} title="Удалить задачу">🗑</button>
+                    </div>
+                  </div>`)}
+                <button className="se-ghost-add" onClick=${() => addToList("actionItems", { owner: "", task: "", deadline: null })}>+ Добавить задачу</button>
+              </div>
             </section>
 
-            <div className="button-row">
+            <div className="se-sticky-bar">
+              <button className="ghost-button" onClick=${() => setEditingSummary(false)} disabled=${savingSummary}>Отмена</button>
               <button className="primary-button" onClick=${saveSummary} disabled=${savingSummary}>
                 ${savingSummary ? "Сохраняем…" : "Сохранить итоги"}
               </button>
-              <button className="ghost-button" onClick=${() => setEditingSummary(false)} disabled=${savingSummary}>Отмена</button>
             </div>
           </div>
         `;
