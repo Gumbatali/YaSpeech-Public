@@ -2143,6 +2143,10 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   </div>`)}
               </div>
             </section>` : null}
+
+          <div className="edit-btn--mobile-wrap">
+            <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
+          </div>
         </div>
       `;
     }
@@ -2220,11 +2224,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 </div>`}
 
             ${resultTab === "summary"
-              ? html`
-                  ${renderSummaryTab(protocol)}
-                  ${!editingSummary ? html`<div className="edit-btn--mobile-wrap">
-                    <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
-                  </div>` : null}`
+              ? renderSummaryTab(protocol)
               : renderTranscriptTab()}
           </section>
         </section>

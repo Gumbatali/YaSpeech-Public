@@ -1414,13 +1414,14 @@ button { cursor: pointer; }
   color: var(--error);
 }
 
-/* Кнопка «Редактировать итоги» — всегда снизу контента */
+/* Кнопка «Редактировать итоги» — последний элемент внутри result-stack */
 .edit-btn--mobile-wrap {
   display: flex;
   justify-content: flex-end;
-  margin-top: 1.25rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--line);
+  /* На десктопе (2-кол. grid) растягиваем на обе колонки */
+  grid-column: 1 / -1;
 }
 @media (max-width: 600px) {
   .edit-btn--mobile-wrap { justify-content: stretch; }
