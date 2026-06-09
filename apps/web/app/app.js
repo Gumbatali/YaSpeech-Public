@@ -1884,28 +1884,28 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 disabled=${!hasLlm}
               >LLM восстановил</button>
             </div>
-            <div className="transcript-actions">
-              <button className="ghost-button ghost-button--sm" onClick=${handleStartEdit}>
-                ✏️ Редактировать
-              </button>
-              <button
-                className="ghost-button ghost-button--sm"
-                onClick=${handleRestoreOriginal}
-                disabled=${restoringTranscript}
-                title="Вернуть исходную расшифровку от системы распознавания"
-              >${restoringTranscript ? "Возвращаем…" : "↩️ Вернуть оригинал"}</button>
-              <button
-                className="ghost-button ghost-button--sm"
-                onClick=${handleRegenerate}
-                disabled=${regenerating}
-                title="Пересобрать протокол на основе текущей расшифровки"
-              >${regenerating ? "Пересобираем…" : "🔄 Пересобрать протокол"}</button>
-            </div>
           </div>
           ${transcriptVersion === "llm" && !hasLlm
             ? html`<div className="empty-state">LLM-коррекция ещё не готова.</div>`
             : renderTranscriptSegments(activeSegments, colorMap, speakerInfo)
           }
+          <div className="transcript-actions">
+            <button className="ghost-button ghost-button--sm" onClick=${handleStartEdit}>
+              ✏️ Редактировать
+            </button>
+            <button
+              className="ghost-button ghost-button--sm"
+              onClick=${handleRestoreOriginal}
+              disabled=${restoringTranscript}
+              title="Вернуть исходную расшифровку от системы распознавания"
+            >${restoringTranscript ? "Возвращаем…" : "↩️ Вернуть оригинал"}</button>
+            <button
+              className="ghost-button ghost-button--sm"
+              onClick=${handleRegenerate}
+              disabled=${regenerating}
+              title="Пересобрать протокол на основе текущей расшифровки"
+            >${regenerating ? "Пересобираем…" : "🔄 Пересобрать протокол"}</button>
+          </div>
         </div>
       `;
     }
