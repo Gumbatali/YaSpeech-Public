@@ -2212,7 +2212,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                   <button className="primary-button" onClick=${copyProtocol}>Скопировать итоги</button>
                   <button className="ghost-button" onClick=${downloadProtocol}>Скачать TXT</button>
                   <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
-                  ${!editingSummary ? html`<button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>` : null}
+                  ${!editingSummary ? html`<button className="ghost-button ghost-button--sm edit-btn--desktop" onClick=${startEditSummary}>✏️ Редактировать итоги</button>` : null}
                 </div>`
               : html`<div className="button-row">
                   <button className="primary-button" onClick=${downloadTranscriptLlm}>Скачать LLM-версию</button>
@@ -2221,7 +2221,11 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 </div>`}
 
             ${resultTab === "summary"
-              ? renderSummaryTab(protocol)
+              ? html`
+                  ${renderSummaryTab(protocol)}
+                  ${!editingSummary ? html`<div className="edit-btn--mobile-wrap">
+                    <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
+                  </div>` : null}`
               : renderTranscriptTab()}
           </section>
         </section>
