@@ -1958,27 +1958,34 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
         }
         function autoGrow(e) { growEl(e.target); }
 
-        // Переименование участника → обновить owner во всех задачах
-        function renameParticipant(i, oldName, newName) {
-          setSummaryDraft((d) => ({
-            ...d,
-            participants: d.participants.map((p, pi) => pi === i ? newName : p),
-            actionItems: d.actionItems.map((a) =>
-              a.owner === oldName ? { ...a, owner: newName } : a
-            )
-          }));
+        // Переименование участника → обновить owner во всех задачах.
+        // Читаем oldName из d (текущего стейта), а не из замыкания — иначе
+        // при быстром вводе p устаревает и цепочка ломается.
+        function renameParticipant(idx, newName) {
+          setSummaryDraft((d) => {
+            const oldName = d.participants[idx];
+            return {
+              ...d,
+              participants: d.participants.map((p, pi) => pi === idx ? newName : p),
+              actionItems: d.actionItems.map((a) =>
+                a.owner === oldName ? { ...a, owner: newName } : a
+              )
+            };
+          });
         }
 
         // Удаление участника → очистить owner в задачах, где он был
-        function removeParticipant(i) {
-          const name = summaryDraft.participants[i];
-          setSummaryDraft((d) => ({
-            ...d,
-            participants: d.participants.filter((_, pi) => pi !== i),
-            actionItems: d.actionItems.map((a) =>
-              a.owner === name ? { ...a, owner: "" } : a
-            )
-          }));
+        function removeParticipant(idx) {
+          setSummaryDraft((d) => {
+            const name = d.participants[idx];
+            return {
+              ...d,
+              participants: d.participants.filter((_, pi) => pi !== idx),
+              actionItems: d.actionItems.map((a) =>
+                a.owner === name ? { ...a, owner: "" } : a
+              )
+            };
+          });
         }
 
         return html`
@@ -2008,7 +2015,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                       onInput=${(e) => {
                         const newName = e.target.value;
                         e.target.style.width = Math.max(newName.length, 4) + "ch";
-                        renameParticipant(i, p, newName);
+                        renameParticipant(i, newName);
                       }}
                       placeholder="Имя"
                     />
