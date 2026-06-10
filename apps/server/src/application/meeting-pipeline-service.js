@@ -420,8 +420,17 @@ export class MeetingPipelineService {
     const chunks = buildRefineChunks(phrases);
     const total = chunks.length;
 
+    // Маркер поколения джобы: если пользователь отредактировал текст во время
+    // работы (PATCH ставит llmRefine.status="stale" и сбрасывает requestedAt),
+    // джоба обязана выбросить результат — он посчитан по устаревшему тексту
+    const jobRequestedAt = meeting.llmRefine?.requestedAt ?? null;
+    const isJobSuperseded = (fresh) =>
+      fresh?.llmRefine?.status === "stale" ||
+      (jobRequestedAt && fresh?.llmRefine?.requestedAt !== jobRequestedAt);
+
     const saveProgress = async (status, extra = {}) => {
       const fresh = await this.meetingRepository.getById(meeting.id);
+      if (isJobSuperseded(fresh)) return false;
       await this.meetingRepository.save({
         ...fresh,
         llmRefine: {
@@ -433,9 +442,13 @@ export class MeetingPipelineService {
         },
         updatedAt: this.clock.now().toISOString()
       });
+      return true;
     };
 
-    await saveProgress("processing");
+    if (!(await saveProgress("processing"))) {
+      logger.info("refine: superseded before start, aborting", { meetingId: meeting.id });
+      return;
+    }
 
     // ── Цикл по чанкам ─────────────────────────────────────────────────────
     for (; nextChunk < total; nextChunk++) {
@@ -476,7 +489,12 @@ export class MeetingPipelineService {
         nextChunk: nextChunk + 1,
         stats
       });
-      await saveProgress("processing");
+      if (!(await saveProgress("processing"))) {
+        logger.info("refine: superseded mid-job (transcript edited), aborting", {
+          meetingId: meeting.id, done: nextChunk + 1, total
+        });
+        return;
+      }
 
       if (Date.now() - startedMs > REFINE_TIME_BUDGET_MS && nextChunk + 1 < total) {
         logger.info("refine: time budget exhausted, re-enqueueing", {
@@ -526,6 +544,12 @@ export class MeetingPipelineService {
     }));
 
     const fresh = await this.meetingRepository.getById(meeting.id);
+    if (isJobSuperseded(fresh)) {
+      logger.info("refine: superseded at finalization (transcript edited), discarding result", {
+        meetingId: meeting.id
+      });
+      return;
+    }
     const updated = {
       ...fresh,
       llmTranscriptSegments,

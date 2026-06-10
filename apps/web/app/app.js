@@ -614,6 +614,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       try {
         setConfirmingDraft(true);
         setError("");
+        setEditingTranscript(false);
         const payload = await api.confirmDraft(activeMeeting.id, {
           titleDraft: draftForm.titleDraft,
           speakerDrafts: draftForm.speakerDrafts
@@ -1142,6 +1143,42 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
     }
 
     function renderDraftScreen() {
+      // Лучшая доступная версия: после «Улучшить с ИИ» показываем её,
+      // правки и протокол тоже идут по ней
+      const draftSegments = (activeMeeting?.llmTranscriptSegments?.length
+        ? activeMeeting.llmTranscriptSegments
+        : activeMeeting?.transcriptSegments) ?? [];
+      const refineBusy = ["queued", "processing"].includes(
+        activeMeeting?.llmRefine?.status
+      );
+
+      function startDraftTranscriptEdit() {
+        setTranscriptEditText(
+          draftSegments
+            .map((s) => {
+              const label = s.guessedName || s.speakerLabel || "";
+              return label ? `${label}: ${s.text}` : s.text;
+            })
+            .join("\n")
+        );
+        setEditingTranscript(true);
+      }
+
+      async function saveDraftTranscript() {
+        if (!transcriptEditText.trim()) return;
+        setSavingTranscript(true);
+        try {
+          const res = await api.patchTranscript(activeMeeting.id, transcriptEditText);
+          if (res?.meeting) setActiveMeeting(res.meeting);
+          setEditingTranscript(false);
+          setNotice("Расшифровка сохранена. Можно улучшить с помощью ИИ или сразу собрать протокол.");
+        } catch (e) {
+          setError("Не удалось сохранить расшифровку: " + (e.message ?? e));
+        } finally {
+          setSavingTranscript(false);
+        }
+      }
+
       return html`
         <section className="screen project-screen">
           ${renderProjectHeader()}
@@ -1222,15 +1259,59 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
             </div>
 
             <div className="transcript-box">
-              <div className="eyebrow">Фрагмент транскрипта</div>
-              ${(activeMeeting?.transcriptSegments ?? []).map(
-                (segment, index) => html`
-                  <div key=${index} className="transcript-row">
-                    <strong>${segment.guessedName || segment.speakerLabel}</strong>
-                    <p>${segment.text}</p>
-                  </div>
-                `
-              )}
+              <div className="transcript-box-head">
+                <div className="eyebrow">
+                  ${activeMeeting?.llmTranscriptSegments?.length
+                    ? "Транскрипт (улучшен ИИ)"
+                    : "Фрагмент транскрипта"}
+                </div>
+                ${!editingTranscript && !refineBusy
+                  ? html`
+                      <button
+                        className="ghost-button ghost-button--sm"
+                        onClick=${startDraftTranscriptEdit}
+                        title="Исправьте текст — ИИ и протокол будут работать с вашей версией"
+                      >✏️ Редактировать</button>
+                    `
+                  : null}
+              </div>
+              ${editingTranscript
+                ? html`
+                    <p className="transcript-edit-hint">
+                      Формат строки: <code>Имя спикера: текст реплики</code>.
+                      Сохранённые правки учтёт и «Улучшить с помощью ИИ», и сборка протокола.
+                    </p>
+                    <textarea
+                      className="transcript-editor"
+                      value=${transcriptEditText}
+                      onInput=${(e) => setTranscriptEditText(e.target.value)}
+                      rows="14"
+                      spellcheck="false"
+                    ></textarea>
+                    <div className="button-row">
+                      <button
+                        className="primary-button"
+                        onClick=${saveDraftTranscript}
+                        disabled=${savingTranscript}
+                      >${savingTranscript ? "Сохраняем…" : "Сохранить"}</button>
+                      <button
+                        className="ghost-button"
+                        onClick=${() => setEditingTranscript(false)}
+                        disabled=${savingTranscript}
+                      >Отмена</button>
+                    </div>
+                  `
+                : draftSegments.map(
+                    (segment, index) => html`
+                      <div key=${index} className="transcript-row">
+                        <strong>
+                          ${segment.guessedName || segment.speakerLabel}
+                          ${segment.refined ? html` <span className="tf-refined-badge" title="Исправлено ИИ">✨</span>` : null}
+                        </strong>
+                        <p>${segment.text}</p>
+                      </div>
+                    `
+                  )}
             </div>
 
             <div className="button-row">

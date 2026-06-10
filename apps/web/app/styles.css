@@ -1755,3 +1755,15 @@ button { cursor: pointer; }
   text-decoration: line-through;
   text-decoration-color: rgba(0, 0, 0, 0.25);
 }
+
+.transcript-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.transcript-box-head .eyebrow {
+  margin-bottom: 0;
+}
