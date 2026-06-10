@@ -148,6 +148,50 @@ test("ручная правка расшифровки инвалидирует 
   });
 });
 
+test("цикл черновика: правка → refine учитывает правку → повторная правка → протокол по ней", async () => {
+  await withServer({}, async (server) => {
+    const meetingId = await prepareDraftMeeting(server);
+
+    // 1. Правим расшифровку прямо в черновике
+    await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
+      method: "PATCH",
+      body: JSON.stringify({ rawText: "Спикер 1: обсудили монтаж фасада на объекте" })
+    });
+
+    // 2. Улучшение работает по ОТРЕДАКТИРОВАННОМУ тексту
+    await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    await server.waitForIdle();
+
+    let { body } = await requestJson(server, `/api/meetings/${meetingId}`);
+    assert.equal(body.meeting.llmRefine.status, "done");
+    const refinedSeg = body.meeting.llmTranscriptSegments[0];
+    assert.match(refinedSeg.text, /монтаж фасада/, "refine должен исходить из правленого текста");
+
+    // 3. Правим ещё раз ПОСЛЕ улучшения — refine инвалидирован
+    await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
+      method: "PATCH",
+      body: JSON.stringify({ rawText: "Спикер 1: финальная версия от руки" })
+    });
+    ({ body } = await requestJson(server, `/api/meetings/${meetingId}`));
+    assert.equal(body.meeting.llmRefine.status, "stale");
+
+    // 4. Сборка протокола идёт по последней (ручной) версии
+    const confirmed = await requestJson(server, `/api/meetings/${meetingId}/confirm-draft`, {
+      method: "POST",
+      body: JSON.stringify({ titleDraft: "Тест цикла", speakerDrafts: [] })
+    });
+    assert.equal(confirmed.body.meeting.status, "protocol_generating");
+    await server.waitForIdle();
+
+    ({ body } = await requestJson(server, `/api/meetings/${meetingId}`));
+    assert.equal(body.meeting.status, "done");
+    assert.ok(body.meeting.protocol, "протокол собран");
+  });
+});
+
 test("refine недоступен пока расшифровка не готова", async () => {
   await withServer({}, async (server) => {
     const project = await requestJson(server, "/api/projects", {
