@@ -4,300 +4,30 @@ import {
   getStageViewModel,
   getTimelineStepState,
   resolveScreen
-} from "./ui-model.js";
-import { preprocessAudio } from "./audio/preprocessor.js";
-import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.js";
+} from "./ui-model.js?v=__BUILD__";
+import { preprocessAudio } from "./audio/preprocessor.js?v=__BUILD__";
+import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.js?v=__BUILD__";
+import { html, useEffect, useState, React } from "./html.js?v=__BUILD__";
+import { ApiClient } from "./api.js?v=__BUILD__";
+import {
+  todayIso,
+  formatMeetingDate,
+  nowHHMM,
+  subtractSecondsHHMM,
+  formatMeetingTimeRange,
+  formatRecordingTime,
+  getAudioDuration
+} from "./format.js?v=__BUILD__";
+import { parseLlmTranscript } from "./transcript-model.js?v=__BUILD__";
+import { LoginScreen } from "./screens/login-screen.js?v=__BUILD__";
+import { AdminScreen } from "./screens/admin-screen.js?v=__BUILD__";
+import { SummaryTab } from "./screens/summary-tab.js?v=__BUILD__";
+import { TranscriptTab } from "./screens/transcript-tab.js?v=__BUILD__";
 
 (function bootstrapApp() {
-  const { useEffect, useState } = window.React;
-  const html = window.htm.bind(window.React.createElement);
-
-  class ApiClient {
-    constructor(onUnauthorized) {
-      this._onUnauthorized = onUnauthorized;
-    }
-
-    async json(pathname, init = {}, { skipAuthRedirect = false } = {}) {
-      const response = await fetch(pathname, {
-        ...init,
-        headers: {
-          "content-type": "application/json",
-          ...(init.headers ?? {})
-        }
-      });
-
-      if (response.status === 401 && !skipAuthRedirect) {
-        this._onUnauthorized?.();
-        throw new Error("Сессия истекла. Войдите снова.");
-      }
-
-      if (!response.ok) {
-        let message = "Не удалось выполнить запрос.";
-        try {
-          const body = await response.json();
-          // Поддерживаем оба формата: { error: "string" } и { error: { message } }
-          message = typeof body.error === "string"
-            ? body.error
-            : (body.error?.message ?? message);
-        } catch {}
-        throw new Error(message);
-      }
-
-      return response.json();
-    }
-
-    getMe() {
-      return this.json("/api/auth/me");
-    }
-
-    register(login, password) {
-      return this.json("/api/auth/register", {
-        method: "POST",
-        body: JSON.stringify({ login, password })
-      }, { skipAuthRedirect: true });
-    }
-
-    login(login, password) {
-      return this.json("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ login, password })
-      }, { skipAuthRedirect: true });
-    }
-
-    logout() {
-      return this.json("/api/auth/logout", { method: "POST" });
-    }
-
-    listProjects() {
-      return this.json("/api/projects");
-    }
-
-    createProject(payload) {
-      return this.json("/api/projects", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    }
-
-    getTeam(projectId) {
-      return this.json(`/api/projects/${projectId}/team`);
-    }
-
-    updateTeam(projectId, payload) {
-      return this.json(`/api/projects/${projectId}/team`, {
-        method: "PUT",
-        body: JSON.stringify(payload)
-      });
-    }
-
-    listMeetings(projectId) {
-      return this.json(`/api/projects/${projectId}/meetings`);
-    }
-
-    createMeeting(payload) {
-      return this.json("/api/meetings", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    }
-
-    uploadFile(upload, file, onProgress) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(upload.method, upload.uploadUrl);
-        xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && onProgress) {
-            onProgress(Math.round((e.loaded / e.total) * 100));
-          }
-        };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(xhr);
-          } else {
-            reject(new Error(`Ошибка загрузки файла на сервер (HTTP ${xhr.status}).`));
-          }
-        };
-        xhr.onerror = () => reject(new Error("Ошибка загрузки файла."));
-        xhr.send(file);
-      });
-    }
-
-    completeUpload(meetingId, sizeBytes, durationSeconds) {
-      return this.json(`/api/meetings/${meetingId}/upload-complete`, {
-        method: "POST",
-        body: JSON.stringify({ sizeBytes, durationSeconds: durationSeconds ?? null })
-      });
-    }
-
-    confirmDraft(meetingId, payload) {
-      return this.json(`/api/meetings/${meetingId}/confirm-draft`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-    }
-
-    getMeeting(meetingId) {
-      return this.json(`/api/meetings/${meetingId}`);
-    }
-
-    patchTranscript(meetingId, rawText) {
-      return this.json(`/api/meetings/${meetingId}/transcript`, {
-        method: "PATCH",
-        body: JSON.stringify({ rawText })
-      });
-    }
-
-    patchProtocol(meetingId, protocol) {
-      return this.json(`/api/meetings/${meetingId}/protocol`, {
-        method: "PATCH",
-        body: JSON.stringify({ protocol })
-      });
-    }
-
-    restoreTranscript(meetingId) {
-      return this.json(`/api/meetings/${meetingId}/transcript/restore`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    // ── Админ: управление пользователями ──
-    listUsers() {
-      return this.json("/api/admin/users");
-    }
-
-    setUserRole(userId, role) {
-      return this.json(`/api/admin/users/${userId}/role`, {
-        method: "PATCH",
-        body: JSON.stringify({ role })
-      });
-    }
-
-    banUser(userId) {
-      return this.json(`/api/admin/users/${userId}/ban`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    unbanUser(userId) {
-      return this.json(`/api/admin/users/${userId}/unban`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    setUserQuota(userId, quota) {
-      return this.json(`/api/admin/users/${userId}/quota`, {
-        method: "PATCH",
-        body: JSON.stringify({ quota })
-      });
-    }
-
-    resetUserQuota(userId) {
-      return this.json(`/api/admin/users/${userId}/quota/reset`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    regenerateProtocol(meetingId) {
-      return this.json(`/api/meetings/${meetingId}/regenerate-protocol`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    retryMeeting(meetingId) {
-      return this.json(`/api/meetings/${meetingId}/retry`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-    }
-
-    async getProtocolText(meetingId) {
-      const response = await fetch(`/api/meetings/${meetingId}/protocol.txt`);
-      if (!response.ok) {
-        throw new Error("Не удалось получить текст протокола.");
-      }
-
-      return response.text();
-    }
-
-    deleteProject(projectId) {
-      return this.json(`/api/projects/${projectId}`, { method: "DELETE" });
-    }
-
-    deleteMeeting(meetingId) {
-      return this.json(`/api/meetings/${meetingId}`, { method: "DELETE" });
-    }
-  }
 
   // api инициализируется позже, после определения App (нужен onUnauthorized)
   let api;
-
-  function todayIso() {
-    return new Date().toISOString().slice(0, 10);
-  }
-
-  function formatMeetingDate(value) {
-    try {
-      return new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(new Date(value));
-    } catch {
-      return value;
-    }
-  }
-
-  function nowHHMM() {
-    const d = new Date();
-    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-  }
-
-  function subtractSecondsHHMM(hhmm, seconds) {
-    const [h, m] = hhmm.split(":").map(Number);
-    const totalMin = h * 60 + m - Math.round(seconds / 60);
-    const clampedMin = ((totalMin % 1440) + 1440) % 1440;
-    return String(Math.floor(clampedMin / 60)).padStart(2, "0") + ":" + String(clampedMin % 60).padStart(2, "0");
-  }
-
-  function getMeetingTimeRange(meeting) {
-    // Prefer explicitly stored times
-    if (meeting?.startTime && meeting?.endTime) {
-      return { start: meeting.startTime, end: meeting.endTime };
-    }
-    // Fallback: compute from uploadedAt + durationSeconds
-    const dur = meeting?.audioFile?.durationSeconds;
-    const uploadedAt = meeting?.audioFile?.uploadedAt || meeting?.updatedAt;
-    if (!uploadedAt) return null;
-    const fmt = (ms) => new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
-    const endMs = new Date(uploadedAt).getTime();
-    const end = fmt(endMs);
-    const start = dur ? fmt(endMs - dur * 1000) : end;
-    return { start, end };
-  }
-
-  function formatMeetingTimeRange(meeting) {
-    const range = getMeetingTimeRange(meeting);
-    if (!range) return null;
-    return range.start === range.end ? range.start : range.start + "–" + range.end;
-  }
-
-  function getAudioDuration(file) {
-    return new Promise((resolve) => {
-      const audio = document.createElement("audio");
-      const url = URL.createObjectURL(file);
-      audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(Math.round(audio.duration)); };
-      audio.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-      audio.src = url;
-    });
-  }
-
-  function formatRecordingTime(seconds) {
-    const m = String(Math.floor(seconds / 60)).padStart(2, "0");
-    const s = String(seconds % 60).padStart(2, "0");
-    return m + ":" + s;
-  }
 
   function createProjectForm() {
     return { name: "" };
@@ -312,76 +42,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       titleDraft: meeting?.titleDraft ?? "",
       speakerDrafts: (meeting?.speakerDrafts ?? []).map((speaker) => ({ ...speaker }))
     };
-  }
-
-  function LoginScreen({ onAuth }) {
-    const [mode, setMode] = useState("login"); // "login" | "register"
-    const [login, setLogin] = useState("");
-    const [password, setPassword] = useState("");
-    const [busy, setBusy] = useState(false);
-    const [err, setErr] = useState("");
-
-    async function handleSubmit(event) {
-      event.preventDefault();
-      if (!login.trim() || !password) { setErr("Заполните все поля."); return; }
-      setBusy(true);
-      setErr("");
-      try {
-        let result;
-        if (mode === "login") {
-          result = await api.login(login.trim(), password);
-        } else {
-          result = await api.register(login.trim(), password);
-        }
-        onAuth(result.user);
-      } catch (e) {
-        setErr(e.message);
-      } finally {
-        setBusy(false);
-      }
-    }
-
-    return html`
-      <div className="auth-shell">
-        <div className="auth-card">
-          <div className="auth-logo">YaSpeech</div>
-          <h1 className="auth-title">${mode === "login" ? "Вход" : "Регистрация"}</h1>
-          <form className="auth-form" onSubmit=${handleSubmit}>
-            <label className="field">
-              <span>Логин</span>
-              <input
-                type="text"
-                autocomplete="username"
-                value=${login}
-                onInput=${(e) => setLogin(e.target.value)}
-                placeholder="Имя пользователя"
-                disabled=${busy}
-              />
-            </label>
-            <label className="field">
-              <span>Пароль</span>
-              <input
-                type="password"
-                autocomplete=${mode === "login" ? "current-password" : "new-password"}
-                value=${password}
-                onInput=${(e) => setPassword(e.target.value)}
-                placeholder="Минимум 6 символов"
-                disabled=${busy}
-              />
-            </label>
-            ${err ? html`<div className="auth-error">${err}</div>` : null}
-            <button className="primary-button" type="submit" disabled=${busy}>
-              ${busy ? "Подождите…" : mode === "login" ? "Войти" : "Зарегистрироваться"}
-            </button>
-          </form>
-          <div className="auth-switch">
-            ${mode === "login"
-              ? html`Нет аккаунта? <button className="link-button" onClick=${() => { setMode("register"); setErr(""); }}>Создать</button>`
-              : html`Уже есть аккаунт? <button className="link-button" onClick=${() => { setMode("login"); setErr(""); }}>Войти</button>`}
-          </div>
-        </div>
-      </div>
-    `;
   }
 
   function App() {
@@ -745,36 +405,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       } finally {
         setSavingTeam(false);
       }
-    }
-
-    /** Кодирует AudioBuffer в WAV (PCM 16-bit) — без библиотек, работает в любом браузере */
-    function encodeWav(audioBuffer) {
-      const numChannels = audioBuffer.numberOfChannels;
-      const sampleRate  = audioBuffer.sampleRate;
-      const numSamples  = audioBuffer.length * numChannels;
-      const dataBytes   = numSamples * 2;
-
-      const buffer = new ArrayBuffer(44 + dataBytes);
-      const view   = new DataView(buffer);
-      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-
-      writeStr(0, "RIFF");  view.setUint32(4, 36 + dataBytes, true);
-      writeStr(8, "WAVE");  writeStr(12, "fmt ");
-      view.setUint32(16, 16, true);  view.setUint16(20, 1, true);
-      view.setUint16(22, numChannels, true);  view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * numChannels * 2, true);
-      view.setUint16(32, numChannels * 2, true);  view.setUint16(34, 16, true);
-      writeStr(36, "data");  view.setUint32(40, dataBytes, true);
-
-      let off = 44;
-      for (let i = 0; i < audioBuffer.length; i++) {
-        for (let ch = 0; ch < numChannels; ch++) {
-          const s = Math.max(-1, Math.min(1, audioBuffer.getChannelData(ch)[i]));
-          view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-          off += 2;
-        }
-      }
-      return buffer;
     }
 
     async function startRecording() {
@@ -1605,552 +1235,6 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       `;
     }
 
-    // Цвета для спикеров в расшифровке
-    const SPEAKER_COLORS = [
-      "#4f6ef7", "#e05c5c", "#2bba8a", "#e09c2b",
-      "#9b59b6", "#16a085", "#d35400", "#2980b9"
-    ];
-
-    /**
-     * Строим карту identity → color прямо из сегментов в порядке первого появления.
-     * Не зависит от speakerDrafts — работает и для raw, и для LLM-версии.
-     * Один и тот же спикер всегда получает один и тот же цвет внутри набора сегментов.
-     */
-    function buildSpeakerColorMap(segments) {
-      const map = new Map();
-      let idx = 0;
-      for (const seg of (segments ?? [])) {
-        const key = (seg.guessedName?.trim()) || seg.speakerLabel || seg.speakerId;
-        if (key && !map.has(key)) {
-          map.set(key, SPEAKER_COLORS[idx % SPEAKER_COLORS.length]);
-          idx++;
-        }
-      }
-      return map;
-    }
-
-    function speakerColorFromMap(colorMap, seg) {
-      const keys = [seg.guessedName?.trim(), seg.speakerLabel, seg.speakerId].filter(Boolean);
-      for (const k of keys) {
-        if (colorMap.has(k)) return colorMap.get(k);
-      }
-      // крайний fallback: хэш чтобы незнакомый спикер не менял цвет между рендерами
-      const key = keys[0] ?? "?";
-      const hash = [...key].reduce((a, c) => a + c.charCodeAt(0), 0);
-      return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
-    }
-
-    function speakerInitial(label) {
-      return (label ?? "?").replace("Спикер ", "С").slice(0, 2).toUpperCase();
-    }
-
-    /**
-     * Строит карту "Спикер N" → { name, role, dialogueRole, display }.
-     *  - name/role берём из speakerDrafts (LLM-идентификация)
-     *  - dialogueRole считаем сами по сегментам: кто начал, у кого больше слов и т.п.
-     *  - display — что показать: "Имя · роль", иначе "Спикер N · роль-в-диалоге"
-     */
-    function buildSpeakerInfoMap(speakerDrafts, segments) {
-      const info = new Map();
-
-      // 1. Имя, проф. роль и роль-в-диалоге из drafts (ключи: label, id, guessedName)
-      (speakerDrafts ?? []).forEach((s) => {
-        const entry = {
-          name: s.guessedName?.trim() || null,
-          role: s.guessedRole?.trim() || null,
-          dialogueRole: s.dialogueRole?.trim() || null // от LLM, если есть
-        };
-        [s.label, s.id, s.guessedName?.trim()].filter(Boolean).forEach((k) => {
-          if (!info.has(k)) info.set(k, entry);
-        });
-      });
-
-      // 2. Роль-в-диалоге: статистика по сегментам
-      const stats = new Map(); // key → { words, firstIdx, count }
-      (segments ?? []).forEach((seg, idx) => {
-        const key = seg.guessedName?.trim() || seg.speakerLabel || seg.speakerId;
-        if (!key) return;
-        const words = (seg.text ?? "").trim().split(/\s+/).filter(Boolean).length;
-        const cur = stats.get(key) ?? { words: 0, firstIdx: idx, count: 0 };
-        cur.words += words;
-        cur.count += 1;
-        stats.set(key, cur);
-      });
-
-      // Самодельная эвристика — только если LLM не дал dialogueRole
-      const ordered = [...stats.entries()].sort((a, b) => a[1].firstIdx - b[1].firstIdx);
-      const maxWords = Math.max(0, ...[...stats.values()].map((v) => v.words));
-      ordered.forEach(([key, st], i) => {
-        const existing = info.get(key) ?? { name: null, role: null, dialogueRole: null };
-        if (existing.dialogueRole) return; // LLM уже описал роль
-        let dialogueRole;
-        if (i === 0) dialogueRole = "начал разговор";
-        else if (st.words === maxWords && maxWords > 0) dialogueRole = "основной спикер";
-        else dialogueRole = "участник";
-        info.set(key, { ...existing, dialogueRole });
-      });
-
-      return info;
-    }
-
-    /** Возвращает { title, subtitle } для шапки реплики спикера. */
-    function resolveSpeakerLabel(speakerInfo, seg) {
-      const rawLabel = seg.guessedName || seg.speakerLabel || seg.speakerId || "";
-      const keys = [seg.guessedName?.trim(), seg.speakerLabel, seg.speakerId].filter(Boolean);
-      let entry = null;
-      for (const k of keys) {
-        if (speakerInfo.has(k)) { entry = speakerInfo.get(k); break; }
-      }
-      if (!entry) return { title: rawLabel, subtitle: null };
-
-      // Приоритет: настоящее имя > проф. роль > роль в диалоге
-      if (entry.name) {
-        return { title: entry.name, subtitle: entry.role || null };
-      }
-      return { title: rawLabel, subtitle: entry.role || entry.dialogueRole || null };
-    }
-
-    function formatTimecode(ms) {
-      if (ms == null) return null;
-      const totalSec = Math.floor(ms / 1000);
-      const h = Math.floor(totalSec / 3600);
-      const m = Math.floor((totalSec % 3600) / 60);
-      const s = totalSec % 60;
-      if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-      return `${m}:${String(s).padStart(2, "0")}`;
-    }
-
-    function parseLlmTranscript(correctedText) {
-      if (!correctedText) return [];
-      return correctedText
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const m = line.match(/^(.{1,50}):\s*(.+)$/);
-          if (m) {
-            // speakerId = нормализованный label, чтобы colorMap мог его найти
-            const label = m[1].trim();
-            return { speakerId: label, speakerLabel: label, text: m[2] };
-          }
-          return { speakerId: "speaker-1", speakerLabel: "", text: line };
-        });
-    }
-
-    function renderTranscriptSegments(segments, colorMap, speakerInfo) {
-      if (!segments.length) {
-        return html`<div className="empty-state">Расшифровка недоступна.</div>`;
-      }
-      return html`
-        <div className="transcript-full">
-          ${segments.map((seg, i) => {
-            const color = colorMap ? speakerColorFromMap(colorMap, seg) : SPEAKER_COLORS[i % SPEAKER_COLORS.length];
-            const { title, subtitle } = speakerInfo
-              ? resolveSpeakerLabel(speakerInfo, seg)
-              : { title: seg.guessedName || seg.speakerLabel || seg.speakerId || "", subtitle: null };
-            const initial = speakerInitial(title);
-            const timecode = formatTimecode(seg.startTimeMs);
-            return html`
-              <div key=${i} className="tf-row">
-                ${title ? html`<div className="tf-avatar" style=${{ background: color }}>${initial}</div>` : null}
-                <div className="tf-body">
-                  <div className="tf-meta">
-                    ${title ? html`<div className="tf-name" style=${{ color }}>${title}</div>` : null}
-                    ${subtitle ? html`<span className="tf-role">${subtitle}</span>` : null}
-                    ${timecode ? html`<span className="tf-timecode">${timecode}</span>` : null}
-                  </div>
-                  <div className="tf-text">${seg.text}</div>
-                </div>
-              </div>
-            `;
-          })}
-        </div>
-      `;
-    }
-
-    function renderTranscriptTab() {
-      const rawSegments = activeMeeting?.rawTranscriptSegments ?? activeMeeting?.transcriptSegments ?? [];
-      const llmSegments = parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
-      const hasLlm = llmSegments.length > 0;
-      const activeSegments = (transcriptVersion === "llm" && hasLlm)
-        ? llmSegments
-        : rawSegments;
-
-      // colorMap строится ПОСЛЕ activeSegments — один проход, первый спикер = color[0] и т.д.
-      const colorMap = buildSpeakerColorMap(activeSegments);
-
-      // Карта обогащения: "Спикер N" → { name, role, dialogueRole }
-      // Имя/роль приходят из speakerDrafts (LLM-идентификация), роль-в-диалоге считаем сами.
-      const speakerInfo = buildSpeakerInfoMap(activeMeeting?.speakerDrafts, activeSegments);
-
-      // Собираем rawText для редактора из активных сегментов
-      function buildRawText(segs) {
-        return segs.map((s) => {
-          const label = s.guessedName || s.speakerLabel || "";
-          return label ? `${label}: ${s.text}` : s.text;
-        }).join("\n");
-      }
-
-      async function handleStartEdit() {
-        setTranscriptEditText(buildRawText(rawSegments));
-        setEditingTranscript(true);
-      }
-
-      async function handleSaveTranscript() {
-        if (!transcriptEditText.trim()) return;
-        setSavingTranscript(true);
-        try {
-          const res = await api.patchTranscript(activeMeeting.id, transcriptEditText);
-          if (res?.meeting) setActiveMeeting(res.meeting);
-          setEditingTranscript(false);
-          setNotice("Расшифровка сохранена. Нажмите «Пересобрать», чтобы обновить протокол.");
-        } catch (e) {
-          setError("Не удалось сохранить расшифровку: " + (e.message ?? e));
-        } finally {
-          setSavingTranscript(false);
-        }
-      }
-
-      async function handleRegenerate() {
-        setRegenerating(true);
-        try {
-          const { meeting } = await api.regenerateProtocol(activeMeeting.id);
-          setActiveMeeting(meeting);
-          setNotice("Протокол пересобирается…");
-        } catch (e) {
-          setError("Не удалось запустить пересборку: " + (e.message ?? e));
-        } finally {
-          setRegenerating(false);
-        }
-      }
-
-      async function handleRestoreOriginal() {
-        if (!confirm("Вернуть исходную расшифровку от системы распознавания? Все ваши правки текста будут потеряны.")) return;
-        setRestoringTranscript(true);
-        try {
-          await api.restoreTranscript(activeMeeting.id);
-          // перечитываем встречу, чтобы подтянуть восстановленные сегменты
-          const { meeting } = await api.getMeeting(activeMeeting.id);
-          setActiveMeeting(meeting);
-          setNotice("Исходная расшифровка восстановлена.");
-        } catch (e) {
-          setError("Не удалось вернуть оригинал: " + (e.message ?? e));
-        } finally {
-          setRestoringTranscript(false);
-        }
-      }
-
-      if (editingTranscript) {
-        return html`
-          <div className="transcript-edit-wrap">
-            <p className="transcript-edit-hint">
-              Отредактируйте текст расшифровки. Формат строки: <code>Имя спикера: текст реплики</code>.
-              После сохранения нажмите «Пересобрать протокол» — LLM переработает протокол на основе исправленного текста.
-            </p>
-            <textarea
-              className="transcript-editor"
-              value=${transcriptEditText}
-              onInput=${(e) => setTranscriptEditText(e.target.value)}
-              rows="20"
-              spellcheck="false"
-            ></textarea>
-            <div className="button-row">
-              <button
-                className="primary-button"
-                onClick=${handleSaveTranscript}
-                disabled=${savingTranscript}
-              >${savingTranscript ? "Сохраняем…" : "Сохранить"}</button>
-              <button
-                className="ghost-button"
-                onClick=${() => setEditingTranscript(false)}
-                disabled=${savingTranscript}
-              >Отмена</button>
-            </div>
-          </div>
-        `;
-      }
-
-      return html`
-        <div>
-          <div className="transcript-toolbar">
-            <div className="transcript-version-toggle">
-              <button
-                className=${"tvt-btn" + (transcriptVersion === "raw" ? " tvt-btn--active" : "")}
-                onClick=${() => setTranscriptVersion("raw")}
-              >Дословно</button>
-              <button
-                className=${"tvt-btn" + (transcriptVersion === "llm" ? " tvt-btn--active" : "")}
-                onClick=${() => setTranscriptVersion("llm")}
-                disabled=${!hasLlm}
-              >LLM восстановил</button>
-            </div>
-          </div>
-          ${transcriptVersion === "llm" && !hasLlm
-            ? html`<div className="empty-state">LLM-коррекция ещё не готова.</div>`
-            : renderTranscriptSegments(activeSegments, colorMap, speakerInfo)
-          }
-          <div className="transcript-actions">
-            <button className="ghost-button ghost-button--sm" onClick=${handleStartEdit}>
-              ✏️ Редактировать
-            </button>
-            <button
-              className="ghost-button ghost-button--sm"
-              onClick=${handleRestoreOriginal}
-              disabled=${restoringTranscript}
-              title="Вернуть исходную расшифровку от системы распознавания"
-            >${restoringTranscript ? "Возвращаем…" : "↩️ Вернуть оригинал"}</button>
-            <button
-              className="ghost-button ghost-button--sm"
-              onClick=${handleRegenerate}
-              disabled=${regenerating}
-              title="Пересобрать протокол на основе текущей расшифровки"
-            >${regenerating ? "Пересобираем…" : "🔄 Пересобрать протокол"}</button>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderSummaryTab(protocol) {
-
-      async function saveSummary() {
-        setSavingSummary(true);
-        const cleanParticipants = summaryDraft.participants.map((p) => p.trim()).filter(Boolean);
-        const participantSet = new Set(cleanParticipants);
-        const newProtocol = {
-          ...protocol,
-          summary: { ...(protocol.summary ?? {}), overview: summaryDraft.overview },
-          participants: cleanParticipants,
-          decisions: summaryDraft.decisions.map((d) => d.trim()).filter(Boolean),
-          // Если owner не в текущем списке участников — очищаем
-          actionItems: summaryDraft.actionItems.map((a) => ({
-            ...a,
-            owner: participantSet.has(a.owner) ? a.owner : ""
-          }))
-        };
-        try {
-          await api.patchProtocol(activeMeeting.id, newProtocol);
-          setActiveMeeting((m) => ({ ...m, protocol: newProtocol }));
-          setEditingSummary(false);
-          setNotice("Итоги сохранены.");
-        } catch (e) {
-          setError("Не удалось сохранить: " + (e.message ?? e));
-        } finally {
-          setSavingSummary(false);
-        }
-      }
-
-      // Хелперы для редактирования списков в драфте
-      const setList = (key, idx, value) =>
-        setSummaryDraft((d) => ({ ...d, [key]: d[key].map((v, i) => (i === idx ? value : v)) }));
-      const addToList = (key, empty) =>
-        setSummaryDraft((d) => ({ ...d, [key]: [...d[key], empty] }));
-      const removeFromList = (key, idx) =>
-        setSummaryDraft((d) => ({ ...d, [key]: d[key].filter((_, i) => i !== idx) }));
-      const setAction = (idx, field, value) =>
-        setSummaryDraft((d) => ({
-          ...d,
-          actionItems: d.actionItems.map((a, i) => (i === idx ? { ...a, [field]: value } : a))
-        }));
-
-      // ── Режим редактирования ──────────────────────────────────────────────
-      if (editingSummary && summaryDraft) {
-        const owners = summaryDraft.participants.filter(Boolean);
-
-        // Авто-высота textarea: вызывать и при монтировании (ref), и при вводе
-        function growEl(el) {
-          if (!el) return;
-          el.style.height = "auto";
-          el.style.height = el.scrollHeight + "px";
-        }
-        function autoGrow(e) { growEl(e.target); }
-
-        // При переименовании участника — обновляем и задачи с тем же owner.
-        // Читаем oldName из d(), а не из замыкания, чтобы избежать stale closure.
-        function renameParticipant(idx, newName) {
-          setSummaryDraft((d) => {
-            const oldName = d.participants[idx];
-            return {
-              ...d,
-              participants: d.participants.map((p, pi) => pi === idx ? newName : p),
-              actionItems: d.actionItems.map((a) =>
-                a.owner === oldName ? { ...a, owner: newName } : a
-              )
-            };
-          });
-        }
-
-        // При удалении участника — очищаем owner в его задачах.
-        function removeParticipant(idx) {
-          setSummaryDraft((d) => {
-            const name = d.participants[idx];
-            return {
-              ...d,
-              participants: d.participants.filter((_, pi) => pi !== idx),
-              actionItems: d.actionItems.map((a) =>
-                a.owner === name ? { ...a, owner: "" } : a
-              )
-            };
-          });
-        }
-
-        return html`
-          <div className="result-stack summary-edit">
-
-            <section className="result-block">
-              <div className="eyebrow">Краткий обзор</div>
-              <textarea
-                className="se-textarea se-textarea--overview"
-                rows="3"
-                value=${summaryDraft.overview}
-                ref=${growEl}
-                onInput=${(e) => { autoGrow(e); setSummaryDraft((d) => ({ ...d, overview: e.target.value })); }}
-                placeholder="Краткое описание встречи"
-              ></textarea>
-            </section>
-
-            <section className="result-block">
-              <div className="eyebrow">Участники</div>
-              <div className="se-chips">
-                ${summaryDraft.participants.map((p, i) => html`
-                  <div key=${i} className="se-chip">
-                    <input
-                      className="se-chip-input"
-                      value=${p}
-                      style=${{ width: Math.max((p || "").length, 4) + "ch" }}
-                      onInput=${(e) => {
-                        const newName = e.target.value;
-                        e.target.style.width = Math.max(newName.length, 4) + "ch";
-                        renameParticipant(i, newName);
-                      }}
-                      placeholder="Имя"
-                    />
-                    <button className="se-chip-remove" onClick=${() => removeParticipant(i)}>✕</button>
-                  </div>`)}
-                <button className="se-chip-add" onClick=${() => addToList("participants", "")}>+ Добавить</button>
-              </div>
-            </section>
-
-            <section className="result-block">
-              <div className="eyebrow">Что решили</div>
-              <div className="se-decisions">
-                ${summaryDraft.decisions.map((d, i) => html`
-                  <div key=${i} className="se-decision-row">
-                    <span className="se-decision-num">${i + 1}.</span>
-                    <textarea
-                      className="se-textarea se-textarea--decision"
-                      rows="1"
-                      value=${d}
-                      ref=${growEl}
-                      onInput=${(e) => { autoGrow(e); setList("decisions", i, e.target.value); }}
-                      placeholder="Решение"
-                    ></textarea>
-                    <button className="se-row-remove" onClick=${() => removeFromList("decisions", i)} title="Удалить">🗑</button>
-                  </div>`)}
-                <button className="se-ghost-add" onClick=${() => addToList("decisions", "")}>+ Добавить решение</button>
-              </div>
-            </section>
-
-            <section className="result-block">
-              <div className="eyebrow">Следующие шаги</div>
-              <div className="se-actions">
-                ${summaryDraft.actionItems.map((item, i) => html`
-                  <div key=${i} className="se-action-card">
-                    <textarea
-                      className="se-textarea se-textarea--task"
-                      rows="2"
-                      value=${item.task ?? ""}
-                      ref=${growEl}
-                      onInput=${(e) => { autoGrow(e); setAction(i, "task", e.target.value); }}
-                      placeholder="Что нужно сделать…"
-                    ></textarea>
-                    <div className="se-action-meta">
-                      <div className="se-action-meta-field">
-                        <span className="se-meta-label">👤</span>
-                        <select
-                          className="se-meta-select"
-                          value=${item.owner ?? ""}
-                          onChange=${(e) => setAction(i, "owner", e.target.value)}
-                        >
-                          <option value="">— не назначен —</option>
-                          ${owners.map((o, j) => html`<option key=${j} value=${o}>${o}</option>`)}
-                        </select>
-                      </div>
-                      <div className="se-action-meta-field">
-                        <span className="se-meta-label">📅</span>
-                        <input
-                          type="date"
-                          className="se-meta-input se-meta-input--date"
-                          value=${item.deadline ?? ""}
-                          onInput=${(e) => setAction(i, "deadline", e.target.value || null)}
-                        />
-                      </div>
-                      <button className="se-action-remove" onClick=${() => removeFromList("actionItems", i)} title="Удалить задачу">🗑</button>
-                    </div>
-                  </div>`)}
-                <button className="se-ghost-add" onClick=${() => addToList("actionItems", { owner: "", task: "", deadline: null })}>+ Добавить задачу</button>
-              </div>
-            </section>
-
-            <div className="se-sticky-bar">
-              <button className="ghost-button" onClick=${() => setEditingSummary(false)} disabled=${savingSummary}>Отмена</button>
-              <button className="primary-button" onClick=${saveSummary} disabled=${savingSummary}>
-                ${savingSummary ? "Сохраняем…" : "Сохранить итоги"}
-              </button>
-            </div>
-          </div>
-        `;
-      }
-
-      // ── Режим просмотра ───────────────────────────────────────────────────
-      return html`
-        <div className="result-stack">
-          <section className="result-block">
-            <div className="eyebrow">Участники</div>
-            ${protocol.participants?.length
-              ? html`<ul>${protocol.participants.map((p, i) => html`<li key=${i}>${p}</li>`)}</ul>`
-              : html`<p className="empty-hint">Не определены</p>`}
-          </section>
-
-          <section className="result-block">
-            <div className="eyebrow">Что решили</div>
-            ${protocol.decisions?.length
-              ? html`<ol>${protocol.decisions.map((d, i) => html`<li key=${i}>${d}</li>`)}</ol>`
-              : html`<p className="empty-hint">Решений не зафиксировано</p>`}
-          </section>
-
-          <section className="result-block">
-            <div className="eyebrow">Следующие шаги</div>
-            ${protocol.actionItems?.length
-              ? html`<ul className="action-list">${protocol.actionItems.map((item, i) => html`
-                  <li key=${i} className="action-item action-item--static">
-                    <span className="action-owner">${item.owner}</span>
-                    <span className="action-task">${item.task}</span>
-                    ${item.deadline
-                      ? html`<span className="action-deadline">до ${item.deadline}</span>`
-                      : html`<span className="action-deadline action-deadline--empty">срок не указан</span>`}
-                  </li>`)}</ul>`
-              : html`<p className="empty-hint">Задач не зафиксировано</p>`}
-          </section>
-
-          ${protocol.transcriptHighlights?.length ? html`
-            <section className="result-block">
-              <div className="eyebrow">Ключевые цитаты</div>
-              <div className="highlights-list">
-                ${protocol.transcriptHighlights.map((h, i) => html`
-                  <div key=${i} className="highlight-card">
-                    <div className="highlight-speaker">${h.speaker}</div>
-                    <blockquote className="highlight-quote">«${h.quote}»</blockquote>
-                  </div>`)}
-              </div>
-            </section>` : null}
-
-          <div className="edit-btn--mobile-wrap">
-            <button className="ghost-button ghost-button--sm" onClick=${startEditSummary}>✏️ Редактировать итоги</button>
-          </div>
-        </div>
-      `;
-    }
-
     function renderResultScreen() {
       const protocol = activeMeeting?.protocol;
 
@@ -2224,8 +1308,40 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
                 </div>`}
 
             ${resultTab === "summary"
-              ? renderSummaryTab(protocol)
-              : renderTranscriptTab()}
+              ? SummaryTab({
+                  api,
+                  protocol,
+                  activeMeeting,
+                  setActiveMeeting,
+                  summaryDraft,
+                  setSummaryDraft,
+                  editingSummary,
+                  setEditingSummary,
+                  savingSummary,
+                  setSavingSummary,
+                  setNotice,
+                  setError,
+                  onStartEdit: startEditSummary
+                })
+              : TranscriptTab({
+                  api,
+                  activeMeeting,
+                  setActiveMeeting,
+                  transcriptVersion,
+                  setTranscriptVersion,
+                  editingTranscript,
+                  setEditingTranscript,
+                  transcriptEditText,
+                  setTranscriptEditText,
+                  savingTranscript,
+                  setSavingTranscript,
+                  regenerating,
+                  setRegenerating,
+                  restoringTranscript,
+                  setRestoringTranscript,
+                  setNotice,
+                  setError
+                })}
           </section>
         </section>
       `;
@@ -2290,107 +1406,19 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
     }
 
     function renderAdminScreen() {
-      function quotaLabel(user) {
-        if (user.transcriptionQuota === null || user.transcriptionQuota === undefined) {
-          return `${user.transcriptionUsed ?? 0} / ∞`;
-        }
-        return `${user.transcriptionUsed ?? 0} / ${user.transcriptionQuota}`;
-      }
-
-      async function changeQuota(user) {
-        const current = user.transcriptionQuota ?? "";
-        const input = prompt(
-          `Лимит расшифровок для «${user.login}».\nПустое поле = безлимит, число ≥ 0 = лимит.`,
-          current === null ? "" : String(current)
-        );
-        if (input === null) return; // отмена
-        const trimmed = input.trim();
-        const quota = trimmed === "" ? null : Number(trimmed);
-        if (quota !== null && (!Number.isInteger(quota) || quota < 0)) {
-          setError("Лимит должен быть целым числом ≥ 0 или пустым.");
-          return;
-        }
-        await runAdminAction(user.id, () => api.setUserQuota(user.id, quota));
-      }
-
-      return html`
-        <section className="screen admin-screen">
-          <header className="screen-header">
-            <div className="screen-header-top">
-              <div className="brand-mark">YaSpeech</div>
-              <div className="user-chip">
-                <span className="user-chip-login">${authUser?.login ?? ""}</span>
-                <button className="link-button" onClick=${openProjectHome}>К проектам</button>
-                <button className="link-button user-logout" onClick=${handleLogout}>Выйти</button>
-              </div>
-            </div>
-            <h1>Администрирование</h1>
-            <p>Пользователи, роли, блокировки и лимиты на расшифровки.</p>
-          </header>
-
-          ${renderNoticeArea()}
-
-          <section className="panel">
-            <div className="row">
-              <h2>Пользователи</h2>
-              <button className="ghost-button ghost-button--sm" onClick=${loadAdminUsers} disabled=${adminLoading}>
-                ${adminLoading ? "Обновляем…" : "Обновить"}
-              </button>
-            </div>
-
-            ${adminLoading && adminUsers.length === 0
-              ? html`<div className="empty-state">Загружаем…</div>`
-              : adminUsers.length === 0
-                ? html`<div className="empty-state">Пользователей нет.</div>`
-                : html`
-                  <div className="admin-table">
-                    <div className="admin-row admin-row--head">
-                      <span>Логин</span>
-                      <span>Роль</span>
-                      <span>Статус</span>
-                      <span>Расшифровки</span>
-                      <span>Действия</span>
-                    </div>
-                    ${adminUsers.map((user) => {
-                      const isSelf = user.id === authUser?.id;
-                      const busy = adminBusyId === user.id;
-                      return html`
-                        <div key=${user.id} className=${"admin-row" + (busy ? " admin-row--busy" : "")}>
-                          <span className="admin-login">
-                            ${user.login}${isSelf ? html`<span className="admin-self"> (вы)</span>` : null}
-                          </span>
-                          <span>
-                            <span className=${"role-badge role-badge--" + user.role}>${user.role === "admin" ? "админ" : "участник"}</span>
-                          </span>
-                          <span>
-                            <span className=${"status-badge status-badge--" + (user.status ?? "active")}>
-                              ${user.status === "banned" ? "заблокирован" : "активен"}
-                            </span>
-                          </span>
-                          <span className="admin-quota">${quotaLabel(user)}</span>
-                          <span className="admin-actions">
-                            ${user.role === "admin"
-                              ? html`<button className="link-button" disabled=${busy || isSelf}
-                                  onClick=${() => runAdminAction(user.id, () => api.setUserRole(user.id, "member"))}>→ участник</button>`
-                              : html`<button className="link-button" disabled=${busy}
-                                  onClick=${() => runAdminAction(user.id, () => api.setUserRole(user.id, "admin"))}>→ админ</button>`}
-                            <button className="link-button" disabled=${busy} onClick=${() => changeQuota(user)}>лимит</button>
-                            <button className="link-button" disabled=${busy}
-                              onClick=${() => runAdminAction(user.id, () => api.resetUserQuota(user.id))}>сброс</button>
-                            ${user.status === "banned"
-                              ? html`<button className="link-button" disabled=${busy}
-                                  onClick=${() => runAdminAction(user.id, () => api.unbanUser(user.id))}>разблок.</button>`
-                              : html`<button className="link-button link-button--danger" disabled=${busy || isSelf}
-                                  onClick=${() => runAdminAction(user.id, () => api.banUser(user.id))}>блок.</button>`}
-                          </span>
-                        </div>
-                      `;
-                    })}
-                  </div>
-                `}
-          </section>
-        </section>
-      `;
+      return AdminScreen({
+        api,
+        authUser,
+        adminUsers,
+        adminLoading,
+        adminBusyId,
+        runAdminAction,
+        loadAdminUsers,
+        openProjectHome,
+        handleLogout,
+        setError,
+        noticeArea: renderNoticeArea()
+      });
     }
 
     function renderContent() {
@@ -2405,7 +1433,7 @@ import { analyzeAudioQuality, describeQuality } from "./audio/quality-analyzer.j
       }
 
       if (!authUser) {
-        return html`<${LoginScreen} onAuth=${(user) => setAuthUser(user)} />`;
+        return html`<${LoginScreen} api=${api} onAuth=${(user) => setAuthUser(user)} />`;
       }
 
       if (loading) {

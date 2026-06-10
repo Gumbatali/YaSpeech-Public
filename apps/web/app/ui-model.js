@@ -35,7 +35,7 @@ export function resolveScreen({ selectedProjectId, activeMeeting, requestedScree
   }
 
   if (
-    ["uploaded", "speechkit_processing", "protocol_generating", "failed"].includes(
+    ["uploading", "uploaded", "speechkit_processing", "protocol_generating", "failed"].includes(
       activeMeeting.status
     )
   ) {

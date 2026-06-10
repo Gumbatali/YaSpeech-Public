@@ -12,6 +12,9 @@ npm-debug.log*
 # Секреты деплоя — никогда не коммитить
 scripts/.env.deploy
 
+# Локальные настройки Claude Code (сессионные данные, план-файлы)
+.claude/
+
 # Артефакты бенчмарка (пример-эталон оставляем в репо)
 scripts/benchmark/data/manifest.jsonl
 scripts/benchmark/data/*.flac
