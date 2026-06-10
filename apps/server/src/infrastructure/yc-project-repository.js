@@ -45,6 +45,7 @@ export class YcProjectRepository {
     next.unshift({
       id: project.id,
       name: project.name,
+      ownerId: project.ownerId ?? null,
       createdAt: project.createdAt,
       teamCount: (team ?? []).length
     });
