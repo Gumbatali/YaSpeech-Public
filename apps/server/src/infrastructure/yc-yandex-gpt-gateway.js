@@ -1,38 +1,38 @@
 /**
- * YandexGPT Gateway — многопроходной анализ транскрипта.
+ * YandexGPT Gateway — LLM-вызовы поверх Lite-модели.
  *
- * Стадии:
- *   A  — коррекция ASR:    A2 (коррекция чанков), A3 (глоссарий)
- *   B  — понимание:        B1 (контекст), B2 (спикеры)
- *   C  — генерация:        C1 (протокол)
- *   D  — QA:               D1 (достоверность), D2 (полнота)  [только при хорошем качестве]
+ * ВСЕ вызовы инициируются действиями пользователя (решение 2026-06-10):
+ *   Кнопка «Улучшить с помощью ИИ» → analyzeContext, diarizeTranscript,
+ *     extractGlossary, refineLines×N, identifySpeakers
+ *   Кнопка «Собрать протокол» → extractProtocol (+map-reduce для длинных),
+ *     qaProtocol (только при fair/poor)
  *
- * Оптимизации:
- *   - Чанки A2 обрабатываются параллельно
- *   - Стадии D пропускаются при quality="good" (нет смысла тратить токены)
- *   - Сохраняем context в meeting.gptContext для retry без повторных вызовов
+ * Автоматических LLM-вызовов в пайплайне нет.
  */
 
 import { YandexGptClient } from "./llm/yandex-gpt-client.js";
-import { chunkPhrases, mergeChunkResults } from "../application/transcription/chunker.js";
 import {
   promptDiarization,
-  promptAsrCorrection,
   promptGlossary,
   promptContextAnalysis,
   promptSpeakerIdentification,
   promptProtocolExtraction,
+  promptProtocolReduce,
   promptFaithfulnessCheck,
-  promptCompletenessCheck
+  promptCompletenessCheck,
+  promptTranscriptRefine
 } from "./llm/prompts.js";
+import { parseRefinedLines } from "../application/transcription/refiner.js";
 import { logger } from "../shared/logger.js";
 
 const MAX_TRANSCRIPT_CHARS = 22_000;
 
 export class YcYandexGptGateway {
-  constructor({ folderId }) {
+  constructor({ folderId, model = process.env.GPT_MODEL ?? "yandexgpt-lite" }) {
     this.folderId = folderId;
-    this.modelUri = `gpt://${folderId}/yandexgpt/latest`;
+    // Lite выбран по бенчмарку (scripts/experiments/llm-refine-bench):
+    // WER-восстановление 63% при цене в 6 раз ниже Pro
+    this.modelUri = `gpt://${folderId}/${model}/latest`;
     this.client = new YandexGptClient({ modelUri: this.modelUri });
     logger.info("YandexGPT: initialized", { folderId, modelUri: this.modelUri });
   }
@@ -137,86 +137,51 @@ export class YcYandexGptGateway {
   }
 
   // ============================================================
-  // STAGE A: ASR Correction
+  // REFINE: коррекция чанка по line-ID-протоколу (кнопка «Улучшить»)
   // ============================================================
 
   /**
-   * Исправляет ASR-ошибки путём параллельной обработки чанков.
-   * Возвращает исправленный rawText и обогащённые phrases.
+   * Извлекает глоссарий встречи и мержит с накопленным проектным.
+   * Для коротких текстов возвращает проектный глоссарий как есть.
    */
-  async correctTranscript(transcript, domain, projectGlossary = null) {
-    const chunks = chunkPhrases(transcript.phrases ?? []);
+  async extractGlossary({ rawText, domain, projectGlossary = null }) {
+    if ((rawText ?? "").length <= 2000) return projectGlossary;
 
-    if (chunks.length === 1 && chunks[0].text.length < 2000) {
-      // Очень короткий транскрипт — пропускаем коррекцию, не стоит токенов
-      logger.info("GPT A2: skipped (transcript too short)", { chars: chunks[0].text.length });
-      return { correctedText: chunks[0].text, glossary: null };
-    }
-
-    logger.info("GPT A2+A3: correcting", { chunks: chunks.length, domain });
-
-    // Pass A3 СНАЧАЛА: глоссарий на сыром тексте
-    // Если есть накопленный глоссарий проекта — используем его как основу
-    let glossary = projectGlossary ?? null;
-    const rawTranscriptText = chunks.map((c) => c.text).join("\n");
-
-    if (rawTranscriptText.length > 2000) {
-      logger.info("GPT A3: extracting glossary from raw transcript", {
-        hasProjectGlossary: !!projectGlossary,
-        projectTerms: projectGlossary?.terms?.length ?? 0
-      });
-      const { system: gSys, user: gUsr, options: gOpts } = promptGlossary({
-        correctedText: rawTranscriptText,
-        domain
-      });
-      const glossaryRaw = await this.client.complete(gSys, gUsr, gOpts);
-      const meetingGlossary = YandexGptClient.parseJson(glossaryRaw, { terms: [], abbreviations: {} }, "A3");
-      logger.info("GPT A3: done", { terms: meetingGlossary.terms?.length ?? 0 });
-
-      // Мержим глоссарий встречи с накопленным проектным
-      if (projectGlossary) {
-        const termMap = new Map(projectGlossary.terms.map((t) => [t.term, t]));
-        for (const t of (meetingGlossary.terms ?? [])) {
-          if (!termMap.has(t.term)) termMap.set(t.term, t);
-        }
-        glossary = {
-          terms: [...termMap.values()],
-          abbreviations: { ...projectGlossary.abbreviations, ...meetingGlossary.abbreviations }
-        };
-      } else {
-        glossary = meetingGlossary;
-      }
-    }
-
-    // Pass A2: коррекция чанков с объединённым глоссарием
-    const correctionRequests = chunks.map((chunk) => {
-      const { system, user, options } = promptAsrCorrection({
-        chunkText: chunk.text,
-        domain,
-        chunkIndex: chunk.index,
-        totalChunks: chunk.total,
-        glossary
-      });
-      return { system, user, options };
+    const { system, user, options } = promptGlossary({
+      correctedText: rawText,
+      domain
     });
+    const raw = await this.client.complete(system, user, options);
+    const meetingGlossary = YandexGptClient.parseJson(raw, { terms: [], abbreviations: {} }, "A3");
 
-    const rawResults = await this.client.completeBatch(correctionRequests);
+    if (!projectGlossary) return meetingGlossary;
 
-    // Разбираем ответы
-    const chunkResults = rawResults.map((raw, i) => {
-      const parsed = YandexGptClient.parseJson(raw, { correctedLines: [] }, `A2 chunk ${i}`);
-      let lines = Array.isArray(parsed.correctedLines) ? parsed.correctedLines : [];
-      // Если LLM вернул пустой список — fallback на исходный текст чанка
-      if (lines.length === 0) {
-        logger.warn("GPT A2: empty correctedLines, using raw chunk text", { chunkIndex: i });
-        lines = chunks[i].text.split("\n").filter(Boolean);
-      }
-      return { phrases: chunks[i].phrases, correctedLines: lines };
+    const termMap = new Map((projectGlossary.terms ?? []).map((t) => [t.term, t]));
+    for (const t of (meetingGlossary.terms ?? [])) {
+      if (!termMap.has(t.term)) termMap.set(t.term, t);
+    }
+    return {
+      terms: [...termMap.values()],
+      abbreviations: { ...projectGlossary.abbreviations, ...meetingGlossary.abbreviations }
+    };
+  }
+
+  /**
+   * Исправляет один чанк реплик. Возвращает map id→текст и список
+   * ID, на которые модель не ответила (обрыв вывода и т.п.).
+   *
+   * @param {{ lines: string[], ids: number[], contextLines: string[], domain: string, glossary: object|null }} params
+   * @returns {Promise<{ byId: Map<number, string>, missingIds: number[] }>}
+   */
+  async refineLines({ lines, ids, contextLines = [], domain, glossary = null }) {
+    const { system, user, options } = promptTranscriptRefine({
+      numberedLines: lines,
+      contextLines,
+      domain,
+      glossary
     });
-
-    const correctedText = mergeChunkResults(chunkResults);
-
-    return { correctedText, glossary };
+    const raw = await this.client.complete(system, user, options);
+    return parseRefinedLines(raw, ids);
   }
 
   // ============================================================
@@ -437,85 +402,25 @@ export class YcYandexGptGateway {
   // ============================================================
 
   /**
-   * Stage A+B: коррекция ASR + контекстный анализ + идентификация спикеров.
-   * Вызывается после SpeechKit, до показа черновика пользователю.
-   */
-  async generateDraft({ project, transcript, meeting, projectGlossary = null }) {
-    // B0: предварительный контекст для определения домена (нужен для A1 и A2)
-    const quickContext = await this.analyzeContext({
-      correctedText: transcript.rawText.slice(0, 8000),
-      projectName: project.name
-    });
-
-    const domain = quickContext.domain || "общий";
-    const mentionedPeople = quickContext.mentionedEntities?.people ?? [];
-
-    // A1: GPT-диаризация (только если mono — всё в 1 спикере)
-    const diarizedTranscript = await this.diarizeTranscript(transcript, domain, mentionedPeople);
-
-    // A2+A3: коррекция с учётом домена + накопленный глоссарий проекта
-    const { correctedText, glossary } = await this.correctTranscript(diarizedTranscript, domain, projectGlossary);
-
-    // B1: полный контекст уже на исправленном тексте
-    const context = correctedText !== diarizedTranscript.rawText
-      ? await this.analyzeContext({ correctedText, projectName: project.name })
-      : quickContext;
-
-    // При poor quality — продолжаем, но логируем. Предупреждение попадёт в context.
-    if (context.transcriptQuality === "poor") {
-      logger.warn("GPT B1: poor transcript quality, continuing with best effort", {
-        note: context.confidenceNote
-      });
-    }
-
-    // B2: идентификация спикеров (используем diarizedTranscript — уже с несколькими спикерами)
-    const speakerDrafts = await this.identifySpeakers({
-      correctedText,
-      transcript: diarizedTranscript,
-      project,
-      context
-    });
-
-    return {
-      titleDraft: this._deriveDraftTitle(context, project),
-      speakerDrafts: speakerDrafts.map((s) => ({
-        id: s.id,
-        label: s.label,
-        guessedName: s.guessedName,
-        guessedRole: s.guessedRole ?? null,
-        dialogueRole: s.dialogueRole ?? null,
-        confidence: s.confidence ?? "low"
-      })),
-      context,
-      correctedText,
-      glossary: glossary ?? undefined,
-      transcriptPreview: correctedText.slice(0, 2000),
-      transcriptSegments: (diarizedTranscript.phrases ?? []).map((p) => {
-        const draft = speakerDrafts.find((s) => s.id === p.speakerId);
-        return {
-          speakerId: p.speakerId,
-          speakerLabel: p.speakerLabel,
-          guessedName: draft?.guessedName ?? null,
-          text: p.text
-        };
-      })
-    };
-  }
-
-  /**
    * Stage C+D: генерация финального протокола.
    * Вызывается после подтверждения черновика пользователем.
    */
-  async generateProtocol({ meeting, project, transcript, previousProtocol = null, projectGlossary = null }) {
-    // Используем correctedText из meeting если есть (был сохранён в gptContext)
-    const correctedText = meeting.gptContext?.correctedText
-      ?? transcript.rawText.slice(0, MAX_TRANSCRIPT_CHARS);
+  async generateProtocol({ meeting, project, transcript, previousProtocol = null, projectGlossary = null, refinedText = null }) {
+    // Источник текста по приоритету:
+    //   refined (кнопка «Улучшить», если не инвалидирован) >
+    //   gptContext.correctedText (ручная правка / legacy) >
+    //   сырой rawText — БЕЗ обрезания: длинные тексты идут через map-reduce
+    const correctedText = refinedText
+      ?? meeting.gptContext?.correctedText
+      ?? transcript.rawText;
 
-    // Контекст из meeting или анализируем заново
-    const context = meeting.gptContext ?? await this.analyzeContext({
-      correctedText,
-      projectName: project.name
-    });
+    // Контекст из meeting (если refine уже его посчитал) или анализируем
+    const context = meeting.gptContext?.domain
+      ? meeting.gptContext
+      : await this.analyzeContext({
+          correctedText: correctedText.slice(0, 20_000),
+          projectName: project.name
+        });
 
     const speakers = (meeting.speakerDrafts ?? []).map((s) => ({
       id: s.id,
@@ -525,23 +430,114 @@ export class YcYandexGptGateway {
       confidence: s.confidence
     }));
 
-    // C1: базовый протокол
-    let protocol = await this.extractProtocol({
-      correctedText,
-      meeting,
-      project,
-      context,
-      speakers,
-      previousProtocol
-    });
-
-    // D1+D2: QA (только для fair/poor транскриптов)
-    protocol = await this.qaProtocol({ protocol, correctedText, context });
+    let protocol;
+    if (correctedText.length <= MAX_TRANSCRIPT_CHARS) {
+      // C1: одним вызовом
+      protocol = await this.extractProtocol({
+        correctedText,
+        meeting,
+        project,
+        context,
+        speakers,
+        previousProtocol
+      });
+      // D1+D2: QA (только для fair/poor транскриптов)
+      protocol = await this.qaProtocol({ protocol, correctedText, context });
+    } else {
+      // Map-reduce: длинная встреча — хвост больше не теряется
+      protocol = await this.extractProtocolLong({
+        correctedText,
+        meeting,
+        project,
+        context,
+        speakers,
+        previousProtocol
+      });
+      logger.info("GPT C: map-reduce used, QA skipped", { chars: correctedText.length });
+    }
 
     const protocolText = buildProtocolText(protocol, meeting, project, context);
     // Возвращаем глоссарий из meeting.gptContext чтобы pipeline мог его накопить
     const glossary = meeting.gptContext?.glossary ?? null;
     return { protocol, protocolText, glossary };
+  }
+
+  /**
+   * Map-reduce извлечение протокола для длинных встреч (> 22k символов).
+   * Map: C1-извлечение на каждом куске. Reduce: программное слияние массивов
+   * + один LLM-вызов для консолидации (дедупликация, сводка). При сбое
+   * reduce-вызова остаётся программное слияние — протокол не теряется.
+   */
+  async extractProtocolLong({ correctedText, meeting, project, context, speakers, previousProtocol }) {
+    // Режем по строкам (репликам), не по символам
+    const pieces = [];
+    let buf = [];
+    let bufLen = 0;
+    for (const line of correctedText.split("\n")) {
+      if (bufLen + line.length > 18_000 && buf.length > 0) {
+        pieces.push(buf.join("\n"));
+        buf = [];
+        bufLen = 0;
+      }
+      buf.push(line);
+      bufLen += line.length + 1;
+    }
+    if (buf.length > 0) pieces.push(buf.join("\n"));
+
+    logger.info("GPT C map: extracting from pieces", { pieces: pieces.length });
+
+    const partials = [];
+    for (let i = 0; i < pieces.length; i++) {
+      // previousProtocol передаём только в первый кусок (сверка статусов задач
+      // консолидируется в reduce); последовательность сохраняет порядок тем
+      const partial = await this.extractProtocol({
+        correctedText: pieces[i],
+        meeting,
+        project,
+        context,
+        speakers,
+        previousProtocol: i === 0 ? previousProtocol : null
+      });
+      partials.push(partial);
+    }
+
+    // Программное слияние — безопасный базовый результат
+    const merged = {
+      summary: {
+        title: partials[0]?.summary?.title ?? meeting.titleDraft ?? project.name,
+        overview: partials.map((p) => p.summary?.overview).filter(Boolean).join(" ")
+      },
+      participants: [...new Set(partials.flatMap((p) => p.participants ?? []))],
+      decisions: partials.flatMap((p) => p.decisions ?? []),
+      actionItems: partials.flatMap((p) => p.actionItems ?? []),
+      completedFromPrevious: partials.flatMap((p) => p.completedFromPrevious ?? []),
+      carriedForward: partials.flatMap((p) => p.carriedForward ?? []),
+      openQuestions: partials.flatMap((p) => p.openQuestions ?? []),
+      transcriptHighlights: partials.flatMap((p) => p.transcriptHighlights ?? []).slice(0, 5)
+    };
+
+    // Reduce: LLM-консолидация (дедуп решений/задач, цельная сводка)
+    try {
+      const { system, user, options } = promptProtocolReduce({
+        merged,
+        meetingDate: meeting.date ?? "не указана",
+        projectName: project.name,
+        domain: context.domain
+      });
+      const raw = await this.client.complete(system, user, options);
+      const reduced = YandexGptClient.parseJson(raw, null, "C-reduce");
+      if (reduced?.summary) {
+        // Сохраняем структуру: отсутствующие поля добираем из merged
+        return {
+          ...merged,
+          ...reduced,
+          summary: { ...merged.summary, ...reduced.summary }
+        };
+      }
+    } catch (e) {
+      logger.warn("GPT C reduce failed, using programmatic merge", { error: e.message });
+    }
+    return merged;
   }
 
   _deriveDraftTitle(context, project) {

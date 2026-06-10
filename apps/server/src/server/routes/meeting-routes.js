@@ -120,6 +120,33 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting });
   });
 
+  // POST /api/meetings/:id/transcript/refine — LLM-улучшение расшифровки.
+  // ЕДИНСТВЕННАЯ точка запуска LLM-коррекции (автоматических вызовов нет).
+  router.add("POST", "/api/meetings/:id/transcript/refine", async ({ response, params }) => {
+    const meeting = await meetingRepository.getById(params.id);
+    if (!meeting) { notFound(response); return; }
+
+    if (!["draft_ready", "done", "failed"].includes(meeting.status)) {
+      badRequest(response, "Улучшение доступно после готовности расшифровки.");
+      return;
+    }
+
+    const refineStatus = meeting.llmRefine?.status;
+    if (refineStatus === "queued" || refineStatus === "processing") {
+      sendJson(response, 409, { error: "Улучшение уже выполняется." });
+      return;
+    }
+    if (refineStatus === "done") {
+      sendJson(response, 409, {
+        error: "Расшифровка уже улучшена. Повторное улучшение доступно после редактирования текста."
+      });
+      return;
+    }
+
+    const updated = await pipelineService.enqueueRefine(params.id);
+    sendJson(response, 202, { meeting: updated });
+  });
+
   // PATCH /api/meetings/:id/transcript — сохранить отредактированный текст расшифровки
   router.add("PATCH", "/api/meetings/:id/transcript", async ({ request, response, params }) => {
     const meeting = await meetingRepository.getById(params.id);
@@ -169,6 +196,10 @@ export function registerMeetingRoutes(router, deps) {
         ...(meeting.gptContext ?? {}),
         correctedText: rawText.trim()
       },
+      // Ручная правка инвалидирует LLM-улучшение: кнопка снова доступна,
+      // протокол собирается по отредактированному тексту
+      ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
+      llmTranscriptSegments: null,
       updatedAt: clock.now().toISOString()
     };
     await meetingRepository.save(updatedMeeting);
@@ -207,6 +238,13 @@ export function registerMeetingRoutes(router, deps) {
       ...meeting,
       rawTranscriptSegments: segments,
       transcriptSegments: segments,
+      // Восстановление оригинала инвалидирует LLM-улучшение и устаревший
+      // correctedText — протокол соберётся по фактическому (исходному) тексту
+      ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
+      llmTranscriptSegments: null,
+      gptContext: meeting.gptContext
+        ? { ...meeting.gptContext, correctedText: original.rawText ?? null }
+        : meeting.gptContext,
       updatedAt: clock.now().toISOString()
     };
     await meetingRepository.save(updated);

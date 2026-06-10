@@ -3,34 +3,60 @@ export class MockYandexGptGateway {
     this.remainingFailures = failAttempts;
   }
 
-  async generateDraft({ project, transcript }) {
-    const speakerDrafts = transcript.phrases.map((phrase, index) => ({
-      id: phrase.speakerId ?? `speaker-${index + 1}`,
-      label: phrase.speakerLabel ?? `Спикер ${index + 1}`,
-      guessedName: phrase.detectedName ?? null,
-      confidence: phrase.detectedName ? "high" : "low"
-    }));
+  // ── Методы refine-флоу (кнопка «Улучшить с помощью ИИ») ──────────────
 
+  async analyzeContext({ projectName }) {
     return {
-      titleDraft: `${project.name} — статусы и решения`,
-      speakerDrafts,
-      transcriptPreview: transcript.phrases
-        .map((phrase, index) => {
-          const speaker = speakerDrafts[index];
-          const namePart = speaker?.guessedName ? ` — ${speaker.guessedName}` : "";
-          return `${speaker?.label ?? phrase.speakerLabel}${namePart}: ${phrase.text}`;
-        })
-        .join("\n"),
-      transcriptSegments: transcript.phrases.map((phrase, index) => {
-        const speaker = speakerDrafts[index];
-        return {
-          speakerId: speaker?.id ?? phrase.speakerId,
-          speakerLabel: speaker?.label ?? phrase.speakerLabel,
-          guessedName: speaker?.guessedName ?? null,
-          text: phrase.text
-        };
-      })
+      meetingType: "статус",
+      domain: "строительство",
+      mainTopics: [`Статус по проекту ${projectName}`],
+      mentionedEntities: { people: [], organizations: [], places: [], dates: [], amounts: [] },
+      transcriptQuality: "good",
+      confidenceNote: null
     };
+  }
+
+  async diarizeTranscript(transcript) {
+    // Mock: диаризацию не выполняем — возвращаем как есть
+    return transcript;
+  }
+
+  async extractGlossary({ projectGlossary = null }) {
+    return projectGlossary;
+  }
+
+  /**
+   * Mock-коррекция: капитализация + точка; если текст уже идеален —
+   * добавляет видимую пометку, чтобы изменение гарантированно произошло
+   * (тесты и локальная разработка должны видеть refined=true).
+   */
+  async refineLines({ lines, ids }) {
+    const byId = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\[(\d+)\]\s*(?:[^:]{1,50}:\s*)?(.*)$/);
+      if (!m) continue;
+      const text = m[2].trim();
+      let improved = text.charAt(0).toUpperCase() + text.slice(1);
+      if (!improved.endsWith(".")) improved += ".";
+      if (improved === text) {
+        improved = text.replace(/\.$/, " (отредактировано ИИ).");
+      }
+      byId.set(Number(m[1]), improved);
+    }
+    const missingIds = ids.filter((id) => !byId.has(id));
+    return { byId, missingIds };
+  }
+
+  async identifySpeakers({ transcript }) {
+    const speakerIds = [...new Set((transcript.phrases ?? []).map((p) => p.speakerId))];
+    return speakerIds.map((id, i) => ({
+      id,
+      label: `Спикер ${i + 1}`,
+      guessedName: i === 0 ? "Алексей Тестовый" : null,
+      guessedRole: i === 0 ? "руководитель" : null,
+      dialogueRole: "участник обсуждения",
+      confidence: i === 0 ? "high" : "low"
+    }));
   }
 
   async generateProtocol({ meeting, project, transcript, previousProtocol = null }) {

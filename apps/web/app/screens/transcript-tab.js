@@ -15,7 +15,7 @@ import {
   speakerInitial
 } from "../transcript-model.js?v=__BUILD__";
 
-function renderTranscriptSegments(segments, colorMap, speakerInfo) {
+function renderTranscriptSegments(segments, colorMap, speakerInfo, { showDiff = false } = {}) {
   if (!segments.length) {
     return html`<div className="empty-state">Расшифровка недоступна.</div>`;
   }
@@ -28,6 +28,7 @@ function renderTranscriptSegments(segments, colorMap, speakerInfo) {
           : { title: seg.guessedName || seg.speakerLabel || seg.speakerId || "", subtitle: null };
         const initial = speakerInitial(title);
         const timecode = formatTimecode(seg.startTimeMs);
+        const isRefined = showDiff && seg.refined && seg.originalText;
         return html`
           <div key=${i} className="tf-row">
             ${title ? html`<div className="tf-avatar" style=${{ background: color }}>${initial}</div>` : null}
@@ -36,12 +37,81 @@ function renderTranscriptSegments(segments, colorMap, speakerInfo) {
                 ${title ? html`<div className="tf-name" style=${{ color }}>${title}</div>` : null}
                 ${subtitle ? html`<span className="tf-role">${subtitle}</span>` : null}
                 ${timecode ? html`<span className="tf-timecode">${timecode}</span>` : null}
+                ${isRefined ? html`<span className="tf-refined-badge" title="Исправлено ИИ">✨ ИИ</span>` : null}
               </div>
-              <div className="tf-text">${seg.text}</div>
+              <div className=${"tf-text" + (isRefined ? " tf-text--refined" : "")}>${seg.text}</div>
+              ${isRefined
+                ? html`
+                    <details className="tf-diff">
+                      <summary>исходный вариант</summary>
+                      <div className="tf-diff-original">${seg.originalText}</div>
+                    </details>
+                  `
+                : null}
             </div>
           </div>
         `;
       })}
+    </div>
+  `;
+}
+
+/**
+ * Кнопка/прогресс LLM-улучшения расшифровки.
+ * ЕДИНСТВЕННАЯ точка запуска LLM-коррекции — без неё никаких LLM-вызовов нет.
+ * Используется на вкладке «Расшифровка» и на экране черновика.
+ */
+export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact = false }) {
+  const refine = activeMeeting?.llmRefine;
+  const status = refine?.status;
+
+  async function handleRefine() {
+    try {
+      const res = await api.refineTranscript(activeMeeting.id);
+      if (res?.meeting) setActiveMeeting(res.meeting);
+    } catch (e) {
+      setError("Не удалось запустить улучшение: " + (e.message ?? e));
+    }
+  }
+
+  if (status === "queued") {
+    return html`<div className="refine-progress">⏳ Улучшение поставлено в очередь…</div>`;
+  }
+
+  if (status === "processing") {
+    const done = refine.done ?? 0;
+    const total = refine.total ?? 0;
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    return html`
+      <div className="refine-progress">
+        <div className="refine-progress-label">
+          ✨ Улучшаем расшифровку… ${total > 0 ? `фрагмент ${Math.min(done + 1, total)} из ${total}` : ""}
+        </div>
+        <div className="refine-progress-bar">
+          <div className="refine-progress-fill" style=${{ width: `${percent}%` }}></div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (status === "done") {
+    return compact
+      ? null
+      : html`<div className="refine-done">✨ Расшифровка улучшена ИИ</div>`;
+  }
+
+  // idle | stale | failed → кнопка
+  return html`
+    <div className="refine-control">
+      ${status === "failed"
+        ? html`<div className="refine-error">Не удалось улучшить: ${refine?.error ?? "ошибка"}</div>`
+        : null}
+      <button className="ghost-button ghost-button--sm refine-button" onClick=${handleRefine}>
+        ✨ ${status === "failed" ? "Повторить улучшение" : "Улучшить с помощью ИИ"}
+      </button>
+      ${!compact
+        ? html`<span className="refine-hint">Исправит ошибки распознавания, определит спикеров. Займёт около минуты.</span>`
+        : null}
     </div>
   `;
 }
@@ -66,8 +136,14 @@ export function TranscriptTab({
   setError
 }) {
   const rawSegments = activeMeeting?.rawTranscriptSegments ?? activeMeeting?.transcriptSegments ?? [];
-  const llmSegments = parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
+  // Новый источник — сегменты refine-job (с таймкодами и диффом);
+  // parseLlmTranscript — fallback для встреч, обработанных старым пайплайном
+  const refinedSegments = activeMeeting?.llmTranscriptSegments ?? [];
+  const llmSegments = refinedSegments.length > 0
+    ? refinedSegments
+    : parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
   const hasLlm = llmSegments.length > 0;
+  const showDiff = refinedSegments.length > 0;
   const activeSegments = (transcriptVersion === "llm" && hasLlm)
     ? llmSegments
     : rawSegments;
@@ -181,9 +257,12 @@ export function TranscriptTab({
           >LLM восстановил</button>
         </div>
       </div>
+      ${RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
-        ? html`<div className="empty-state">LLM-коррекция ещё не готова.</div>`
-        : renderTranscriptSegments(activeSegments, colorMap, speakerInfo)
+        ? html`<div className="empty-state">Нажмите «Улучшить с помощью ИИ», чтобы получить исправленную версию.</div>`
+        : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
+            showDiff: transcriptVersion === "llm" && showDiff
+          })
       }
       <div className="transcript-actions">
         <button className="ghost-button ghost-button--sm" onClick=${handleStartEdit}>

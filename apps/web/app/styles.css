@@ -1667,3 +1667,91 @@ button { cursor: pointer; }
     padding-top: 1rem;
   }
 }
+
+/* ── LLM-улучшение расшифровки (RefineControl + diff) ───────────────── */
+
+.refine-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.refine-hint {
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.refine-error {
+  font-size: 0.85rem;
+  color: var(--brand);
+  flex-basis: 100%;
+}
+
+.refine-progress {
+  margin: 10px 0;
+}
+
+.refine-progress-label {
+  font-size: 0.85rem;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.refine-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent-glow);
+  overflow: hidden;
+}
+
+.refine-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.6s ease;
+  min-width: 4%;
+}
+
+.refine-done {
+  font-size: 0.82rem;
+  color: var(--accent);
+  margin: 8px 0;
+}
+
+.tf-refined-badge {
+  font-size: 0.68rem;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.tf-text--refined {
+  border-left: 2px solid var(--accent-glow);
+  padding-left: 8px;
+}
+
+.tf-diff {
+  margin-top: 4px;
+}
+
+.tf-diff summary {
+  font-size: 0.74rem;
+  color: var(--color-text-muted, #9ca3af);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tf-diff-original {
+  font-size: 0.85rem;
+  color: var(--color-text-muted, #6b7280);
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 4px;
+  text-decoration: line-through;
+  text-decoration-color: rgba(0, 0, 0, 0.25);
+}
