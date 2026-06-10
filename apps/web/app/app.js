@@ -22,7 +22,7 @@ import { parseLlmTranscript } from "./transcript-model.js?v=__BUILD__";
 import { LoginScreen } from "./screens/login-screen.js?v=__BUILD__";
 import { AdminScreen } from "./screens/admin-screen.js?v=__BUILD__";
 import { SummaryTab } from "./screens/summary-tab.js?v=__BUILD__";
-import { TranscriptTab } from "./screens/transcript-tab.js?v=__BUILD__";
+import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BUILD__";
 
 (function bootstrapApp() {
 
@@ -165,16 +165,25 @@ import { TranscriptTab } from "./screens/transcript-tab.js?v=__BUILD__";
       if (!activeMeeting || activeMeeting.status !== "draft_ready") {
         return;
       }
+      // Пока идёт ИИ-улучшение, форму не трогаем — иначе сотрём ввод пользователя.
+      // По завершении (done) пересобираем: подтянутся имена спикеров и заголовок.
+      const refineStatus = activeMeeting.llmRefine?.status;
+      if (refineStatus === "queued" || refineStatus === "processing") {
+        return;
+      }
 
       setDraftForm(createDraftForm(activeMeeting));
-    }, [activeMeeting?.id, activeMeeting?.status]);
+    }, [activeMeeting?.id, activeMeeting?.status, activeMeeting?.llmRefine?.status]);
 
     useEffect(() => {
+      const refineActive = ["queued", "processing"].includes(
+        activeMeeting?.llmRefine?.status
+      );
       if (
         !activeMeeting ||
-        !["uploaded", "speechkit_processing", "protocol_generating"].includes(
+        (!["uploaded", "speechkit_processing", "protocol_generating"].includes(
           activeMeeting.status
-        )
+        ) && !refineActive)
       ) {
         return;
       }
@@ -184,7 +193,7 @@ import { TranscriptTab } from "./screens/transcript-tab.js?v=__BUILD__";
       }, 1500);
 
       return () => clearInterval(timer);
-    }, [activeMeeting?.id, activeMeeting?.status]);
+    }, [activeMeeting?.id, activeMeeting?.status, activeMeeting?.llmRefine?.status]);
 
     async function checkAuth() {
       try {
@@ -1165,6 +1174,12 @@ import { TranscriptTab } from "./screens/transcript-tab.js?v=__BUILD__";
                 Если нужно, поправьте подписи. После подтверждения соберём
                 итоговый протокол.
               </p>
+              ${RefineControl({
+                api,
+                activeMeeting,
+                setActiveMeeting,
+                setError
+              })}
             </div>
 
             <label className="field">

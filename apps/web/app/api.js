@@ -152,6 +152,13 @@ export class ApiClient {
     });
   }
 
+  refineTranscript(meetingId) {
+    return this.json(`/api/meetings/${meetingId}/transcript/refine`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
   // ── Админ: управление пользователями ──
   listUsers() {
     return this.json("/api/admin/users");
