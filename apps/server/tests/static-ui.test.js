@@ -23,6 +23,12 @@ test("server exposes the SPA shell and frontend entrypoint", async () => {
     assert.doesNotMatch(homeHtml, /Fraunces/);
     assert.doesNotMatch(homeHtml, /IBM\+Plex\+Sans\+Condensed/);
 
+    // Self-hosted библиотеки обязаны раздаваться локально — иначе белый экран
+    const reactResponse = await fetch(`${server.baseUrl}/lib/react.production.min.js`);
+    const htmResponse = await fetch(`${server.baseUrl}/lib/htm.umd.js`);
+    assert.equal(reactResponse.status, 200);
+    assert.equal(htmResponse.status, 200);
+
     const appResponse = await fetch(`${server.baseUrl}/app/app.js`);
     const appScript = await appResponse.text();
     const stylesResponse = await fetch(`${server.baseUrl}/app/styles.css`);

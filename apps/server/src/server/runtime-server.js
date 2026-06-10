@@ -6,6 +6,8 @@ import { LocalArtifactStorage } from "../infrastructure/local-artifact-storage.j
 import { LocalQueueRunner } from "../infrastructure/local-queue-runner.js";
 import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
 import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.js";
+import { YcUserRepository } from "../infrastructure/yc-user-repository.js";
+import { hashPassword, verifyPassword } from "../shared/password.js";
 import { createHttpHandler } from "./create-http-handler.js";
 
 class RuntimeClock {
@@ -27,7 +29,11 @@ import { fileURLToPath } from "node:url";
 export async function createRuntimeServer({
   dataDir,
   port = 0,
-  failAiStudioAttempts = 0
+  failAiStudioAttempts = 0,
+  // По умолчанию auth выключен (sessionSecret = null) — поведение как раньше.
+  // Передайте sessionSecret/adminLogin, чтобы включить полную auth-цепочку локально.
+  sessionSecret = null,
+  adminLogin = null
 }) {
   const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
   const webRootDirectory = path.resolve(currentDirectory, "../../../web");
@@ -36,6 +42,9 @@ export async function createRuntimeServer({
   const projectRepository = new FileSystemProjectRepository(dataDir);
   const meetingRepository = new FileSystemMeetingRepository(dataDir);
   const artifactStorage = new LocalArtifactStorage(dataDir);
+  // YcUserRepository работает с любым storage, у которого есть readJson/writeJson —
+  // локально это файловая система, в облаке S3.
+  const userRepository = new YcUserRepository(artifactStorage);
   const queueRunner = new LocalQueueRunner();
   const pipelineService = new MeetingPipelineService({
     meetingRepository,
@@ -52,11 +61,16 @@ export async function createRuntimeServer({
   const requestHandler = createHttpHandler({
     projectRepository,
     meetingRepository,
+    userRepository,
     artifactStorage,
     pipelineService,
     clock,
     idGenerator,
-    webRootDirectory
+    webRootDirectory,
+    sessionSecret,
+    adminLogin,
+    passwordHasher: { hash: hashPassword },
+    passwordVerifier: { verify: verifyPassword }
   });
 
   const server = http.createServer(requestHandler);

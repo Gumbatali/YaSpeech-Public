@@ -40,49 +40,22 @@ GIT_SHORT=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
 VERSION="${GIT_SHORT}-$(date +%s)"
 echo "📌 Версия: $VERSION"
 
-# ── Список файлов для обеих функций ──────────────────────────────────────────
-SHARED_FILES=(
-  package.json
-  apps/server/src/functions/make-deps.js
-  apps/server/src/server/create-http-handler.js
-  apps/server/src/shared/http.js
-  apps/server/src/shared/sign-v4.js
-  apps/server/src/shared/logger.js
-  apps/server/src/shared/iam-token.js
-  apps/server/src/shared/password.js
-  apps/server/src/shared/session.js
-  apps/server/src/application/meeting-pipeline-service.js
-  apps/server/src/application/transcript-postprocessor.js
-  apps/server/src/application/transcription/chunker.js
-  apps/server/src/infrastructure/yc-artifact-storage.js
-  apps/server/src/infrastructure/yc-project-repository.js
-  apps/server/src/infrastructure/yc-meeting-repository.js
-  apps/server/src/infrastructure/yc-user-repository.js
-  apps/server/src/infrastructure/ymq-queue-runner.js
-  apps/server/src/infrastructure/mock-speech-kit-gateway.js
-  apps/server/src/infrastructure/mock-yandex-gpt-gateway.js
-  apps/server/src/infrastructure/yc-speech-kit-gateway.js
-  apps/server/src/infrastructure/yc-yandex-gpt-gateway.js
-  apps/server/src/infrastructure/smart-asr-gateway.js
-  apps/server/src/infrastructure/groq-whisper-gateway.js
-  apps/server/src/infrastructure/pyannote-diarization.js
-  apps/server/src/infrastructure/llm/yandex-gpt-client.js
-  apps/server/src/infrastructure/llm/prompts.js
-)
-
+# ── Сборка zip-архивов ────────────────────────────────────────────────────────
+# Берём apps/server/src рекурсивно: новые модули (routes/* и т.п.) попадают
+# в архив автоматически — раньше захардкоженный список файлов был источником
+# ошибки «локально работает, в облаке падает на import».
 build_api() {
   echo "📦 Building api.zip..."
   rm -f /tmp/api.zip
-  zip /tmp/api.zip apps/server/src/functions/api-handler.js "${SHARED_FILES[@]}"
-  zip -r /tmp/api.zip packages/core/src/ apps/web/
+  zip -q -r /tmp/api.zip package.json apps/server/src/ packages/core/src/ apps/web/ \
+    -x "apps/web/tests/*"
   echo "   $(du -sh /tmp/api.zip | cut -f1)"
 }
 
 build_worker() {
   echo "📦 Building worker.zip..."
   rm -f /tmp/worker.zip
-  zip /tmp/worker.zip apps/server/src/functions/worker-handler.js "${SHARED_FILES[@]}"
-  zip -r /tmp/worker.zip packages/core/src/
+  zip -q -r /tmp/worker.zip package.json apps/server/src/ packages/core/src/
   echo "   $(du -sh /tmp/worker.zip | cut -f1)"
 }
 
@@ -129,14 +102,10 @@ deploy_worker() {
 upload_frontend() {
   echo "📤 Uploading frontend to $FRONTEND_BUCKET (v=$VERSION)..."
 
-  # Подставляем версию в index.html (из плейсхолдера __BUILD__)
-  TMP_HTML=$(mktemp /tmp/yaspeech-index-XXXXXX.html)
-  sed "s/__BUILD__/$VERSION/g" apps/web/index.html > "$TMP_HTML"
+  python3 - "$KEY_ID" "$SECRET" "$FRONTEND_BUCKET" "$VERSION" <<'PYEOF'
+import sys, os, boto3
 
-  python3 - "$TMP_HTML" "$KEY_ID" "$SECRET" "$FRONTEND_BUCKET" "$VERSION" <<'PYEOF'
-import sys, boto3
-
-tmp_html, key_id, secret, bucket, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+key_id, secret, bucket, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 s3 = boto3.Session(
     aws_access_key_id=key_id,
@@ -144,37 +113,54 @@ s3 = boto3.Session(
     region_name="ru-central1"
 ).client("s3", endpoint_url="https://storage.yandexcloud.net")
 
-# index.html — всегда свежий
-with open(tmp_html, "rb") as f:
-    s3.put_object(
-        Bucket=bucket, Key="index.html", Body=f.read(),
-        ContentType="text/html; charset=utf-8",
-        CacheControl="no-cache"
-    )
+CONTENT_TYPES = {
+    ".js":   "application/javascript; charset=utf-8",
+    ".css":  "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".svg":  "image/svg+xml; charset=utf-8",
+}
+
+def read_with_version(path):
+    """Подставляет VERSION вместо __BUILD__ в текстовых ассетах.
+
+    Это критично для ES-module импортов внутри app/*.js: без версии в URL
+    браузеры держали бы импортируемые модули в immutable-кэше навсегда.
+    """
+    ext = os.path.splitext(path)[1]
+    with open(path, "rb") as f:
+        body = f.read()
+    if ext in (".js", ".css", ".html"):
+        body = body.replace(b"__BUILD__", version.encode())
+    return body
+
+# index.html — всегда свежий (no-cache), точка входа для cache-busting
+s3.put_object(
+    Bucket=bucket, Key="index.html",
+    Body=read_with_version("apps/web/index.html"),
+    ContentType=CONTENT_TYPES[".html"],
+    CacheControl="no-cache"
+)
 print("   ✓ index.html")
 
-# Статические ассеты — кэшируем агрессивно (URL версионирован)
-assets = {
-    "app/app.js":                         ("apps/web/app/app.js",                    "application/javascript; charset=utf-8"),
-    "app/styles.css":                     ("apps/web/app/styles.css",                "text/css; charset=utf-8"),
-    "app/ui-model.js":                    ("apps/web/app/ui-model.js",               "application/javascript; charset=utf-8"),
-    "app/audio/preprocessor.js":          ("apps/web/app/audio/preprocessor.js",     "application/javascript; charset=utf-8"),
-    "app/audio/quality-analyzer.js":      ("apps/web/app/audio/quality-analyzer.js", "application/javascript; charset=utf-8"),
-    "lib/react.production.min.js":        ("apps/web/lib/react.production.min.js",   "application/javascript; charset=utf-8"),
-    "lib/react-dom.production.min.js":    ("apps/web/lib/react-dom.production.min.js", "application/javascript; charset=utf-8"),
-    "lib/htm.umd.js":                     ("apps/web/lib/htm.umd.js",               "application/javascript; charset=utf-8"),
-}
-for key, (path, ct) in assets.items():
-    with open(path, "rb") as f:
-        s3.put_object(
-            Bucket=bucket, Key=key, Body=f.read(),
-            ContentType=ct,
-            CacheControl="public, max-age=31536000, immutable"
-        )
-    print(f"   ✓ {key}")
+# Все ассеты app/ и lib/ — обходим директории целиком, чтобы новые
+# модули нельзя было забыть добавить в список вручную.
+for root_dir, key_prefix in (("apps/web/app", "app"), ("apps/web/lib", "lib")):
+    for dirpath, _dirs, files in os.walk(root_dir):
+        for name in sorted(files):
+            if name.startswith("."):
+                continue
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root_dir)
+            key = f"{key_prefix}/{rel}"
+            ext = os.path.splitext(name)[1]
+            s3.put_object(
+                Bucket=bucket, Key=key,
+                Body=read_with_version(path),
+                ContentType=CONTENT_TYPES.get(ext, "application/octet-stream"),
+                CacheControl="public, max-age=31536000, immutable"
+            )
+            print(f"   ✓ {key}")
 PYEOF
-
-  rm -f "$TMP_HTML"
 }
 
 update_gateway() {

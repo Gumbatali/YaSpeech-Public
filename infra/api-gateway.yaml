@@ -99,3 +99,20 @@ paths:
       responses:
         "200":
           description: OK
+
+  /lib/{path+}:
+    get:
+      x-yc-apigateway-integration:
+        type: object_storage
+        bucket: yaspeech-frontend-st
+        object: "lib/{path}"
+        service_account_id: ajem1e69rh25r9rm8tq9
+      parameters:
+        - name: path
+          in: path
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK

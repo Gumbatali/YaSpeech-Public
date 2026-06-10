@@ -2,73 +2,125 @@
 
 ## Кратко
 
-Текущая система построена как лёгкая `web + orchestration` обёртка вокруг облачных AI-сервисов Яндекса.
+YaSpeech построен как тонкая `web + orchestration` оболочка вокруг облачных AI-сервисов Яндекса.
+Само приложение не распознаёт речь и не пишет текст — оно принимает действия пользователя,
+хранит артефакты, управляет статусами, запускает внешнюю обработку и собирает результат в UI.
 
-Логика распределена по трём слоям:
+## Три слоя
 
-- `Web UI`
-- `Server / application`
-- `External AI services`
+```
+packages/core           — Домен + Use Cases (ноль зависимостей от облака)
+apps/server             — Инфраструктура + HTTP-слой
+apps/web                — SPA (React + htm, без шага сборки)
+```
 
-## Архитектурный принцип
+### `packages/core`
 
-Приложение само не является AI-платформой. Оно:
+Чистая бизнес-логика: `Meeting`, `Project`, `User` + use cases.
+Тестируется в изоляции без mock-облака.
 
-- принимает действия пользователя;
-- хранит артефакты встречи;
-- управляет статусами;
-- запускает внешнюю обработку;
-- собирает результат в понятный UI.
+### `apps/server`
 
-## Реализованный облачный контур (production)
+Два подслоя:
 
-- фронтенд: `SPA` на `React + htm` без шага сборки, статика в `Object Storage`;
-- backend: `Node.js 18` на `Cloud Functions` (две функции — `api` и `worker`);
-- доменная логика: `packages/core` (без зависимостей от облака);
-- хранилище: `Yandex Object Storage` — JSON-манифесты и аудио;
-- очередь: `Yandex Message Queue` — асинхронная обработка задач;
-- шлюз: `Yandex API Gateway` — маршрутизация и лимиты запросов;
-- распознавание речи: `Yandex SpeechKit` (опционально `Groq Whisper`);
-- языковая модель: `YandexGPT` (многопроходный пайплайн).
+**HTTP-слой** (`apps/server/src/server/`):
+- `create-http-handler.js` — composition root (~170 строк)
+- `router.js` — табличный роутер с `:param`-сегментами
+- `make-use-cases.js` — единая точка DI
+- `routes/` — 5 модулей (auth, admin, project, meeting, static)
+- `shared/validate.js` — guard-валидация на API-границе → 400 вместо 500
 
-Выбор реальных адаптеров против mock управляется переменными окружения
-(`USE_MOCKS`, `ASR_PROVIDER`). Mock-слой сохранён для локальной разработки и
-тестов и спрятан за инфраструктурным слоем, поэтому переключение не затрагивает
-доменную модель и UI.
+**Инфраструктура** (`apps/server/src/infrastructure/`):
+- адаптеры Object Storage, SpeechKit, YandexGPT, YMQ
+- `YcMeetingRepository` — два индекса + fallback для старых путей
+- mock-адаптеры для локальной разработки и тестов
 
-## Контур локальной разработки
+### `apps/web`
 
-- хранилище: JSON-манифесты и файлы на диске;
-- очередь: in-process queue runner;
-- интеграции AI: mock-адаптеры `MockSpeechKitGateway` и `MockYandexGptGateway`.
+- Фреймворк: React + htm (UMD), без babel/webpack
+- Модули: `api.js`, `format.js`, `transcript-model.js`, `html.js`
+- Экраны: `screens/{login,admin,summary-tab,transcript-tab}.js`
+- Экраны вызываются как функции с явными параметрами — нет free variables из внешней области
 
-## Многопроходный AI-пайплайн (worker)
+## Поток обработки
 
-Обработка в `worker`-функции идёт стадиями:
+```
+Браузер                     Yandex Cloud
+───────                     ────────────
+upload аудио  ──►  Object Storage (audio.mp3)
+                       │
+                       ▼
+               Message Queue (YMQ)
+                       │
+                       ▼
+               Cloud Function «worker»
+                   ├─ SpeechKit ────────► transcript.json
+                   ├─ LLM-диаризация ───► разделение спикеров
+                   ├─ коррекция ASR ────► исправление распознавания
+                   ├─ идентификация ────► имена и роли
+                   └─ YandexGPT ────────► protocol.json
+                       │
+браузер  ◄──  API Gateway ◄──  Cloud Function «api»
+```
 
-1. распознавание речи (`SpeechKit`);
-2. LLM-диаризация — разделение спикеров по тексту, если запись моно;
-3. коррекция ASR-ошибок по смыслу (чанками, с глоссарием проекта);
-4. идентификация спикеров (имена, профессиональные роли, роль в диалоге);
-5. сборка протокола (`YandexGPT`) со сверкой с предыдущим протоколом проекта.
+## Статусный цикл встречи
 
-## Архитектурные решения
+```
+created → uploading → upload_completed → speechkit_processing →
+transcribed → awaiting_draft_confirmation → draft_confirmed →
+generating_protocol → done
+                   ↘ failed (в любой стадии worker)
+```
 
-### Почему serverless
+## Ключевые архитектурные решения
 
-- ниже постоянные расходы;
-- не нужно держать включённую VM;
-- проще масштабировать пиковые загрузки;
-- легче запускать MVP.
+### Ноль npm в продакшне
 
-### Почему прямой upload в хранилище
+Cloud Functions деплоятся как zip с исходниками — `node_modules` нет.
+AWS Signature V4, HMAC-сессии, scrypt — всё через встроенные модули Node.
+Это упрощает деплой и исключает supply-chain уязвимости.
 
-- аудиофайлы крупные;
-- API Gateway не должен быть каналом передачи больших бинарных файлов;
-- backend остаётся лёгким координатором.
+### Прямой upload в Object Storage
 
-### Почему есть draft-step
+Аудиофайлы крупные, API Gateway не должен быть каналом бинарных данных.
+Backend генерирует presigned URL и возвращает клиенту — клиент льёт напрямую.
 
-- имена и роли спикеров определяются не идеально;
-- название встречи лучше строить по транскрипту;
-- пользователь должен подтверждать черновик до финального протокола.
+### Draft-шаг перед протоколом
+
+Имена и роли спикеров определяются не идеально.
+Пользователь подтверждает черновик (имена, название встречи) до запуска
+дорогого LLM-пайплайна генерации протокола.
+
+### Два индекса встреч
+
+Глобальный `meetings/index.json` — O(1) поиск по meetingId со ссылкой на `baseKey`.
+Проектные индексы `projects/{id}/meetings/index.json` — legacy, поддерживаются как fallback.
+Object Storage не транзакционна — `reconcile-indexes.sh` умеет диагностировать расхождения.
+
+### Кэш-бастинг ES-модулей
+
+Все `import` в `app/*.js` имеют суффикс `?v=__BUILD__`.
+`deploy.sh` подставляет версию во весь текст JS/CSS/HTML при загрузке в бакет —
+не только в `<script src>`, но и во внутренние ES-импорты.
+
+## Облачный контур (production)
+
+| Ресурс | Назначение |
+|--------|-----------|
+| Cloud Function `yaspeech-api` | HTTP API, сессии |
+| Cloud Function `yaspeech-worker` | Обработка встреч |
+| Object Storage `yaspeech-artifacts` | JSON + аудио |
+| Object Storage `yaspeech-frontend` | SPA-статика |
+| API Gateway | Маршрутизация, rate limiting |
+| Message Queue | Асинхронная очередь задач |
+| SpeechKit | ASR |
+| YandexGPT | LLM-пайплайн |
+
+## Локальный контур
+
+| Компонент | Замена |
+|-----------|--------|
+| Object Storage | JSON-файлы на диске (`LocalArtifactStorage`) |
+| YMQ | In-process `LocalQueueRunner` |
+| SpeechKit | `MockSpeechKitGateway` |
+| YandexGPT | `MockYandexGptGateway` |

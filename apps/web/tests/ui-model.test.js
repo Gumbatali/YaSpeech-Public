@@ -27,6 +27,15 @@ test("resolveScreen prefers the project-first upload flow", () => {
     }),
     "meeting-processing"
   );
+  // uploading (браузер закрыт во время загрузки) тоже должен показывать экран обработки
+  assert.equal(
+    resolveScreen({
+      selectedProjectId: "project-1",
+      activeMeeting: { status: "uploading", currentStage: "uploading" },
+      requestedScreen: ""
+    }),
+    "meeting-processing"
+  );
   assert.equal(
     resolveScreen({
       selectedProjectId: "project-1",

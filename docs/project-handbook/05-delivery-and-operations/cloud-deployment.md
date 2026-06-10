@@ -1,61 +1,97 @@
 # Облачное развёртывание
 
-## Цель
+## Продакшн-URL
 
-Перенести локальный MVP в Yandex Cloud с минимальным количеством постоянно оплачиваемых ресурсов.
+```
+https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
+```
 
-## Минимальный набор ресурсов
+## Деплой-скрипт
 
-- `Object Storage`
-  - публичный бакет сайта;
-  - приватный бакет артефактов.
-- `Cloud Functions`
-  - API-функция;
-  - worker-функция.
-- `API Gateway`
-  - публичная HTTP-точка входа.
-- `Message Queue`
-  - очередь на обработку встреч.
-- `SpeechKit`
-  - пространство, проект, доступы и подключение.
-- `YandexGPT`
-  - модель и доступ к генерации.
+Секреты хранятся в `scripts/.env.deploy` (в `.gitignore` — **не коммитить**).  
+Пример конфига: `scripts/.env.deploy.example`.
 
-## Последовательность развёртывания
+```bash
+bash scripts/deploy.sh all       # обе функции + фронтенд + шлюз
+bash scripts/deploy.sh api       # api-функция + фронтенд + шлюз
+bash scripts/deploy.sh worker    # только worker-функция
+bash scripts/deploy.sh frontend  # только фронтенд в Object Storage
+bash scripts/deploy.sh gateway   # только конфигурация API Gateway
+```
 
-1. Создать сервисный аккаунт.
-2. Выдать ему роли на Object Storage, Cloud Functions, Message Queue и нужные AI-сервисы.
-3. Создать приватный бакет артефактов.
-4. Создать публичный бакет под статический сайт.
-5. Опубликовать фронтенд в публичный бакет.
-6. Создать функцию `api`.
-7. Создать функцию `worker`.
-8. Создать очередь.
-9. Связать очередь с worker-функцией.
-10. Создать API Gateway и маршруты.
-11. Настроить переменные окружения функций.
-12. Проверить end-to-end сценарий.
+### Что делает deploy.sh
 
-## Что загружается куда
+1. **Фронтенд** (`frontend`-таргет):
+   - Обходит `apps/web/{app,lib}` рекурсивно
+   - Подставляет `__BUILD__` = `{git-sha}-{timestamp}` во весь текст JS/CSS/HTML
+   - Загружает в бакет `yaspeech-frontend`
+   - Это версионирует ВСЕ внутренние ES-импорты, не только `<script src>` в index.html
 
-- `apps/web` после сборки -> в публичный бакет;
-- server-код -> в `Cloud Functions`;
-- аудио -> в приватный бакет;
-- транскрипты и протоколы -> в приватный бакет.
+2. **API-функция** (`api`-таргет):
+   - `zip -r apps/server/src/` — новые файлы подхватываются автоматически (нет хардкода)
+   - Добавляет `packages/core/src/`
+   - Деплоит версию через `yc serverless function version create`
 
-## Что должно остаться serverless
+3. **Worker-функция** (`worker`-таргет): аналогично api
 
-- backend API;
-- фоновые задачи;
-- хранение артефактов;
-- публичный хостинг UI.
+4. **Gateway** (`gateway`-таргет): `yc serverless api-gateway update --spec infra/api-gateway.yaml`
 
-## Когда нужна VM
+## Облачные ресурсы
 
-Только если позже появятся:
+| Ресурс | Имя | Назначение |
+|--------|-----|-----------|
+| Cloud Function | `yaspeech-api` | HTTP API |
+| Cloud Function | `yaspeech-worker` | Обработка встреч |
+| Object Storage | `yaspeech-artifacts` | JSON + аудио (приватный) |
+| Object Storage | `yaspeech-frontend` | SPA-статика (публичный) |
+| API Gateway | `yaspeech-gateway` | Маршрутизация |
+| Message Queue | `yaspeech-queue` | YMQ — очередь задач |
+| Service Account | `yaspeech-sa` | Роли: storage.editor, ymq.writer, functions.invoker |
 
-- нестандартные long-running процессы;
-- отдельные системные агенты;
-- зависимости, которые неудобно паковать в функции.
+## Переменные окружения функций
 
-Для текущего MVP это не требуется.
+| Переменная | Функция | Назначение |
+|------------|---------|-----------|
+| `YC_STORAGE_BUCKET` | api + worker | Бакет артефактов |
+| `YC_QUEUE_URL` | api + worker | URL очереди YMQ |
+| `STORAGE_KEY_ID` / `STORAGE_SECRET` | api + worker | S3-ключи для Object Storage |
+| `YMQ_KEY_ID` / `YMQ_SECRET` | api + worker | Ключи для YMQ |
+| `SPEECHKIT_API_KEY` | worker | Ключ SpeechKit |
+| `YANDEX_GPT_API_KEY` | worker | Ключ YandexGPT |
+| `SESSION_SECRET` | api | HMAC-секрет для сессионных cookies |
+| `ADMIN_LOGIN` | api | Логин первого юзера, получающего роль admin |
+| `USE_MOCKS` | worker | `true` → mock-адаптеры |
+| `ASR_PROVIDER` | worker | `speechkit` \| `groq` \| `mock` |
+
+## API Gateway — маршруты (`infra/api-gateway.yaml`)
+
+| Путь | Куда |
+|------|------|
+| `/api/{path+}` | Cloud Function `yaspeech-api` |
+| `/` | Object Storage `yaspeech-frontend` → `index.html` |
+| `/app/{path+}` | Object Storage `yaspeech-frontend` → `app/{path}` |
+| `/lib/{path+}` | Object Storage `yaspeech-frontend` → `lib/{path}` |
+
+## Диагностика индексов
+
+После сбоя или ручного удаления файлов — проверить согласованность индексов:
+
+```bash
+# dry-run (только отчёт)
+bash scripts/reconcile-indexes.sh
+
+# применить исправления
+bash scripts/reconcile-indexes.sh --apply
+```
+
+Скрипт различает «файл удалён намеренно» (файл есть, в индексе нет → репорт без изменений)
+и «перекрёстное расхождение» (запись в глобальном индексе не совпадает с проектным → --apply исправит).
+
+## Последовательность первого деплоя
+
+1. Создать SA с ролями `storage.editor`, `ymq.writer`, `serverless.functions.invoker`, `api-gateway.admin`
+2. Создать бакеты: `yaspeech-artifacts` (приватный), `yaspeech-frontend` (публичный)
+3. Создать очередь `yaspeech-queue` в YMQ
+4. Заполнить `scripts/.env.deploy` — шаблон: `scripts/.env.deploy.example`
+5. `bash scripts/deploy.sh all`
+6. Проверить: `curl https://<gateway>/api/projects` → `{"projects":[]}`
