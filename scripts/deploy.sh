@@ -6,21 +6,27 @@
 # и заполни значениями. Файл .env.deploy НЕ коммитится в git.
 set -e
 
-YC=~/yandex-cloud/bin/yc
+# Путь к yc CLI можно переопределить через окружение (нужно в CI, где CLI
+# ставится в другое место). По умолчанию — стандартная установка для разработчика.
+YC="${YC:-$HOME/yandex-cloud/bin/yc}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TARGET="${1:-all}"
 
-# ── Загружаем секреты из .env.deploy ─────────────────────────────────────────
+# ── Источник секретов: файл .env.deploy ИЛИ переменные окружения ──────────────
+# Локально — читаем из scripts/.env.deploy. В CI (GitHub Actions) файла нет,
+# а переменные уже экспортированы из секретов — тогда просто пропускаем source.
 ENV_FILE="$ROOT/scripts/.env.deploy"
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "❌  Файл $ENV_FILE не найден."
-  echo "    Скопируй scripts/.env.deploy.example → scripts/.env.deploy и заполни значения."
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+elif [[ -z "${KEY_ID:-}" ]]; then
+  echo "❌  Нет ни $ENV_FILE, ни переменных окружения с секретами."
+  echo "    Локально: скопируй scripts/.env.deploy.example → scripts/.env.deploy."
+  echo "    В CI: задай секреты как переменные окружения (см. docs .../ci-cd.md)."
   exit 1
 fi
-# shellcheck source=/dev/null
-source "$ENV_FILE"
 
 # Проверяем что все обязательные переменные заданы
 : "${SA_ID:?Не задана переменная SA_ID в .env.deploy}"

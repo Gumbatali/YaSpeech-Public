@@ -19,6 +19,7 @@ import {
   getAudioDuration
 } from "./format.js?v=__BUILD__";
 import { parseLlmTranscript } from "./transcript-model.js?v=__BUILD__";
+import { copyText } from "./clipboard.js?v=__BUILD__";
 import { LoginScreen } from "./screens/login-screen.js?v=__BUILD__";
 import { AdminScreen } from "./screens/admin-screen.js?v=__BUILD__";
 import { SummaryTab } from "./screens/summary-tab.js?v=__BUILD__";
@@ -675,7 +676,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
 
       try {
         const protocolText = await api.getProtocolText(activeMeeting.id);
-        await navigator.clipboard.writeText(protocolText);
+        await copyText(protocolText);
         showNotice("Протокол скопирован.");
       } catch (caughtError) {
         setError(caughtError.message);

@@ -1,0 +1,9 @@
+# Убираем пустые issue без шаблона — заставляем выбрать тип.
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Документация проекта
+    url: https://github.com/Gumbatali/YaSpeech/tree/main/docs/project-handbook
+    about: Прежде чем заводить issue, загляни в Project Handbook — возможно, ответ уже там.
+  - name: 🔧 Как развернуть и эксплуатировать
+    url: https://github.com/Gumbatali/YaSpeech/blob/main/docs/project-handbook/05-delivery-and-operations/runbook.md
+    about: Runbook и операционные процедуры.

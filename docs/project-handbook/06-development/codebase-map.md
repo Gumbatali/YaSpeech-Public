@@ -9,7 +9,8 @@ YaSpeech/
 ├── apps/web/               # SPA-фронтенд (React + htm, без шага сборки)
 ├── infra/                  # API Gateway спека
 ├── scripts/                # deploy.sh, reconcile-indexes.sh, benchmark/
-└── docs/                   # Проектная документация
+├── docs/                   # Проектная документация
+└── .github/workflows/      # CI (тесты) и Deploy (выкатка в YC)
 ```
 
 ---
@@ -25,24 +26,28 @@ packages/core/src/
 │   ├── project.js          # Project entity
 │   └── user.js             # User entity — роли (admin/member), квоты
 ├── application/
-│   ├── create-project.js
-│   ├── create-meeting.js
-│   ├── mark-upload-completed.js
-│   ├── update-project-team.js
-│   ├── register-user.js
-│   └── login-user.js
+│   ├── create-project-use-case.js
+│   ├── create-meeting-use-case.js
+│   ├── mark-upload-completed-use-case.js
+│   ├── update-project-team-use-case.js
+│   ├── register-user-use-case.js
+│   ├── retry-meeting-use-case.js
+│   └── finalize-protocol-use-case.js
+├── shared/
+│   └── slugify.js
 └── index.js                # Реэкспорт публичного API пакета
 ```
 
 ### `domain/meeting.js` — ключевые детали
 
-- **baseKey**: `projects/{projectId}/{YYYY-MM-DD}_{meetingId}` — путь в Object Storage.  
+- **baseKey**: `projects/{projectId}/{YYYY-MM-DD}_{meetingId}` — путь в Object Storage.
   Старый формат `projects/{pid}/meetings/{mid}` поддерживается как fallback в репозитории.
-- **Статусы встречи** (полный цикл):
-  `created` → `uploading` → `upload_completed` → `speechkit_processing` →
-  `transcribed` → `awaiting_draft_confirmation` → `draft_confirmed` →
-  `generating_protocol` → `done` | `failed`
-- Файлы артефактов: `audio.mp3`, `transcript.json`, `protocol.json`, `protocol.txt`, `meeting.json`
+- **Статус встречи** (`meeting.status`):
+  `uploaded` → `speechkit_processing` → `draft_ready` → `protocol_generating` → `done` | `failed`
+- **Статус улучшения ИИ** (`llmRefine.status`, ортогонален основному):
+  `queued` → `processing` → `done` | `failed` | `stale`
+- Файлы артефактов: `audio-original.<ext>`, `transcript.json`, `transcript.refined.json`,
+  `protocol.json`, `protocol.txt`, `meeting.json`
 
 ---
 
@@ -52,14 +57,15 @@ packages/core/src/
 
 ```
 apps/server/src/server/
-├── create-http-handler.js  # Composition root (~170 строк, был монолит 809)
-├── router.js               # Табличный роутер — Router.add(method, pattern, handler)
+├── create-http-handler.js  # Composition root (~160 строк, был монолит 809)
+├── router.js               # Табличный роутер — router.add(method, pattern, handler)
 ├── make-use-cases.js       # Единая точка сборки всех use cases (DI)
+├── runtime-server.js       # Внутренний сервер для Cloud Function adapter
 └── routes/
     ├── auth-routes.js      # POST /api/auth/register, /login, /logout; GET /api/auth/me
     ├── admin-routes.js     # GET/PATCH /api/admin/users — бан, роль, квота
     ├── project-routes.js   # CRUD /api/projects, PATCH /api/projects/:id/team
-    ├── meeting-routes.js   # Полный CRUD встреч + upload-complete + protocol
+    ├── meeting-routes.js   # CRUD встреч + upload, refine, edit, restore, protocol
     └── static-routes.js    # GET / и /app/* и /lib/* (dev-режим)
 ```
 
@@ -69,7 +75,12 @@ apps/server/src/server/
 apps/server/src/shared/
 ├── validate.js             # Guard-функции (requireString, requireId, ...) → UserError → 400
 ├── http.js                 # json(), notFound(), serverError(), requireAuth()
-└── sign-v4.js              # AWS Signature V4 (для Object Storage и YMQ без npm)
+├── session.js              # HMAC-подпись сессионных cookie
+├── password.js             # scrypt — хеширование паролей
+├── sign-v4.js              # AWS Signature V4 (для Object Storage и YMQ без npm)
+├── iam-token.js            # IAM-токены для вызова SpeechKit / YandexGPT
+├── fs.js                   # Файловые хелперы
+└── logger.js               # Структурированное логирование (meetingId, стадия)
 ```
 
 ### Инфраструктура
@@ -77,15 +88,41 @@ apps/server/src/shared/
 ```
 apps/server/src/infrastructure/
 ├── yc-artifact-storage.js      # S3-совместимое Object Storage
-├── yc-meeting-repository.js    # Глобальный meetings/index.json + fallback по проектным индексам
-├── yc-project-repository.js
-├── yc-user-repository.js       # Пользователи + сессии (httpOnly HMAC-cookie)
-├── ymq-queue-runner.js         # Yandex Message Queue (SQS-совместимая)
-├── yandex-gpt-gateway.js       # YandexGPT — 5-проходный пайплайн
-├── speech-kit-gateway.js       # Yandex SpeechKit / Groq Whisper
-├── mock-yandex-gpt-gateway.js  # Mock для тестов и локальной разработки
+├── yc-meeting-repository.js     # Глобальный meetings/index.json + fallback по проектным
+├── yc-project-repository.js     # Проекты + накопленный глоссарий
+├── yc-user-repository.js        # Пользователи + сессии (httpOnly HMAC-cookie)
+├── ymq-queue-runner.js          # Yandex Message Queue (SQS-совместимая)
+├── yc-yandex-gpt-gateway.js     # YandexGPT — refineLines, extractGlossary, identifySpeakers, generateProtocol
+├── yc-speech-kit-gateway.js     # Yandex SpeechKit (split ASR: start/poll)
+├── groq-whisper-gateway.js      # Альтернативный ASR (Groq Whisper)
+├── smart-asr-gateway.js         # Выбор ASR-провайдера
+├── pyannote-diarization.js      # Диаризация спикеров
+├── llm/
+│   ├── prompts.js               # Все промпты (promptTranscriptRefine, promptProtocolReduce, ...)
+│   └── yandex-gpt-client.js     # Низкоуровневый HTTP-клиент YandexGPT
+├── file-system-meeting-repository.js   # Локальная замена (диск)
+├── file-system-project-repository.js
+├── local-artifact-storage.js           # Локальная замена Object Storage
+├── local-queue-runner.js               # In-process очередь
+├── mock-yandex-gpt-gateway.js          # Mock для тестов и локальной разработки
 └── mock-speech-kit-gateway.js
 ```
+
+### Application-слой (оркестрация)
+
+```
+apps/server/src/application/
+├── meeting-pipeline-service.js     # Оркестратор: ASR → draft → [refine по кнопке] → protocol
+├── transcript-postprocessor.js     # Чистка, склейка, переименование спикеров после ASR
+└── transcription/
+    └── refiner.js                  # Ядро refine: line-ID протокол, чанкование, валидатор чисел
+```
+
+> **`meeting-pipeline-service.js`** — сердце обработки. Фазы ASR разбиты на
+> `start → poll → draft` (каждая укладывается в таймаут функции). Refine —
+> отдельная resumable-джоба с чекпоинтами и защитой от гонки. Подробности и
+> инвариант «ноль автоматических LLM» — в
+> [architecture-overview.md](../03-solution-architecture/architecture-overview.md).
 
 ### Точки входа
 
@@ -93,23 +130,23 @@ apps/server/src/infrastructure/
 apps/server/src/
 ├── functions/
 │   ├── api-handler.js      # Адаптер YC HTTP-событие → createHttpHandler
-│   └── worker-handler.js   # Адаптер YC YMQ-событие → MeetingPipelineService
-├── application/
-│   └── meeting-pipeline-service.js  # Оркестратор стадий (ASR → диаризация → LLM → протокол)
+│   ├── worker-handler.js   # Адаптер YC YMQ-событие → MeetingPipelineService
+│   └── make-deps.js        # Сборка инфраструктурных зависимостей для функций
 ├── dev-server.js           # Локальный HTTP-сервер (порт 8787)
-└── runtime-server.js       # Внутренний сервер для Cloud Function adapter
+└── test-server.js          # Сервер для тестов (in-memory адаптеры)
 ```
 
 ### Тесты
 
 ```
 apps/server/tests/
-├── api.test.js             # E2E-тесты всего HTTP API (createTestServer)
-├── api-auth.test.js        # Характеризационные тесты auth/admin
-├── api-validation.test.js  # Тесты guard-валидации (400 на мусорный вход)
-├── meeting-repository.test.js
-├── project-repository.test.js
-└── static-ui.test.js       # /app/*, /lib/*, / раздают правильные файлы
+├── api.test.js                  # E2E-тесты всего HTTP API
+├── api-auth.test.js             # Auth/admin
+├── api-validation.test.js       # Guard-валидация (400 на мусорный вход)
+├── api-refine.test.js           # Цикл правка → refine → протокол
+├── refiner.test.js              # Юнит: чанкование, валидатор чисел/дат
+├── yc-meeting-repository.test.js
+└── static-ui.test.js            # /app/*, /lib/*, / раздают правильные файлы
 ```
 
 ---
@@ -120,17 +157,21 @@ SPA без шага сборки: React и htm загружаются как UMD
 
 ```
 apps/web/app/
-├── app.js                  # App-шелл, навигация, upload-флоу (~1480 строк)
+├── app.js                  # App-шелл, навигация, upload-флоу (~1580 строк — кандидат на распил)
 ├── api.js                  # ApiClient — все методы API
 ├── format.js               # Дата/время: todayIso, formatMeetingDate, formatTimecode, ...
+├── clipboard.js            # Копирование с fallback на execCommand (для HTTP-контекста)
 ├── html.js                 # Bootstrap: export React, html, useState, useEffect, useRef
 ├── transcript-model.js     # Чистые функции: SPEAKER_COLORS, parseLlmTranscript, ...
 ├── ui-model.js             # Маппинг статусов → экраны
+├── audio/
+│   ├── preprocessor.js     # Подготовка аудио перед загрузкой
+│   └── quality-analyzer.js # Оценка качества записи
 ├── screens/
 │   ├── login-screen.js     # LoginScreen({ api, onAuth })
 │   ├── admin-screen.js     # AdminScreen({ api, authUser, ... })
 │   ├── summary-tab.js      # SummaryTab({ api, protocol, onStartEdit, ... })
-│   └── transcript-tab.js   # TranscriptTab({ api, activeMeeting, ... })
+│   └── transcript-tab.js   # TranscriptTab + RefineControl (кнопка/прогресс/diff)
 ├── styles.css              # Дизайн-токены + компоненты
 └── real-estate-grid.svg    # Фоновый паттерн
 ```
@@ -153,8 +194,8 @@ apps/web/tests/
 
 ### Кэш-бастинг (критично)
 
-Все `import` внутри `app/*.js` написаны с суффиксом `?v=__BUILD__`.  
-`deploy.sh` подставляет версию во всё содержимое JS/CSS/HTML при загрузке в бакет.  
+Все `import` внутри `app/*.js` написаны с суффиксом `?v=__BUILD__`.
+`deploy.sh` подставляет версию во всё содержимое JS/CSS/HTML при загрузке в бакет.
 Без этого внутренние ES-импорты кэшировались как immutable навсегда.
 
 ---
@@ -164,15 +205,16 @@ apps/web/tests/
 | Правило | Как проверить |
 |---------|---------------|
 | `packages/core` ничего не знает про Yandex Cloud | `grep -r "yandex\|ymq\|speechkit" packages/core/src` → пусто |
-| В продакшн-коде нет npm-зависимостей | `zip -r apps/server/src` — нет `node_modules` |
+| В продакшн-коде нет npm-зависимостей | `package.json` без `dependencies`; в zip нет `node_modules` |
 | Все экраны получают зависимости явно через параметры | Нет обращений к переменным вне области видимости функции |
+| Ноль автоматических LLM-вызовов | LLM дёргается только из route-обработчиков по действию пользователя |
 | Secrets не в git | `scripts/.env.deploy` в `.gitignore` |
 
 ---
 
 ## Тесты — итого
 
-Запустить все: `npm test` (из корня — запускает тесты обоих пакетов).
+Запустить все: `npm test` (из корня — запускает тесты всех пакетов).
 
 | Группа | Файл | Что проверяет |
 |--------|------|---------------|
@@ -180,10 +222,12 @@ apps/web/tests/
 | API e2e | `apps/server/tests/api.test.js` | Все HTTP-эндпоинты |
 | Auth/admin | `apps/server/tests/api-auth.test.js` | Регистрация, вход, роли, бан |
 | Валидация | `apps/server/tests/api-validation.test.js` | 400 на мусорный вход |
-| Репозитории | `apps/server/tests/meeting-repository.test.js` | In-memory storage |
+| Refine API | `apps/server/tests/api-refine.test.js` | Цикл правка → refine → протокол |
+| Refiner | `apps/server/tests/refiner.test.js` | Чанкование, валидатор чисел/дат |
+| Репозиторий | `apps/server/tests/yc-meeting-repository.test.js` | Два индекса + fallback |
 | Статика | `apps/server/tests/static-ui.test.js` | /app/*, /lib/* отдают файлы |
 | UI model | `apps/web/tests/ui-model.test.js` | Статусы → экраны |
 | Transcript model | `apps/web/tests/transcript-model.test.js` | Парсинг, цвета спикеров |
 | Screens smoke | `apps/web/tests/screens.smoke.test.js` | Рендер экранов без браузера |
 
-Итого: **41 тест**.
+Итого: **54 теста**.

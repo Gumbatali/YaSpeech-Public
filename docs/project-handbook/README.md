@@ -24,7 +24,9 @@
 - mock-адаптеры сохранены для локальной разработки и тестов;
 - реализованы личные кабинеты (вход по логину/паролю), роли и квоты;
 - реализованы редактирование расшифровки и итогов, возврат к оригиналу, пересборка протокола;
-- работает память проекта: перенос задач и словарь терминов.
+- LLM-улучшение расшифровки — по кнопке пользователя (ноль автоматических LLM-вызовов);
+- работает память проекта: перенос задач и словарь терминов;
+- настроен CI/CD: автотесты на каждый PR, автодеплой при мерже в `main`.
 
 ## Как читать эту папку
 
@@ -66,13 +68,17 @@
 ### `05-delivery-and-operations`
 
 - [Облачное развёртывание](./05-delivery-and-operations/cloud-deployment.md)
+- [CI/CD — автотесты и деплой](./05-delivery-and-operations/ci-cd.md)
+- [Мониторинг и логи](./05-delivery-and-operations/monitoring-and-logging.md)
 - [IAM и доступы](./05-delivery-and-operations/iam-and-access.md)
 - [Runbook](./05-delivery-and-operations/runbook.md)
 
 ### `06-development`
 
+- [Локальная разработка](./06-development/local-setup.md)
 - [Карта кодовой базы](./06-development/codebase-map.md)
 - [Handoff и roadmap](./06-development/handoff-and-roadmap.md)
+- [Как участвовать (CONTRIBUTING)](../../CONTRIBUTING.md)
 
 ## Ключевые договорённости
 
