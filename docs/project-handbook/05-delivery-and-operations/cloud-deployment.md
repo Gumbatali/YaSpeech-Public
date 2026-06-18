@@ -6,9 +6,15 @@
 https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
 ```
 
+> **Основной путь — автоматический.** Мерж в `main` запускает деплой через
+> GitHub Actions; ручной запуск — Actions → Deploy → Run workflow. Настройка и
+> детали: [ci-cd.md](./ci-cd.md). Ниже — ручной деплой с локальной машины тем же
+> скриптом.
+
 ## Деплой-скрипт
 
-Секреты хранятся в `scripts/.env.deploy` (в `.gitignore` — **не коммитить**).  
+Секреты хранятся в `scripts/.env.deploy` (в `.gitignore` — **не коммитить**) —
+локально. В CI те же значения берутся из GitHub Secrets как переменные окружения.
 Пример конфига: `scripts/.env.deploy.example`.
 
 ```bash

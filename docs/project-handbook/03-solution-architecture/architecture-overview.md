@@ -44,32 +44,48 @@ apps/web                — SPA (React + htm, без шага сборки)
 
 ## Поток обработки
 
+**Главный инвариант: ноль автоматических LLM-вызовов.** После ASR черновик
+готов мгновенно и бесплатно. Все обращения к YandexGPT — только по явной кнопке
+пользователя (улучшение расшифровки, сборка протокола).
+
 ```
 Браузер                     Yandex Cloud
 ───────                     ────────────
-upload аудио  ──►  Object Storage (audio.mp3)
-                       │
-                       ▼
-               Message Queue (YMQ)
-                       │
-                       ▼
-               Cloud Function «worker»
-                   ├─ SpeechKit ────────► transcript.json
-                   ├─ LLM-диаризация ───► разделение спикеров
-                   ├─ коррекция ASR ────► исправление распознавания
-                   ├─ идентификация ────► имена и роли
-                   └─ YandexGPT ────────► protocol.json
-                       │
+upload аудио  ──►  Object Storage  ──►  YMQ  ──►  Cloud Function «worker»
+                                                       │
+                                                  SpeechKit (ASR) ──► transcript.json
+                                                       │
+                                                  status = draft_ready   ← БЕЗ LLM
+       ┌───────────────────────────────────────────────┘
+       ▼  (кнопка «✨ Улучшить с помощью ИИ» → отдельная refine-джоба, YandexGPT)
+       │     диаризация · глоссарий · коррекция ASR (line-ID + валидатор чисел) ·
+       │     имена спикеров → transcript.refined.json
+       ▼  (кнопка «Собрать протокол»)
+   YandexGPT ──► protocol.json / protocol.txt
+       │
 браузер  ◄──  API Gateway ◄──  Cloud Function «api»
 ```
 
+Refine — ортогональный процесс со своим контуром ошибок: его сбой помечает
+`llmRefine.status=failed`, а не валит статус встречи. Длинные встречи режутся на
+чанки с чекпоинтами (переживает таймаут функции).
+
 ## Статусный цикл встречи
 
+Основной статус (`meeting.status`):
+
 ```
-created → uploading → upload_completed → speechkit_processing →
-transcribed → awaiting_draft_confirmation → draft_confirmed →
-generating_protocol → done
-                   ↘ failed (в любой стадии worker)
+uploaded → speechkit_processing → draft_ready → protocol_generating → done
+                              ↘ failed (на любой стадии worker; → retry)
+```
+
+Улучшение расшифровки идёт **ортогонально** основному статусу — у него своё поле
+`llmRefine.status`:
+
+```
+queued → processing → done
+              ↘ failed
+              ↘ stale   (пользователь отредактировал текст во время работы джобы)
 ```
 
 ## Ключевые архитектурные решения

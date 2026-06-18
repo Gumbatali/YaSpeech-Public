@@ -26,10 +26,12 @@ classDiagram
     +guests[]
     +status
     +currentStage
-    +speechSenseTalkId
+    +speechKitJobId
     +titleDraft
     +speakerDrafts[]
     +transcriptSegments[]
+    +llmTranscriptSegments[]
+    +llmRefine
     +artifacts
   }
 

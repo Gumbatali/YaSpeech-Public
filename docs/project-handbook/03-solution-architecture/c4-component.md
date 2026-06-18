@@ -25,8 +25,8 @@ flowchart TD
     UserRepo["YcUserRepository\n(сессии + scrypt)"]
     Storage["YcArtifactStorage\n(S3 без npm)"]
     Queue["YmqQueueRunner"]
-    SpeechGateway["SpeechKitGateway"]
-    AiGateway["YandexGptGateway\n(5-проходный пайплайн)"]
+    SpeechGateway["SpeechKitGateway\n(split ASR)"]
+    AiGateway["YandexGptGateway\n(refine + протокол, по кнопке)"]
   end
 
   Router --> AuthRoutes
@@ -77,7 +77,7 @@ flowchart TD
 | `auth-routes` | `POST /api/auth/register`, `/login`, `/logout`; `GET /api/auth/me` |
 | `admin-routes` | `GET /api/admin/users`; `PATCH /api/admin/users/:id/ban`, `/role`, `/quota` |
 | `project-routes` | `GET/POST /api/projects`; `GET/PATCH/DELETE /api/projects/:id`; `PATCH /api/projects/:id/team`; `GET /api/projects/:id/meetings` |
-| `meeting-routes` | `POST /api/meetings`; `POST /api/meetings/:id/upload-complete`; `POST /api/meetings/:id/confirm-draft`; `GET /api/meetings/:id`; `POST /api/meetings/:id/retry`; `GET /api/meetings/:id/transcript`; `GET/PUT /api/meetings/:id/protocol`; `POST /api/meetings/:id/regenerate`; `DELETE /api/meetings/:id` |
+| `meeting-routes` | `POST /api/meetings`; `POST /api/meetings/:id/upload-complete`; `POST /api/meetings/:id/confirm-draft`; `GET /api/meetings/:id`; `POST /api/meetings/:id/retry`; `POST /api/meetings/:id/transcript/refine`; `PATCH /api/meetings/:id/transcript`; `POST /api/meetings/:id/transcript/restore`; `PATCH /api/meetings/:id/protocol`; `POST /api/meetings/:id/regenerate-protocol`; `GET /api/meetings/:id/protocol.txt`; `GET /api/meetings/:id/transcript.txt`; `DELETE /api/meetings/:id` |
 | `static-routes` | `GET /`, `/app/*`, `/lib/*` (dev-сервер и Cloud Function fallback) |
 
 ### `make-use-cases.js` — DI
@@ -99,12 +99,15 @@ Guard-функции: `requireString`, `optionalString`, `requireArray`, `requir
 
 ### `MeetingPipelineService`
 
-Оркестратор стадий обработки встречи:
+Оркестратор обработки встречи. Ключевое: **LLM не вызывается автоматически**.
 
-1. `transcribed` — распознавание речи (SpeechKit / Groq Whisper)
-2. `awaiting_draft_confirmation` — LLM-диаризация + коррекция ASR
-3. `draft_confirmed` → `generating_protocol` — сборка протокола (YandexGPT)
-4. `done` | `failed` — финальный статус
+1. `speechkit_processing` — распознавание речи (split: `start → poll → done`)
+2. `draft_ready` — черновик собран из сырого ASR, **без LLM**, мгновенно
+3. *(опционально, по кнопке)* `runRefinePhase` — отдельная resumable-джоба:
+   диаризация · глоссарий · коррекция (line-ID + валидатор чисел) · имена спикеров.
+   Свой контур ошибок (`llmRefine.status`), не влияет на `meeting.status`
+4. `protocol_generating` — сборка протокола (YandexGPT, по кнопке «Собрать протокол»)
+5. `done` | `failed` — финальный статус (`retry` возвращает в обработку)
 
 ### `YcMeetingRepository`
 

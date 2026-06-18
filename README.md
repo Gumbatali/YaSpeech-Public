@@ -1,11 +1,17 @@
 # YaSpeech — протоколы встреч без ручной расшифровки
 
+[![CI](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml/badge.svg)](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml)
+
 YaSpeech превращает аудиозапись совещания в готовый протокол: кто что сказал,
-о чём договорились, какие задачи и сроки. Загрузили запись — через несколько
-минут получили структурированный документ. Сделано для строительной компании
-СТРОЙТЕХЭКСПЕРТ, работает в Яндекс Облаке.
+о чём договорились, какие задачи и сроки. Загрузили запись — за минуту получили
+дословную расшифровку, по кнопке улучшили её с помощью ИИ, собрали протокол.
+Сделано для строительной компании СТРОЙТЕХЭКСПЕРТ, работает в Яндекс Облаке.
 
 **Прод:** https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
+
+> 🧭 **Куда смотреть:** [что это и зачем](./docs/КАК-ЭТО-РАБОТАЕТ.md) ·
+> [как участвовать в разработке](./CONTRIBUTING.md) ·
+> [Project Handbook](./docs/project-handbook/README.md) (вся документация)
 
 ---
 
@@ -49,24 +55,32 @@ apps/web            — SPA (React + htm, без шага сборки)
 
 ### Поток обработки
 
+Ключевой принцип: **ноль автоматических LLM-вызовов**. После распознавания речи
+черновик готов мгновенно и бесплатно. Всё, что дороже (улучшение текста ИИ,
+сборка протокола), запускается только по кнопке пользователя.
+
 ```
 Браузер                       Yandex Cloud
 ───────                       ────────────
-upload аудио  ──►  Object Storage (audio.mp3)
-                       │
-                       ▼
-               Message Queue (YMQ)
-                       │
-                       ▼
-               Cloud Function «worker»
-                   ├─ SpeechKit ────────► transcript
-                   ├─ LLM-диаризация ───► спикеры
-                   ├─ коррекция ASR ────► исправление ошибок
-                   ├─ идентификация ────► имена и роли
-                   └─ YandexGPT ────────► protocol.json
-                       │
-браузер  ◄──  API Gateway ◄──  Cloud Function «api»
+upload аудио  ──►  Object Storage  ──►  YMQ  ──►  Cloud Function «worker»
+                                                       │
+                                                       ▼
+                                              SpeechKit (ASR) ──► transcript
+                                                       │
+                                              status = draft_ready   ← БЕЗ LLM, мгновенно
+                                                       │
+       ┌───────────────────────────────────────────────┘
+       ▼
+[кнопка «✨ Улучшить с помощью ИИ»]  ──► refine: диаризация · глоссарий ·
+       │                                  коррекция ASR (line-ID) · имена спикеров
+       ▼
+[кнопка «Собрать протокол»]  ──► YandexGPT ──► protocol.json
+       │
+браузер  ◄──  API Gateway  ◄──  Cloud Function «api»
 ```
+
+Между этапами пользователь может править текст вручную; правка во время работы
+ИИ инвалидирует устаревший результат (защита от гонки).
 
 ### Технический стек
 
@@ -75,7 +89,7 @@ upload аудио  ──►  Object Storage (audio.mp3)
 - **Очередь:** Yandex Message Queue
 - **Шлюз:** Yandex API Gateway
 - **ASR:** Yandex SpeechKit (опционально Groq Whisper)
-- **LLM:** YandexGPT (5-проходный пайплайн)
+- **LLM:** YandexGPT (`yandexgpt-lite`) — по кнопке: улучшение расшифровки + сборка протокола
 - **Auth:** HMAC-SHA256 сессии + scrypt — только встроенные модули Node, **ноль npm в продакшне**
 
 ### Структура HTTP-слоя (после рефакторинга)
@@ -96,9 +110,10 @@ shared/validate.js       ← guard-валидация → 400 вместо 500
 ### Фронтенд
 
 ```
-app/app.js               ← App-шелл (~1480 строк)
+app/app.js               ← App-шелл (~1580 строк — главный кандидат на распил)
 app/api.js               ← ApiClient
 app/format.js            ← дата/время/таймкоды
+app/clipboard.js         ← копирование с fallback для HTTP-контекста
 app/transcript-model.js  ← чистые функции транскрипта
 app/screens/             ← 4 экрана с явными параметрами
 lib/                     ← self-hosted React, ReactDOM, htm (без CDN)
@@ -109,7 +124,7 @@ lib/                     ← self-hosted React, ReactDOM, htm (без CDN)
 ## Запуск локально
 
 ```bash
-npm test                    # 41 тест
+npm test                    # 54 теста
 npm run dev                 # http://127.0.0.1:8787
 
 # С аутентификацией
@@ -117,12 +132,20 @@ SESSION_SECRET=dev ADMIN_LOGIN=admin node apps/server/src/dev-server.js
 ```
 
 Локально работают mock-адаптеры — без реальных облачных вызовов и платных API.
+Зависимостей npm нет — `npm install` не нужен.
+
+Подробнее: [локальная разработка](./docs/project-handbook/06-development/local-setup.md) ·
+[как участвовать](./CONTRIBUTING.md).
 
 ---
 
 ## Деплой в Яндекс Облако
 
-Секреты в `scripts/.env.deploy` (в `.gitignore`):
+**Основной путь — автоматический:** мерж в `main` → GitHub Actions гоняет тесты
+и деплоит в прод. Можно и вручную: Actions → **Deploy** → Run workflow.
+Настройка секретов и deployer-аккаунта: [CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md).
+
+**Ручной деплой с машины** (секреты в `scripts/.env.deploy`, в `.gitignore`):
 
 ```bash
 bash scripts/deploy.sh all       # обе функции + фронтенд + шлюз
@@ -133,7 +156,8 @@ bash scripts/deploy.sh gateway   # только API Gateway
 ```
 
 `deploy.sh` обходит `apps/server/src/` рекурсивно — новые файлы попадают в zip автоматически,
-без ручного сопровождения списка файлов.
+без ручного сопровождения списка файлов. Секреты берёт из `.env.deploy` (локально)
+или из переменных окружения (в CI).
 
 Подробности: [облачное развёртывание](./docs/project-handbook/05-delivery-and-operations/cloud-deployment.md)
 
@@ -151,7 +175,17 @@ bash scripts/reconcile-indexes.sh --apply  # применить исправле
 
 ## Документация
 
-- **[Как это работает (для нетехнических)](./docs/КАК-ЭТО-РАБОТАЕТ.md)**
-- **[Project Handbook](./docs/project-handbook/README.md)** — продукт, архитектура (C4), API, деплой, runbook
+**Для всех:**
+- **[Как это работает (для нетехнических)](./docs/КАК-ЭТО-РАБОТАЕТ.md)** — без жаргона
+- **[Project Handbook](./docs/project-handbook/README.md)** — вся документация, по ролям
+
+**Разработчику:**
+- **[Как участвовать (CONTRIBUTING)](./CONTRIBUTING.md)** — старт за 5 минут
+- **[Локальная разработка](./docs/project-handbook/06-development/local-setup.md)**
 - **[Карта кодовой базы](./docs/project-handbook/06-development/codebase-map.md)**
 - **[Обзор архитектуры](./docs/project-handbook/03-solution-architecture/architecture-overview.md)**
+
+**Эксплуатация:**
+- **[CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md)** — автотесты и деплой
+- **[Мониторинг и логи](./docs/project-handbook/05-delivery-and-operations/monitoring-and-logging.md)**
+- **[Runbook](./docs/project-handbook/05-delivery-and-operations/runbook.md)** — что делать, когда сломалось
