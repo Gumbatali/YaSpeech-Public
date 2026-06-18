@@ -15,6 +15,26 @@ YaSpeech превращает аудиозапись совещания в го�
 
 ---
 
+## Оглавление
+
+- [Что умеет](#что-умеет)
+- [Скриншоты интерфейса](#скриншоты-интерфейса)
+- [Как использовать](#как-использовать)
+- [Архитектура](#архитектура)
+- [Запуск локально](#запуск-локально)
+- [Деплой в Яндекс Облако](#деплой-в-яндекс-облако)
+- [Документация](#документация)
+- [Обратная связь](#обратная-связь)
+
+---
+
+## Скриншоты интерфейса
+
+> 📸 **Здесь будут скриншоты**
+> _(Добавьте сюда 1-2 скриншота или GIF, демонстрирующих плеер, список встреч или редактирование протокола, чтобы сразу показать продукт вживую)_
+
+---
+
 ## Что умеет
 
 | Возможность | Что это даёт |
@@ -92,32 +112,7 @@ upload аудио  ──►  Object Storage  ──►  YMQ  ──►  Cloud F
 - **LLM:** YandexGPT (`yandexgpt-lite`) — по кнопке: улучшение расшифровки + сборка протокола
 - **Auth:** HMAC-SHA256 сессии + scrypt — только встроенные модули Node, **ноль npm в продакшне**
 
-### Структура HTTP-слоя (после рефакторинга)
-
-```
-create-http-handler.js   ← composition root (~170 строк)
-router.js                ← табличный роутер (:param-сегменты)
-make-use-cases.js        ← единая точка DI
-routes/
-  auth-routes.js
-  admin-routes.js
-  project-routes.js
-  meeting-routes.js
-  static-routes.js
-shared/validate.js       ← guard-валидация → 400 вместо 500
-```
-
-### Фронтенд
-
-```
-app/app.js               ← App-шелл (~1580 строк — главный кандидат на распил)
-app/api.js               ← ApiClient
-app/format.js            ← дата/время/таймкоды
-app/clipboard.js         ← копирование с fallback для HTTP-контекста
-app/transcript-model.js  ← чистые функции транскрипта
-app/screens/             ← 4 экрана с явными параметрами
-lib/                     ← self-hosted React, ReactDOM, htm (без CDN)
-```
+> 📖 **Подробности о кодовой базе:** Детальная структура HTTP-слоя и фронтенда описана в [Карте кодовой базы](./docs/project-handbook/06-development/codebase-map.md).
 
 ---
 
@@ -163,16 +158,6 @@ bash scripts/deploy.sh gateway   # только API Gateway
 
 ---
 
-## Диагностика
-
-```bash
-# Проверить согласованность индексов встреч в Object Storage
-bash scripts/reconcile-indexes.sh          # dry-run
-bash scripts/reconcile-indexes.sh --apply  # применить исправления
-```
-
----
-
 ## Документация
 
 **Для всех:**
@@ -189,3 +174,10 @@ bash scripts/reconcile-indexes.sh --apply  # применить исправле
 - **[CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md)** — автотесты и деплой
 - **[Мониторинг и логи](./docs/project-handbook/05-delivery-and-operations/monitoring-and-logging.md)**
 - **[Runbook](./docs/project-handbook/05-delivery-and-operations/runbook.md)** — что делать, когда сломалось
+
+---
+
+## Обратная связь
+
+Нашли баг, есть идея или вопрос по проекту?
+Пожалуйста, [создайте Issue](https://github.com/Gumbatali/YaSpeech/issues) в этом репозитории. Будем рады любым предложениям по улучшению!
