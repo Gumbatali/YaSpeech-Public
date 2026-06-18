@@ -73,32 +73,37 @@ YaSpeech превращает аудиозапись совещания в го�
 C4Container
   title Архитектура и Поток обработки (YaSpeech)
   
-  Person(user, "Пользователь", "Загружает аудио, правит текст в браузере")
+  Person(user, "Пользователь", "Менеджер, Прораб, Заказчик")
+  Container(spa, "Web SPA", "React + htm", "Работает в браузере клиента")
   
   System_Boundary(yc, "Yandex Cloud (Serverless)") {
-      Container(spa, "Web SPA", "React + htm", "Интерфейс пользователя")
-      Container(api, "API Gateway", "Yandex API Gateway", "Единая точка входа API")
-      Container(func_api, "Cloud Function 'api'", "Node.js 18", "Обработка HTTP запросов (CRUD, LLM)")
-      Container(func_worker, "Cloud Function 'worker'", "Node.js 18", "Асинхронная обработка (ASR)")
-      ContainerDb(s3, "Object Storage", "S3", "Хранение аудио и JSON/TXT")
-      ContainerQueue(ymq, "Message Queue", "YMQ", "Очередь задач")
+      ContainerDb(s3, "Object Storage", "S3", "Хранение аудио и артефактов")
+      ContainerQueue(ymq, "Message Queue", "YMQ", "Очередь задач на обработку")
+      Container(func_worker, "Function 'worker'", "Node.js 18", "Асинхронная обработка (ASR)")
+      
+      Container(api, "API Gateway", "API Gateway", "Единая точка входа API")
+      Container(func_api, "Function 'api'", "Node.js 18", "Бизнес-логика, CRUD, вызов LLM")
   }
   
   System_Ext(speechkit, "Yandex SpeechKit", "ASR (Распознавание речи)")
   System_Ext(yagpt, "YandexGPT", "LLM (Диаризация, протоколы)")
 
-  Rel(user, spa, "Взаимодействует", "HTTPS")
-  Rel(spa, s3, "1. Прямая загрузка", "S3 API")
-  Rel(s3, ymq, "2. Уведомление о файле", "Событие")
-  Rel(ymq, func_worker, "3. Запуск обработки", "Событие")
+  Rel_D(user, spa, "Управляет встречами", "Клики и текст")
   
-  Rel(func_worker, speechkit, "4. Отправка аудио", "API")
-  Rel(func_worker, s3, "5. Сохранение сырого текста", "S3 API")
+  %% Асинхронный пайплайн
+  Rel_D(spa, s3, "1. Прямая загрузка аудио", "S3 API")
+  Rel_R(s3, ymq, "2. Триггер нового файла", "Событие")
+  Rel_R(ymq, func_worker, "3. Фоновая задача", "Событие")
+  Rel_D(func_worker, speechkit, "4. Распознавание", "API")
+  Rel_U(func_worker, s3, "5. Сохранение сырого текста", "S3 API")
   
-  Rel(spa, api, "6. Запросы (Улучшить ИИ / Протокол)", "HTTPS")
-  Rel(api, func_api, "Проксирование", "HTTPS")
-  Rel(func_api, yagpt, "7. Генерация выжимок", "API")
-  Rel(func_api, s3, "8. Сохранение результата", "S3 API")
+  %% Синхронный пайплайн
+  Rel_D(spa, api, "6. Вызов ИИ / Сохранение правок", "HTTPS")
+  Rel_D(api, func_api, "Проксирование", "HTTPS")
+  Rel_D(func_api, yagpt, "7. Сборка выжимок", "API")
+  Rel_L(func_api, s3, "8. Сохранение JSON", "S3 API")
+
+  UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
 ```
 
 ### Технический стек
