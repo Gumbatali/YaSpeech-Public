@@ -21,9 +21,39 @@ export function createUser({ id, login, passwordHash, role = "member", createdAt
     // Квота расшифровок: null = безлимит, число = максимум за всё время
     transcriptionQuota: null,
     transcriptionUsed: 0,
+    // Двухфакторная аутентификация (TOTP). По умолчанию выключена.
+    // { enabled, secret (base32), backupCodes: [hash] } — секрет и хэши
+    // НИКОГДА не уходят клиенту (см. publicUser).
+    totp: { enabled: false },
     createdAt,
     updatedAt: createdAt
   };
+}
+
+/** Признак включённой 2FA — безопасен к отсутствию поля у старых записей. */
+export function hasTotp(user) {
+  return Boolean(user.totp?.enabled);
+}
+
+/** Включает 2FA: сохраняет секрет и хэши одноразовых кодов восстановления. */
+export function enableTotp(user, { secret, backupCodeHashes }, updatedAt) {
+  if (!secret) throw new Error("Не задан TOTP-секрет.");
+  return {
+    ...user,
+    totp: { enabled: true, secret, backupCodes: backupCodeHashes ?? [] },
+    updatedAt
+  };
+}
+
+/** Полностью отключает 2FA и забывает секрет/коды. */
+export function disableTotp(user, updatedAt) {
+  return { ...user, totp: { enabled: false }, updatedAt };
+}
+
+/** Убирает использованный код восстановления (по его хэшу) — одноразовость. */
+export function consumeBackupCodeHash(user, usedHash, updatedAt) {
+  const remaining = (user.totp?.backupCodes ?? []).filter((h) => h !== usedHash);
+  return { ...user, totp: { ...user.totp, backupCodes: remaining }, updatedAt };
 }
 
 /**

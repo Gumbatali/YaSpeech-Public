@@ -47,11 +47,23 @@ export class ApiClient {
     }, { skipAuthRedirect: true });
   }
 
-  login(login, password) {
-    return this.json("/api/auth/login", {
+  // Своя реализация (не через json()), чтобы сохранить флаг totpRequired:
+  // generic-обработчик отдаёт только текст ошибки и теряет его.
+  async login(login, password, totpCode) {
+    const response = await fetch("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ login, password })
-    }, { skipAuthRedirect: true });
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ login, password, totpCode })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) return body;
+
+    const error = new Error(
+      typeof body.error === "string" ? body.error : "Не удалось войти."
+    );
+    error.totpRequired = Boolean(body.totpRequired);
+    error.totpInvalid = Boolean(body.totpInvalid);
+    throw error;
   }
 
   logout() {

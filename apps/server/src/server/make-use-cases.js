@@ -11,6 +11,7 @@ import {
   RegisterUserUseCase,
   LoginUserUseCase
 } from "../../../../packages/core/src/index.js";
+import { verifyTotp } from "../shared/totp.js";
 
 export function makeUseCases({
   projectRepository,
@@ -41,6 +42,14 @@ export function makeUseCases({
       idGenerator,
       adminLogin
     ),
-    loginUser: new LoginUserUseCase(userRepository, passwordVerifier)
+    loginUser: new LoginUserUseCase(
+      userRepository,
+      passwordVerifier,
+      // TOTP-проверка (sync, чистая криптофункция)
+      { verify: (secret, code) => verifyTotp(secret, code) },
+      // Коды восстановления хэшируются тем же scrypt, что и пароли
+      passwordVerifier,
+      clock
+    )
   };
 }
