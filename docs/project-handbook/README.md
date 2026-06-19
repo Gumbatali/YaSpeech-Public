@@ -31,7 +31,7 @@
 
 ## Структура
 
-### `03-solution-architecture`
+### `solution-architecture`
 
 - [Обзор архитектуры](./03-solution-architecture/architecture-overview.md)
 - [C4 Context](./03-solution-architecture/c4-context.md)
@@ -40,13 +40,13 @@
 - [Deployment и интеграции](./03-solution-architecture/deployment-and-integrations.md)
 - [HTML-обзор архитектуры](./03-solution-architecture/architecture-overview.html)
 
-### `04-system-analysis`
+### `system-analysis`
 
 - [Доменная модель](./04-system-analysis/domain-model.md)
 - [Состояния и последовательности](./04-system-analysis/state-and-sequence.md)
 - [API и контракты данных](./04-system-analysis/api-and-data-contracts.md)
 
-### `05-delivery-and-operations`
+### `delivery-and-operations`
 
 - [Облачное развёртывание](./05-delivery-and-operations/cloud-deployment.md)
 - [CI/CD — автотесты и деплой](./05-delivery-and-operations/ci-cd.md)
@@ -54,7 +54,7 @@
 - [IAM и доступы](./05-delivery-and-operations/iam-and-access.md)
 - [Runbook](./05-delivery-and-operations/runbook.md)
 
-### `06-development`
+### `development`
 
 - [Локальная разработка](./06-development/local-setup.md)
 - [Карта кодовой базы](./06-development/codebase-map.md)
