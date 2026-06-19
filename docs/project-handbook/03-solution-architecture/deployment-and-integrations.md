@@ -1,6 +1,6 @@
 # Deployment и интеграции
 
-## Целевой deployment-контур
+## Deployment-контур
 
 ```mermaid
 flowchart TB
@@ -75,7 +75,7 @@ flowchart TB
 - локальная очередь;
 - mock-интеграции (SpeechKit / YandexGPT не вызываются, платных запросов нет).
 
-### В облаке (production, реализовано)
+### В облаке (production)
 
 - API Gateway;
 - Cloud Functions (`yaspeech-api`, `yaspeech-worker`);

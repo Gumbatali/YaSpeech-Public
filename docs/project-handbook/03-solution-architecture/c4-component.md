@@ -1,6 +1,6 @@
 # C4 Component
 
-Схема уровня `Component` для backend-части (после рефакторинга 2026-06-10).
+Схема уровня `Component` для backend-части.
 
 ```mermaid
 flowchart TD
