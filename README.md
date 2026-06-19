@@ -73,36 +73,36 @@ YaSpeech превращает аудиозапись совещания в го�
 C4Container
   title Архитектура и Поток обработки (YaSpeech)
   
-  Person(user, "Пользователь", "Загружает аудио, правит текст в браузере")
-  Container(spa, "Web SPA", "React + htm", "Интерфейс пользователя")
+  Person(user, "Пользователь", "Менеджер / Прораб")
+  Container(spa, "Web SPA", "React", "Браузер клиента")
   
   System_Boundary(yc, "Yandex Cloud (Serverless)") {
-      ContainerDb(s3, "Object Storage", "S3", "Хранилище аудио и JSON/TXT")
+      ContainerDb(s3, "S3 Storage", "S3", "Хранилище файлов")
       
-      Container(api, "API Gateway", "API Gateway", "Синхронные вызовы")
-      Container(func_api, "Function 'api'", "Node.js 18", "Бизнес-логика, вызов LLM")
+      Container(api, "API Gateway", "API Gateway", "Точка входа")
+      Container(func_api, "Function api", "Node.js", "Бизнес-логика, LLM")
       
       ContainerQueue(ymq, "Message Queue", "YMQ", "Очередь задач")
-      Container(func_worker, "Function 'worker'", "Node.js 18", "Асинхронная обработка")
+      Container(func_worker, "Function worker", "Node.js", "Вызов ASR")
   }
   
-  System_Ext(speechkit, "Yandex SpeechKit", "Распознавание речи (ASR)")
-  System_Ext(yagpt, "YandexGPT", "Генерация протокола (LLM)")
+  System_Ext(speechkit, "SpeechKit", "Распознавание (ASR)")
+  System_Ext(yagpt, "YandexGPT", "Сборка протокола (LLM)")
 
-  Rel(user, spa, "Управляет проектами", "HTTPS")
+  Rel(user, spa, "Использует", "HTTPS")
   
-  %% Асинхронный пайплайн (Загрузка файла)
-  Rel(spa, s3, "1. Прямая загрузка аудио", "S3 API")
-  Rel(s3, ymq, "2. Уведомление о файле", "Событие")
-  Rel(ymq, func_worker, "3. Фоновая задача", "Событие")
+  %% Асинхронный пайплайн
+  Rel(spa, s3, "1. Загрузка", "S3 API")
+  Rel(s3, ymq, "2. Триггер", "Event")
+  Rel(ymq, func_worker, "3. Запуск", "Event")
   Rel(func_worker, speechkit, "4. Распознавание", "API")
-  Rel_Back(func_worker, s3, "5. Сохранение сырого текста", "S3 API")
+  Rel_Back(func_worker, s3, "5. Сохранение текста", "S3 API")
   
-  %% Синхронный пайплайн (Действия пользователя)
-  Rel(spa, api, "6. Вызов ИИ / Сохранение правок", "HTTPS")
+  %% Синхронный пайплайн
+  Rel(spa, api, "6. Вызов ИИ / Запросы", "HTTPS")
   Rel(api, func_api, "Проксирование", "HTTPS")
-  Rel(func_api, yagpt, "7. Сборка выжимок", "API")
-  Rel_Back(func_api, s3, "8. Сохранение JSON результата", "S3 API")
+  Rel(func_api, yagpt, "7. Запрос протокола", "API")
+  Rel_Back(func_api, s3, "8. Сохранение JSON", "S3 API")
 ```
 
 ### Технический стек
