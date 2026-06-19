@@ -76,53 +76,40 @@ YaSpeech превращает аудиозапись совещания в го�
 Ключевой принцип архитектуры: **ноль автоматических LLM-вызовов**. После распознавания речи (ASR) черновик создается мгновенно и бесплатно. Дорогие LLM-операции (улучшение текста, сборка протокола) запускаются строго по кнопке пользователя.
 
 ```mermaid
-flowchart TD
-    %% Определяем классы (цвета под C4)
-    classDef person fill:#08427b,color:#fff,stroke:#052e56,stroke-width:2px
-    classDef container fill:#438dd5,color:#fff,stroke:#2e6295,stroke-width:2px
-    classDef database fill:#438dd5,color:#fff,stroke:#2e6295,stroke-width:2px
-    classDef external fill:#999999,color:#fff,stroke:#666666,stroke-width:2px
-    classDef boundary fill:none,stroke:#444444,stroke-width:2px,stroke-dasharray: 5 5,color:#444
+C4Container
+  title Архитектура и Поток обработки (YaSpeech)
+  
+  Person(user, "Пользователь", "Загружает аудио, правит текст в браузере")
+  Container(spa, "Web SPA", "React + htm", "Интерфейс пользователя")
+  
+  System_Boundary(yc, "Yandex Cloud (Serverless)") {
+      ContainerDb(s3, "Object Storage", "S3", "Хранилище аудио и JSON/TXT")
+      
+      Container(api, "API Gateway", "API Gateway", "Синхронные вызовы")
+      Container(func_api, "Function 'api'", "Node.js 18", "Бизнес-логика, вызов LLM")
+      
+      ContainerQueue(ymq, "Message Queue", "YMQ", "Очередь задач")
+      Container(func_worker, "Function 'worker'", "Node.js 18", "Асинхронная обработка")
+  }
+  
+  System_Ext(speechkit, "Yandex SpeechKit", "Распознавание речи (ASR)")
+  System_Ext(yagpt, "YandexGPT", "Генерация протокола (LLM)")
 
-    User("<b>Пользователь</b><br/><span style='font-size:12px'>[Person]</span><br/><br/><span style='font-size:12px'>Загружает аудио, правит текст в браузере</span>"):::person
-    
-    SPA["<b>Web SPA</b><br/><span style='font-size:12px'>[Container: React + htm]</span><br/><br/><span style='font-size:12px'>Интерфейс пользователя</span>"]:::container
-
-    subgraph YC [Yandex Cloud Serverless]
-        direction TB
-        
-        API["<b>API Gateway</b><br/><span style='font-size:12px'>[Container: Yandex API Gateway]</span><br/><br/><span style='font-size:12px'>Синхронные вызовы</span>"]:::container
-        FuncAPI["<b>Function 'api'</b><br/><span style='font-size:12px'>[Container: Node.js 18]</span><br/><br/><span style='font-size:12px'>Бизнес-логика, вызов LLM</span>"]:::container
-        
-        S3[("<b>Object Storage</b><br/><span style='font-size:12px'>[Container: S3]</span><br/><br/><span style='font-size:12px'>Хранилище аудио и JSON/TXT</span>")]:::database
-        
-        YMQ["<b>Message Queue</b><br/><span style='font-size:12px'>[Container: YMQ]</span><br/><br/><span style='font-size:12px'>Очередь задач</span>"]:::container
-        FuncWorker["<b>Function 'worker'</b><br/><span style='font-size:12px'>[Container: Node.js 18]</span><br/><br/><span style='font-size:12px'>Асинхронная обработка</span>"]:::container
-    end
-    class YC boundary
-
-    SpeechKit["<b>Yandex SpeechKit</b><br/><span style='font-size:12px'>[System]</span><br/><br/><span style='font-size:12px'>Распознавание речи (ASR)</span>"]:::external
-    YandexGPT["<b>YandexGPT</b><br/><span style='font-size:12px'>[System]</span><br/><br/><span style='font-size:12px'>Генерация протокола (LLM)</span>"]:::external
-
-    %% Связи
-    User -- "Управляет проектами<br/>[HTTPS]" --> SPA
-    
-    %% Асинхронный пайплайн
-    SPA -- "1. Прямая загрузка аудио<br/>[S3 API]" --> S3
-    S3 -- "2. Уведомление о файле<br/>[Событие]" --> YMQ
-    YMQ -- "3. Фоновая задача<br/>[Событие]" --> FuncWorker
-    FuncWorker -- "4. Распознавание<br/>[API]" --> SpeechKit
-    FuncWorker -. "5. Сохранение сырого текста<br/>[S3 API]" .-> S3
-    
-    %% Синхронный пайплайн
-    SPA -- "6. Вызов ИИ / Сохранение правок<br/>[HTTPS]" --> API
-    API -- "Проксирование<br/>[HTTPS]" --> FuncAPI
-    FuncAPI -- "7. Сборка выжимок<br/>[API]" --> YandexGPT
-    FuncAPI -. "8. Сохранение JSON результата<br/>[S3 API]" .-> S3
+  Rel(user, spa, "Управляет проектами", "HTTPS")
+  
+  %% Асинхронный пайплайн
+  Rel(spa, s3, "1. Прямая загрузка аудио", "S3 API")
+  Rel(s3, ymq, "2. Уведомление о файле", "Событие")
+  Rel(ymq, func_worker, "3. Фоновая задача", "Событие")
+  Rel(func_worker, speechkit, "4. Распознавание", "API")
+  Rel_Back(func_worker, s3, "5. Сохранение сырого текста", "S3 API")
+  
+  %% Синхронный пайплайн
+  Rel(spa, api, "6. Вызов ИИ / Сохранение правок", "HTTPS")
+  Rel(api, func_api, "Проксирование", "HTTPS")
+  Rel(func_api, yagpt, "7. Сборка выжимок", "API")
+  Rel_Back(func_api, s3, "8. Сохранение JSON результата", "S3 API")
 ```
-
-> 🖼️ **Не отображается схема выше?** [Открыть статичную копию архитектуры (PNG)](./docs/assets/architecture.png)
-
 ### Технический стек
 
 - **Runtime:** Node.js 18 на Yandex Cloud Functions (serverless)
