@@ -13,8 +13,8 @@ paths:
           burst: 5
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4enivc169qlaig985uu
-        service_account_id: ajem1e69rh25r9rm8tq9
+        function_id: ${API_FUNCTION_ID}
+        service_account_id: ${SA_ID}
       responses:
         "200":
           description: OK
@@ -27,8 +27,8 @@ paths:
           burst: 3
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4enivc169qlaig985uu
-        service_account_id: ajem1e69rh25r9rm8tq9
+        function_id: ${API_FUNCTION_ID}
+        service_account_id: ${SA_ID}
       responses:
         "200":
           description: OK
@@ -37,8 +37,8 @@ paths:
     post:
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4enivc169qlaig985uu
-        service_account_id: ajem1e69rh25r9rm8tq9
+        function_id: ${API_FUNCTION_ID}
+        service_account_id: ${SA_ID}
       responses:
         "200":
           description: OK
@@ -47,8 +47,8 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4enivc169qlaig985uu
-        service_account_id: ajem1e69rh25r9rm8tq9
+        function_id: ${API_FUNCTION_ID}
+        service_account_id: ${SA_ID}
       responses:
         "200":
           description: OK
@@ -62,8 +62,8 @@ paths:
           burst: 60
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: d4enivc169qlaig985uu
-        service_account_id: ajem1e69rh25r9rm8tq9
+        function_id: ${API_FUNCTION_ID}
+        service_account_id: ${SA_ID}
       parameters:
         - name: path
           in: path
@@ -76,9 +76,9 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-frontend-st
+        bucket: ${FRONTEND_BUCKET}
         object: index.html
-        service_account_id: ajem1e69rh25r9rm8tq9
+        service_account_id: ${SA_ID}
       responses:
         "200":
           description: OK
@@ -87,9 +87,9 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-frontend-st
+        bucket: ${FRONTEND_BUCKET}
         object: "app/{path}"
-        service_account_id: ajem1e69rh25r9rm8tq9
+        service_account_id: ${SA_ID}
       parameters:
         - name: path
           in: path
@@ -104,9 +104,9 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-frontend-st
+        bucket: ${FRONTEND_BUCKET}
         object: "lib/{path}"
-        service_account_id: ajem1e69rh25r9rm8tq9
+        service_account_id: ${SA_ID}
       parameters:
         - name: path
           in: path

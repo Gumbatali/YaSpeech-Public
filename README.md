@@ -7,7 +7,7 @@ YaSpeech превращает аудиозапись совещания в го�
 дословную расшифровку, по кнопке улучшили её с помощью ИИ, собрали протокол.
 Сделано для строительной компании СТРОЙТЕХЭКСПЕРТ, работает в Яндекс Облаке.
 
-**Прод:** https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
+**Прод (пример):** https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
 
 > 🧭 **Куда смотреть:** [что это и зачем](./docs/КАК-ЭТО-РАБОТАЕТ.md) ·
 > [руководство пользователя](./docs/РУКОВОДСТВО-ПОЛЬЗОВАТЕЛЯ.md) ·
@@ -143,25 +143,50 @@ SESSION_SECRET=dev ADMIN_LOGIN=admin node apps/server/src/dev-server.js
 
 ---
 
-## Деплой в Яндекс Облако
+## Деплой в своё облако
 
-**Основной путь — автоматический:** мерж в `main` → GitHub Actions гоняет тесты
-и деплоит в прод. Можно и вручную: Actions → **Deploy** → Run workflow.
-Настройка секретов и deployer-аккаунта: [CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md).
+Три команды — и сервис работает в вашем Яндекс Облаке.
 
-**Ручной деплой с машины** (секреты в `scripts/.env.deploy`, в `.gitignore`):
+**Требования:** `yc` CLI (авторизованный), `jq`, `gettext` (`envsubst`), `python3` + `boto3`.
+
+```bash
+# 1. Заполни пять полей: FOLDER_ID, BUCKET, FRONTEND_BUCKET, SESSION_SECRET, ADMIN_LOGIN/PASSWORD
+cp scripts/.env.deploy.example scripts/.env.deploy
+$EDITOR scripts/.env.deploy
+
+# 2. Создаёт все ресурсы и дописывает SA_ID / KEY_ID / SECRET / QUEUE_URL в .env.deploy
+bash scripts/deploy.sh bootstrap
+
+# 3. Деплоит код, фронтенд и API Gateway (создаёт его при первом запуске)
+bash scripts/deploy.sh all
+#    → в конце выведет URL шлюза: https://…apigw.yandexcloud.net
+
+# 4. Создаёт администратора с двухфакторной аутентификацией
+node scripts/seed-admin.js
+#    → отсканируй QR в Google Authenticator, сохрани коды восстановления
+```
+
+**Что делает bootstrap автоматически:**
+- Создаёт сервисный аккаунт `yaspeech-sa` и выдаёт ему роли:
+  `storage.editor`, `ymq.admin`, `ai.speechkit-stt.user`, `ai.languageModels.user`, `serverless.functions.invoker`
+- Создаёт статический ключ доступа (записывает `KEY_ID`/`SECRET` в `.env.deploy`)
+- Создаёт оба бакета и очередь YMQ (записывает `QUEUE_URL`)
+- Создаёт заглушки функций `yaspeech-api` и `yaspeech-worker`
+
+Bootstrap идемпотентен — запускай повторно без опаски.
+
+**Обновление кода после изменений:**
 
 ```bash
 bash scripts/deploy.sh all       # обе функции + фронтенд + шлюз
 bash scripts/deploy.sh api       # api-функция + фронтенд + шлюз
-bash scripts/deploy.sh worker    # только worker-функция
+bash scripts/deploy.sh worker    # только worker
 bash scripts/deploy.sh frontend  # только фронтенд
-bash scripts/deploy.sh gateway   # только API Gateway
+bash scripts/deploy.sh gateway   # только шлюз
 ```
 
-`deploy.sh` обходит `apps/server/src/` рекурсивно — новые файлы попадают в zip автоматически,
-без ручного сопровождения списка файлов. Секреты берёт из `.env.deploy` (локально)
-или из переменных окружения (в CI).
+**CI/CD:** мерж в `main` → GitHub Actions деплоит автоматически.
+Настройка: [CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md).
 
 Подробности: [облачное развёртывание](./docs/project-handbook/05-delivery-and-operations/cloud-deployment.md)
 

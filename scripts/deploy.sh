@@ -1,55 +1,201 @@
 #!/bin/bash
 # YaSpeech deploy script
-# Usage: ./scripts/deploy.sh [api|worker|all]
 #
-# Перед запуском скопируй scripts/.env.deploy.example → scripts/.env.deploy
-# и заполни значениями. Файл .env.deploy НЕ коммитится в git.
+# Первый запуск в новом облаке:
+#   1. Заполни scripts/.env.deploy (FOLDER_ID, BUCKET, FRONTEND_BUCKET, SESSION_SECRET, ADMIN_LOGIN, ADMIN_PASSWORD)
+#   2. bash scripts/deploy.sh bootstrap   # создаёт ресурсы, дописывает SA_ID/KEY_ID/SECRET/QUEUE_URL в .env.deploy
+#   3. bash scripts/deploy.sh all         # деплоит функции + фронтенд + шлюз
+#
+# Обычный деплой после изменений кода:
+#   bash scripts/deploy.sh all
+#   bash scripts/deploy.sh api      # api + фронтенд + шлюз
+#   bash scripts/deploy.sh worker   # только worker
+#   bash scripts/deploy.sh gateway  # только шлюз
+#
+# Зависимости: yc CLI, jq, gettext (envsubst), python3 + boto3
 set -e
 
-# Путь к yc CLI можно переопределить через окружение (нужно в CI, где CLI
-# ставится в другое место). По умолчанию — стандартная установка для разработчика.
 YC="${YC:-$HOME/yandex-cloud/bin/yc}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 TARGET="${1:-all}"
 
-# ── Источник секретов: файл .env.deploy ИЛИ переменные окружения ──────────────
-# Локально — читаем из scripts/.env.deploy. В CI (GitHub Actions) файла нет,
-# а переменные уже экспортированы из секретов — тогда просто пропускаем source.
+# ── Имена ресурсов (переопределяемые для разных стендов) ─────────────────────
+# Переопредели через окружение, чтобы два стенда не конфликтовали по именам:
+#   SA_NAME=yaspeech-staging bash scripts/deploy.sh all
+SA_NAME="${SA_NAME:-yaspeech-sa}"
+QUEUE_NAME="${QUEUE_NAME:-yaspeech-queue}"
+FUNCTION_API_NAME="${FUNCTION_API_NAME:-yaspeech-api}"
+FUNCTION_WORKER_NAME="${FUNCTION_WORKER_NAME:-yaspeech-worker}"
+GATEWAY_NAME="${GATEWAY_NAME:-yaspeech-gateway}"
+
+# ── Источник секретов ─────────────────────────────────────────────────────────
 ENV_FILE="$ROOT/scripts/.env.deploy"
 if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck source=/dev/null
-  source "$ENV_FILE"
-elif [[ -z "${KEY_ID:-}" ]]; then
-  echo "❌  Нет ни $ENV_FILE, ни переменных окружения с секретами."
-  echo "    Локально: скопируй scripts/.env.deploy.example → scripts/.env.deploy."
-  echo "    В CI: задай секреты как переменные окружения (см. docs .../ci-cd.md)."
+  # Читаем построчно: безопасно для значений со спецсимволами (&, $, пробелы)
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$line" ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ -n "$key" ]] && export "$key"="$value"
+  done < "$ENV_FILE"
+elif [[ -z "${FOLDER_ID:-}" ]]; then
+  echo "❌  Нет ни $ENV_FILE, ни переменных окружения."
+  echo "    Скопируй scripts/.env.deploy.example → scripts/.env.deploy и заполни."
   exit 1
 fi
 
-# Проверяем что все обязательные переменные заданы
-: "${SA_ID:?Не задана переменная SA_ID в .env.deploy}"
-: "${BUCKET:?Не задана переменная BUCKET в .env.deploy}"
-: "${QUEUE_URL:?Не задана переменная QUEUE_URL в .env.deploy}"
-: "${KEY_ID:?Не задана переменная KEY_ID в .env.deploy}"
-: "${SECRET:?Не задана переменная SECRET в .env.deploy}"
-: "${FOLDER_ID:?Не задана переменная FOLDER_ID в .env.deploy}"
-: "${FRONTEND_BUCKET:?Не задана переменная FRONTEND_BUCKET в .env.deploy}"
-: "${SESSION_SECRET:?Не задана переменная SESSION_SECRET в .env.deploy}"
-: "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
+# ── Запись/обновление строки в .env.deploy ───────────────────────────────────
+update_env_deploy() {
+  local key="$1" value="$2"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "${key}=${value}" > "$ENV_FILE"
+    return
+  fi
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    # BSD sed (macOS) и GNU sed — оба поддерживают -i '' (BSD) или -i (GNU)
+    if sed --version 2>/dev/null | grep -q GNU; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+      sed -i '' "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    fi
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+  fi
+}
+
+# ── Bootstrap: создать облачные ресурсы «если ещё нет» ───────────────────────
+do_bootstrap() {
+  : "${FOLDER_ID:?Заполни FOLDER_ID в $ENV_FILE}"
+
+  # Проверяем зависимости
+  for dep in jq envsubst; do
+    command -v "$dep" >/dev/null 2>&1 || {
+      echo "❌  Не найдена утилита '$dep'."
+      echo "    macOS:  brew install jq gettext && brew link --force gettext"
+      echo "    Debian: apt-get install jq gettext-base"
+      exit 1
+    }
+  done
+
+  echo "🔧 Bootstrap в каталоге $FOLDER_ID…"
+
+  # 1. Сервисный аккаунт
+  echo ""
+  echo "── 1/5  Сервисный аккаунт ──────────────────────────────────────────────"
+  if $YC iam service-account get --name "$SA_NAME" --folder-id "$FOLDER_ID" \
+       >/dev/null 2>&1; then
+    echo "   ✓ SA '$SA_NAME' уже существует"
+  else
+    $YC iam service-account create --name "$SA_NAME" --folder-id "$FOLDER_ID" \
+      >/dev/null
+    echo "   ✓ SA '$SA_NAME' создан"
+  fi
+  SA_ID=$($YC iam service-account get --name "$SA_NAME" \
+           --folder-id "$FOLDER_ID" --format json | jq -r '.id')
+  update_env_deploy "SA_ID" "$SA_ID"
+  echo "   SA_ID=$SA_ID"
+
+  # 2. Роли сервисного аккаунта
+  echo ""
+  echo "── 2/5  Роли SA ────────────────────────────────────────────────────────"
+  local roles=(
+    storage.editor          # Object Storage: читать/писать артефакты и фронтенд
+    ymq.admin               # YMQ: создавать очередь, писать/читать сообщения
+    ai.speechkit-stt.user   # SpeechKit STT
+    ai.languageModels.user  # YandexGPT
+    serverless.functions.invoker  # API Gateway → вызов функции
+  )
+  for role in "${roles[@]}"; do
+    $YC resource-manager folder add-access-binding \
+      --folder-id "$FOLDER_ID" \
+      --role "$role" \
+      --service-account-id "$SA_ID" \
+      >/dev/null 2>&1 || true
+    echo "   ✓ $role"
+  done
+
+  # 3. Статический ключ доступа (KEY_ID/SECRET)
+  echo ""
+  echo "── 3/5  Статический ключ (S3 + YMQ) ───────────────────────────────────"
+  if [[ -n "${KEY_ID:-}" ]]; then
+    echo "   ✓ KEY_ID уже задан ($KEY_ID), пропускаю создание"
+  else
+    KEY_JSON=$($YC iam access-key create \
+      --service-account-id "$SA_ID" \
+      --folder-id "$FOLDER_ID" \
+      --format json)
+    KEY_ID=$(echo "$KEY_JSON" | jq -r '.access_key.key_id')
+    SECRET=$(echo "$KEY_JSON" | jq -r '.secret')
+    update_env_deploy "KEY_ID" "$KEY_ID"
+    update_env_deploy "SECRET" "$SECRET"
+    echo "   ✓ KEY_ID=$KEY_ID"
+    echo "   ⚠️  SECRET записан в $ENV_FILE — больше не показывается"
+  fi
+
+  # 4. Бакеты
+  echo ""
+  echo "── 4/5  Object Storage бакеты ──────────────────────────────────────────"
+  : "${BUCKET:?Заполни BUCKET в $ENV_FILE}"
+  : "${FRONTEND_BUCKET:?Заполни FRONTEND_BUCKET в $ENV_FILE}"
+  for bucket_name in "$BUCKET" "$FRONTEND_BUCKET"; do
+    if $YC storage bucket get --name "$bucket_name" \
+         --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+      echo "   ✓ бакет '$bucket_name' уже существует"
+    else
+      $YC storage bucket create --name "$bucket_name" \
+        --folder-id "$FOLDER_ID" >/dev/null
+      echo "   ✓ бакет '$bucket_name' создан"
+    fi
+  done
+
+  # 5. YMQ очередь
+  echo ""
+  echo "── 5/5  YMQ очередь ────────────────────────────────────────────────────"
+  if $YC message-queue queue get --name "$QUEUE_NAME" \
+       --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+    echo "   ✓ очередь '$QUEUE_NAME' уже существует"
+  else
+    $YC message-queue queue create \
+      --name "$QUEUE_NAME" \
+      --folder-id "$FOLDER_ID" \
+      --visibility-timeout 60 \
+      --message-retention-period 3600 \
+      >/dev/null
+    echo "   ✓ очередь '$QUEUE_NAME' создана"
+  fi
+  QUEUE_URL=$($YC message-queue queue get --name "$QUEUE_NAME" \
+    --folder-id "$FOLDER_ID" --format json | jq -r '.url')
+  update_env_deploy "QUEUE_URL" "$QUEUE_URL"
+  echo "   QUEUE_URL=$QUEUE_URL"
+
+  # 6. Заглушки-функции (контейнеры без кода — код загрузит deploy)
+  echo ""
+  echo "── Функции (контейнеры) ────────────────────────────────────────────────"
+  for fn_name in "$FUNCTION_API_NAME" "$FUNCTION_WORKER_NAME"; do
+    if $YC serverless function get --name "$fn_name" \
+         --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+      echo "   ✓ функция '$fn_name' уже существует"
+    else
+      $YC serverless function create --name "$fn_name" \
+        --folder-id "$FOLDER_ID" >/dev/null
+      echo "   ✓ функция '$fn_name' создана"
+    fi
+  done
+
+  echo ""
+  echo "✅ Bootstrap завершён. .env.deploy дополнен значениями SA_ID/KEY_ID/SECRET/QUEUE_URL."
+  echo ""
+  echo "   Следующий шаг: bash scripts/deploy.sh all"
+}
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
-# git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
-# (которые кэшируют ассеты как immutable) гарантированно тянут свежий URL.
 GIT_SHORT=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
 VERSION="${GIT_SHORT}-$(date +%s)"
-echo "📌 Версия: $VERSION"
 
 # ── Сборка zip-архивов ────────────────────────────────────────────────────────
-# Берём apps/server/src рекурсивно: новые модули (routes/* и т.п.) попадают
-# в архив автоматически — раньше захардкоженный список файлов был источником
-# ошибки «локально работает, в облаке падает на import».
 build_api() {
   echo "📦 Building api.zip..."
   rm -f /tmp/api.zip
@@ -65,10 +211,24 @@ build_worker() {
   echo "   $(du -sh /tmp/worker.zip | cut -f1)"
 }
 
+# ── Проверка переменных для деплоя ───────────────────────────────────────────
+check_deploy_vars() {
+  : "${SA_ID:?Не задана SA_ID — запусти сначала: deploy.sh bootstrap}"
+  : "${BUCKET:?Не задана BUCKET в $ENV_FILE}"
+  : "${QUEUE_URL:?Не задана QUEUE_URL — запусти сначала: deploy.sh bootstrap}"
+  : "${KEY_ID:?Не задана KEY_ID — запусти сначала: deploy.sh bootstrap}"
+  : "${SECRET:?Не задана SECRET — запусти сначала: deploy.sh bootstrap}"
+  : "${FOLDER_ID:?Не задана FOLDER_ID в $ENV_FILE}"
+  : "${FRONTEND_BUCKET:?Не задана FRONTEND_BUCKET в $ENV_FILE}"
+  : "${SESSION_SECRET:?Не задана SESSION_SECRET в $ENV_FILE}"
+  : "${ADMIN_LOGIN:?Не задана ADMIN_LOGIN в $ENV_FILE}"
+  echo "📌 Версия: $VERSION"
+}
+
 deploy_api() {
-  echo "🚀 Deploying yaspeech-api..."
+  echo "🚀 Deploying $FUNCTION_API_NAME..."
   $YC serverless function version create \
-    --function-name yaspeech-api \
+    --function-name "$FUNCTION_API_NAME" \
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/api-handler.index" \
     --memory 256m \
@@ -87,9 +247,9 @@ deploy_api() {
 }
 
 deploy_worker() {
-  echo "🚀 Deploying yaspeech-worker..."
+  echo "🚀 Deploying $FUNCTION_WORKER_NAME..."
   $YC serverless function version create \
-    --function-name yaspeech-worker \
+    --function-name "$FUNCTION_WORKER_NAME" \
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
@@ -127,11 +287,6 @@ CONTENT_TYPES = {
 }
 
 def read_with_version(path):
-    """Подставляет VERSION вместо __BUILD__ в текстовых ассетах.
-
-    Это критично для ES-module импортов внутри app/*.js: без версии в URL
-    браузеры держали бы импортируемые модули в immutable-кэше навсегда.
-    """
     ext = os.path.splitext(path)[1]
     with open(path, "rb") as f:
         body = f.read()
@@ -139,7 +294,6 @@ def read_with_version(path):
         body = body.replace(b"__BUILD__", version.encode())
     return body
 
-# index.html — всегда свежий (no-cache), точка входа для cache-busting
 s3.put_object(
     Bucket=bucket, Key="index.html",
     Body=read_with_version("apps/web/index.html"),
@@ -148,8 +302,6 @@ s3.put_object(
 )
 print("   ✓ index.html")
 
-# Все ассеты app/ и lib/ — обходим директории целиком, чтобы новые
-# модули нельзя было забыть добавить в список вручную.
 for root_dir, key_prefix in (("apps/web/app", "app"), ("apps/web/lib", "lib")):
     for dirpath, _dirs, files in os.walk(root_dir):
         for name in sorted(files):
@@ -170,35 +322,76 @@ PYEOF
 }
 
 update_gateway() {
-  local SPEC="$ROOT/infra/api-gateway.yaml"
-  if [[ -f "$SPEC" ]]; then
-    echo "🌐 Updating API Gateway..."
-    $YC serverless api-gateway update --name yaspeech-gateway --spec "$SPEC" \
+  local TPL="$ROOT/infra/api-gateway.yaml.tpl"
+  if [[ ! -f "$TPL" ]]; then
+    echo "   ⚠️  infra/api-gateway.yaml.tpl not found, skipping gateway update"
+    return
+  fi
+
+  # Проверяем зависимости
+  command -v jq >/dev/null 2>&1 || { echo "❌  jq не найден. brew install jq / apt-get install jq"; exit 1; }
+  command -v envsubst >/dev/null 2>&1 || { echo "❌  envsubst не найден. brew install gettext && brew link --force gettext / apt-get install gettext-base"; exit 1; }
+
+  echo "🌐 Rendering & updating API Gateway ($GATEWAY_NAME)..."
+
+  # Резолвим ID функции динамически — его нет до деплоя
+  export API_FUNCTION_ID
+  API_FUNCTION_ID=$($YC serverless function get --name "$FUNCTION_API_NAME" \
+    --folder-id "$FOLDER_ID" --format json | jq -r '.id')
+
+  export SA_ID FRONTEND_BUCKET
+  envsubst '${API_FUNCTION_ID} ${SA_ID} ${FRONTEND_BUCKET}' \
+    < "$TPL" > /tmp/api-gateway.yaml
+
+  if $YC serverless api-gateway get --name "$GATEWAY_NAME" \
+       --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+    $YC serverless api-gateway update \
+      --name "$GATEWAY_NAME" \
+      --folder-id "$FOLDER_ID" \
+      --spec /tmp/api-gateway.yaml \
       2>&1 | grep -E "^\.\.\.done|^id:" | head -3
     echo "   ✓ gateway updated"
   else
-    echo "   ⚠️  infra/api-gateway.yaml not found, skipping gateway update"
+    $YC serverless api-gateway create \
+      --name "$GATEWAY_NAME" \
+      --folder-id "$FOLDER_ID" \
+      --spec /tmp/api-gateway.yaml \
+      2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    echo "   ✓ gateway created"
+    GW_URL=$($YC serverless api-gateway get --name "$GATEWAY_NAME" \
+      --folder-id "$FOLDER_ID" --format json | jq -r '.domain')
+    echo ""
+    echo "   🌍 URL шлюза: https://${GW_URL}"
   fi
 }
 
+# ── Команды ───────────────────────────────────────────────────────────────────
 case "$TARGET" in
+  bootstrap)
+    do_bootstrap
+    ;;
   api)
+    check_deploy_vars
     build_api
     deploy_api
     upload_frontend
     update_gateway
     ;;
   worker)
+    check_deploy_vars
     build_worker
     deploy_worker
     ;;
   gateway)
+    check_deploy_vars
     update_gateway
     ;;
   frontend|web)
+    check_deploy_vars
     upload_frontend
     ;;
   all|*)
+    check_deploy_vars
     build_api
     deploy_api
     build_worker
@@ -208,5 +401,4 @@ case "$TARGET" in
     ;;
 esac
 
-echo ""
-echo "✅ Deploy complete! (v=$VERSION)"
+[[ "$TARGET" != "bootstrap" ]] && echo "" && echo "✅ Deploy complete! (v=$VERSION)"
