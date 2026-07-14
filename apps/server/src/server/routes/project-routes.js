@@ -3,6 +3,10 @@
  */
 import { notFound, sendJson } from "../../shared/http.js";
 import { optionalString, requireArray, requireString } from "../../shared/validate.js";
+import {
+  isUploadStalled,
+  markUploadStalled
+} from "../../../../../packages/core/src/domain/meeting.js";
 
 export function registerProjectRoutes(router, deps) {
   const { projectRepository, meetingRepository, clock, useCases, readBody } = deps;
@@ -46,9 +50,26 @@ export function registerProjectRoutes(router, deps) {
   });
 
   router.add("GET", "/api/projects/:id/meetings", async ({ response, params }) => {
-    sendJson(response, 200, {
-      meetings: await meetingRepository.listByProject(params.id)
-    });
+    const meetings = await meetingRepository.listByProject(params.id);
+
+    // Брошенные загрузки лечим прямо на чтении списка: иначе встреча вечно
+    // висит «Загружаем файл…», хотя браузер давно перестал слать heartbeat.
+    const healed = await Promise.all(
+      meetings.map(async (entry) => {
+        if (!isUploadStalled(entry, clock.now().toISOString())) {
+          return entry;
+        }
+        const full = await meetingRepository.getById(entry.id);
+        if (!full || !isUploadStalled(full, clock.now().toISOString())) {
+          return entry;
+        }
+        const stalled = markUploadStalled(full, clock.now().toISOString());
+        await meetingRepository.save(stalled);
+        return { ...entry, status: stalled.status, updatedAt: stalled.updatedAt };
+      })
+    );
+
+    sendJson(response, 200, { meetings: healed });
   });
 
   router.add("PATCH", "/api/projects/:id", async ({ request, response, params }) => {

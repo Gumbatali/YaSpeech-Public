@@ -33,11 +33,13 @@ export async function createRuntimeServer({
   // По умолчанию auth выключен (sessionSecret = null) — поведение как раньше.
   // Передайте sessionSecret/adminLogin, чтобы включить полную auth-цепочку локально.
   sessionSecret = null,
-  adminLogin = null
+  adminLogin = null,
+  // Подменяемые часы для тестов (staleness-логика загрузки зависит от времени)
+  clock: providedClock = null
 }) {
   const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
   const webRootDirectory = path.resolve(currentDirectory, "../../../web");
-  const clock = new RuntimeClock();
+  const clock = providedClock ?? new RuntimeClock();
   const idGenerator = new RuntimeIdGenerator();
   const projectRepository = new FileSystemProjectRepository(dataDir);
   const meetingRepository = new FileSystemMeetingRepository(dataDir);

@@ -5,6 +5,12 @@ import {
   checkTranscriptionQuota,
   incrementTranscriptionUsed
 } from "../../../../../packages/core/src/domain/user.js";
+import {
+  isUploadStalled,
+  markUploadStalled,
+  reopenMeetingUpload,
+  touchUploadHeartbeat
+} from "../../../../../packages/core/src/domain/meeting.js";
 import { badRequest, notFound, sendJson, sendText } from "../../shared/http.js";
 import {
   optionalIsoDate,
@@ -106,13 +112,65 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting });
   });
 
+  // Загрузка живёт в браузере — сервер узнаёт о её смерти только по отсутствию
+  // heartbeat'ов. Лечим на чтении: зависшая uploading-встреча становится failed.
+  async function healIfUploadStalled(meeting) {
+    if (!isUploadStalled(meeting, clock.now().toISOString())) {
+      return meeting;
+    }
+    const stalled = markUploadStalled(meeting, clock.now().toISOString());
+    await meetingRepository.save(stalled);
+    return stalled;
+  }
+
   router.add("GET", "/api/meetings/:id", async ({ response, params }) => {
     const meeting = await meetingRepository.getById(params.id);
     if (!meeting) {
       notFound(response);
       return;
     }
-    sendJson(response, 200, { meeting });
+    sendJson(response, 200, { meeting: await healIfUploadStalled(meeting) });
+  });
+
+  // POST /api/meetings/:id/upload-heartbeat — браузер пингует во время загрузки
+  // файла, чтобы сервер отличал живую медленную загрузку от брошенной.
+  router.add("POST", "/api/meetings/:id/upload-heartbeat", async ({ request, response, params }) => {
+    const meeting = await meetingRepository.getById(params.id);
+    if (!meeting) {
+      notFound(response);
+      return;
+    }
+    if (meeting.status !== "uploading") {
+      sendJson(response, 409, { error: "Встреча не в состоянии загрузки.", meeting });
+      return;
+    }
+
+    const payload = await readBody(request);
+    const touched = touchUploadHeartbeat(meeting, payload.progressPct, clock.now().toISOString());
+    await meetingRepository.save(touched);
+    sendJson(response, 200, { meeting: touched });
+  });
+
+  // POST /api/meetings/:id/reupload — новый upload-URL для повторной загрузки
+  // после обрыва (UPLOAD_STALLED), без пересоздания встречи.
+  router.add("POST", "/api/meetings/:id/reupload", async ({ response, params }) => {
+    const meeting = await meetingRepository.getById(params.id);
+    if (!meeting) {
+      notFound(response);
+      return;
+    }
+
+    const isStalledFailure = meeting.status === "failed" && meeting.error?.code === "UPLOAD_STALLED";
+    if (meeting.status !== "uploading" && !isStalledFailure) {
+      badRequest(response, "Повторная загрузка доступна только для прерванной загрузки.");
+      return;
+    }
+
+    const reopened = reopenMeetingUpload(meeting, clock.now().toISOString());
+    const upload = await artifactStorage.issueMeetingUpload(reopened);
+    const saved = { ...reopened, upload };
+    await meetingRepository.save(saved);
+    sendJson(response, 200, { meeting: saved, upload });
   });
 
   router.add("POST", "/api/meetings/:id/retry", async ({ response, params }) => {

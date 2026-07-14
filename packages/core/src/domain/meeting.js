@@ -86,6 +86,65 @@ export function incrementAsrPoll(meeting, updatedAt) {
   };
 }
 
+// Загрузка идёт браузер → Object Storage напрямую, сервер видит её только по
+// heartbeat'ам. Нет heartbeat дольше таймаута — считаем загрузку брошенной.
+export const UPLOAD_STALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function touchUploadHeartbeat(meeting, progressPct, updatedAt) {
+  if (meeting.status !== "uploading") {
+    return meeting;
+  }
+
+  const pct = Math.max(0, Math.min(100, Math.round(Number(progressPct) || 0)));
+  return {
+    ...meeting,
+    uploadProgress: pct,
+    updatedAt
+  };
+}
+
+export function isUploadStalled(meeting, nowIso, timeoutMs = UPLOAD_STALL_TIMEOUT_MS) {
+  if (meeting?.status !== "uploading") {
+    return false;
+  }
+
+  const lastActivity = Date.parse(meeting.updatedAt ?? meeting.createdAt ?? "");
+  if (!Number.isFinite(lastActivity)) {
+    return false;
+  }
+
+  return Date.parse(nowIso) - lastActivity > timeoutMs;
+}
+
+export function markUploadStalled(meeting, updatedAt) {
+  if (meeting.status !== "uploading") {
+    return meeting;
+  }
+
+  return {
+    ...meeting,
+    status: "failed",
+    updatedAt,
+    error: {
+      code: "UPLOAD_STALLED",
+      message:
+        "Загрузка записи прервалась — файл не был передан до конца. " +
+        "Обычно это закрытая вкладка или обрыв сети. Загрузите файл заново."
+    }
+  };
+}
+
+export function reopenMeetingUpload(meeting, updatedAt) {
+  return {
+    ...meeting,
+    status: "uploading",
+    currentStage: "uploading",
+    uploadProgress: 0,
+    error: undefined,
+    updatedAt
+  };
+}
+
 export function markMeetingUploaded(meeting, sizeBytes, updatedAt, durationSeconds) {
   if (meeting.status !== "uploading" && meeting.status !== "draft_ready") {
     return {

@@ -132,6 +132,20 @@ export class ApiClient {
     });
   }
 
+  uploadHeartbeat(meetingId, progressPct) {
+    return this.json(`/api/meetings/${meetingId}/upload-heartbeat`, {
+      method: "POST",
+      body: JSON.stringify({ progressPct })
+    });
+  }
+
+  reissueUpload(meetingId) {
+    return this.json(`/api/meetings/${meetingId}/reupload`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
   confirmDraft(meetingId, payload) {
     return this.json(`/api/meetings/${meetingId}/confirm-draft`, {
       method: "POST",

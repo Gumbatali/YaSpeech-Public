@@ -95,10 +95,13 @@ export function getStageViewModel(meeting) {
   }
 
   if (meeting.status === "uploading") {
+    const pct = typeof meeting.uploadProgress === "number" ? ` — ${meeting.uploadProgress}%` : "";
     return {
       tone: "working",
-      title: "Загружаем файл…",
-      detail: "Отправляем запись на сервер, это займёт несколько секунд."
+      title: `Загружаем файл…${pct}`,
+      detail:
+        "Файл отправляется с компьютера, где начали загрузку — не закрывайте " +
+        "там вкладку до конца. Большие записи могут загружаться несколько минут."
     };
   }
 

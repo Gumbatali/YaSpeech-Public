@@ -182,7 +182,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       );
       if (
         !activeMeeting ||
-        (!["uploaded", "speechkit_processing", "protocol_generating"].includes(
+        (!["uploading", "uploaded", "speechkit_processing", "protocol_generating"].includes(
           activeMeeting.status
         ) && !refineActive)
       ) {
@@ -577,7 +577,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
         const file = meetingForm.file;
         const durationSeconds = meetingForm.durationSeconds ?? await getAudioDuration(file);
         setUploadProgress(0);
-        await api.uploadFile(payload.upload, file, (pct) => setUploadProgress(pct));
+        await uploadFileWithHeartbeat(payload.meeting.id, payload.upload, file);
         const uploaded = await api.completeUpload(
           payload.meeting.id,
           file.size,
@@ -588,6 +588,51 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
         setActiveMeeting(uploaded.meeting);
         showNotice("Запись загружена.");
         setMeetingForm(createMeetingForm());
+        await refreshMeetings(selectedProjectId);
+      } catch (caughtError) {
+        setError(caughtError.message);
+      } finally {
+        setSubmittingMeeting(false);
+      }
+    }
+
+    // Пока браузер льёт файл в Object Storage, сервер об этом ничего не знает.
+    // Heartbeat раз в 45 сек говорит серверу «загрузка жива» и передаёт процент —
+    // без него зависшая загрузка неотличима от медленной.
+    const UPLOAD_HEARTBEAT_INTERVAL_MS = 45 * 1000;
+
+    async function uploadFileWithHeartbeat(meetingId, upload, file) {
+      let lastHeartbeatAt = 0;
+      await api.uploadFile(upload, file, (pct) => {
+        setUploadProgress(pct);
+        const now = Date.now();
+        if (now - lastHeartbeatAt >= UPLOAD_HEARTBEAT_INTERVAL_MS) {
+          lastHeartbeatAt = now;
+          api.uploadHeartbeat(meetingId, pct).catch(() => {
+            // Heartbeat — best effort: его сбой не должен ронять загрузку
+          });
+        }
+      });
+    }
+
+    // Повторная заливка файла после обрыва (UPLOAD_STALLED) — встреча та же,
+    // сервер выдаёт свежий upload-URL.
+    async function reuploadMeetingFile(file) {
+      if (!activeMeeting || !file) {
+        return;
+      }
+      try {
+        setSubmittingMeeting(true);
+        setError("");
+        const payload = await api.reissueUpload(activeMeeting.id);
+        setActiveMeeting(payload.meeting);
+        const durationSeconds = await getAudioDuration(file);
+        setUploadProgress(0);
+        await uploadFileWithHeartbeat(payload.meeting.id, payload.upload, file);
+        const uploaded = await api.completeUpload(payload.meeting.id, file.size, durationSeconds);
+        setUploadProgress(0);
+        setActiveMeeting(uploaded.meeting);
+        showNotice("Запись загружена.");
         await refreshMeetings(selectedProjectId);
       } catch (caughtError) {
         setError(caughtError.message);
@@ -1105,7 +1150,36 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
               </div>
             </div>
 
-            ${activeMeeting?.status === "failed"
+            ${activeMeeting?.status === "failed" && activeMeeting?.error?.code === "UPLOAD_STALLED"
+              ? html`
+                  <div className="poor-transcript-block">
+                    <div className="poor-transcript-icon">📡</div>
+                    <div className="poor-transcript-title">Загрузка прервалась</div>
+                    <div className="poor-transcript-body">
+                      ${activeMeeting.error.message}
+                    </div>
+                    <div className="button-row">
+                      <label className="primary-button" style=${{ cursor: "pointer" }}>
+                        Загрузить файл заново
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          style=${{ display: "none" }}
+                          disabled=${submittingMeeting}
+                          onChange=${(event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = "";
+                            if (file) void reuploadMeetingFile(file);
+                          }}
+                        />
+                      </label>
+                      <button className="ghost-button" onClick=${openProjectHome}>К проекту</button>
+                    </div>
+                  </div>
+                `
+              : null}
+
+            ${activeMeeting?.status === "failed" && activeMeeting?.error?.code !== "UPLOAD_STALLED"
               ? activeMeeting?.error?.code === "POOR_TRANSCRIPT"
                 ? html`
                     <div className="poor-transcript-block">
