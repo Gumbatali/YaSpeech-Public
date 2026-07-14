@@ -3,7 +3,7 @@
 ## Продакшн-URL
 
 ```
-https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
+https://d5d9e2us9lmdm12sgsec.tmjd4m4j.apigw.yandexcloud.net
 ```
 
 > **Основной путь — автоматический.** Мерж в `main` запускает деплой через

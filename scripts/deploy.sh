@@ -109,11 +109,13 @@ do_bootstrap() {
     serverless.functions.invoker  # API Gateway → вызов функции
   )
   for role in "${roles[@]}"; do
+    # NB: этот yc принимает --id для указания папки в add-access-binding,
+    # НЕ --folder-id (тот молча игнорируется, а `|| true` глушит ошибку).
     $YC resource-manager folder add-access-binding \
-      --folder-id "$FOLDER_ID" \
+      --id "$FOLDER_ID" \
       --role "$role" \
       --service-account-id "$SA_ID" \
-      >/dev/null 2>&1 || true
+      >/dev/null
     echo "   ✓ $role"
   done
 
@@ -152,22 +154,27 @@ do_bootstrap() {
   done
 
   # 5. YMQ очередь
+  # У yc CLI нет команды управления YMQ (`message-queue`/`ymq` отсутствуют
+  # как минимум в 1.11–1.16) — очередь создаётся через SQS-совместимый API.
   echo ""
   echo "── 5/5  YMQ очередь ────────────────────────────────────────────────────"
-  if $YC message-queue queue get --name "$QUEUE_NAME" \
-       --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
-    echo "   ✓ очередь '$QUEUE_NAME' уже существует"
-  else
-    $YC message-queue queue create \
-      --name "$QUEUE_NAME" \
-      --folder-id "$FOLDER_ID" \
-      --visibility-timeout 60 \
-      --message-retention-period 3600 \
-      >/dev/null
-    echo "   ✓ очередь '$QUEUE_NAME' создана"
-  fi
-  QUEUE_URL=$($YC message-queue queue get --name "$QUEUE_NAME" \
-    --folder-id "$FOLDER_ID" --format json | jq -r '.url')
+  command -v python3 >/dev/null 2>&1 || { echo "❌  Нужен python3+boto3."; exit 1; }
+  QUEUE_URL=$(python3 - "$KEY_ID" "$SECRET" "$QUEUE_NAME" <<'PYEOF'
+import sys, boto3, botocore
+key_id, secret, queue_name = sys.argv[1], sys.argv[2], sys.argv[3]
+sqs = boto3.Session(
+    aws_access_key_id=key_id, aws_secret_access_key=secret, region_name="ru-central1"
+).client("sqs", endpoint_url="https://message-queue.api.cloud.yandex.net")
+try:
+    url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
+except botocore.exceptions.ClientError:
+    url = sqs.create_queue(
+        QueueName=queue_name,
+        Attributes={"VisibilityTimeout": "60", "MessageRetentionPeriod": "3600"},
+    )["QueueUrl"]
+print(url)
+PYEOF
+)
   update_env_deploy "QUEUE_URL" "$QUEUE_URL"
   echo "   QUEUE_URL=$QUEUE_URL"
 
@@ -227,7 +234,11 @@ check_deploy_vars() {
 
 deploy_api() {
   echo "🚀 Deploying $FUNCTION_API_NAME..."
+  # --folder-id обязателен: без него yc резолвит имя функции в дефолтной
+  # папке активного профиля, а не в $FOLDER_ID из .env.deploy — если там
+  # тоже есть функция с таким именем (другой стенд/прод), задеплоится не туда.
   $YC serverless function version create \
+    --folder-id "$FOLDER_ID" \
     --function-name "$FUNCTION_API_NAME" \
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/api-handler.index" \
@@ -242,13 +253,15 @@ deploy_api() {
     --environment "SESSION_SECRET=$SESSION_SECRET" \
     --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
     --service-account-id "$SA_ID" \
-    2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    > /tmp/deploy-api.out 2>&1 || { cat /tmp/deploy-api.out; exit 1; }
+  grep -E "^\.\.\.done|^id:" /tmp/deploy-api.out | head -3
   echo "   ✓ api deployed"
 }
 
 deploy_worker() {
   echo "🚀 Deploying $FUNCTION_WORKER_NAME..."
   $YC serverless function version create \
+    --folder-id "$FOLDER_ID" \
     --function-name "$FUNCTION_WORKER_NAME" \
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
@@ -261,7 +274,8 @@ deploy_worker() {
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
     --service-account-id "$SA_ID" \
-    2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    > /tmp/deploy-worker.out 2>&1 || { cat /tmp/deploy-worker.out; exit 1; }
+  grep -E "^\.\.\.done|^id:" /tmp/deploy-worker.out | head -3
   echo "   ✓ worker deployed"
 }
 
