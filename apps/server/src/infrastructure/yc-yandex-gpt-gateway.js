@@ -29,6 +29,16 @@ import { logger } from "../shared/logger.js";
 
 const MAX_TRANSCRIPT_CHARS = 22_000;
 
+// Размер чанка для диаризации по составу проекта (A1b). Меньше, чем у REFINE
+// (CHUNK_CHARS=8000 в refiner.js) — здесь модель делает более сложную задачу
+// (разбить на реплики + приписать спикеров с нуля, без готовой построчной
+// структуры), поэтому меньший объём на вход снижает риск "экономии" на
+// детализации разметки.
+const DIARIZE_CHUNK_CHARS = 4_000;
+// Сколько последних реплик передаём как контекст в следующий чанк — чтобы
+// модель продолжала нумерацию Спикер 1/2 согласованно, а не с нуля.
+const DIARIZE_CONTEXT_SEGMENTS = 3;
+
 // Полный промах (ни одной строки "[N] текст" в ответе) чаще всего значит не
 // "модель ошиблась форматом", а отказ модерации ("не могу обсуждать эту
 // тему") — parseRefinedLines такой ответ тоже помечает как missingIds=все,
@@ -128,10 +138,6 @@ export class YcYandexGptGateway {
       return transcript;
     }
 
-    logger.info("GPT A1b: diarization by project team", {
-      chars: rawText.length, domain, participants: participants.length
-    });
-
     // Убираем метки спикеров SpeechKit И склеиваем текст в один сплошной
     // поток без переносов строк. Просто убрать префиксы "Спикер N:" мало:
     // rawText собран из phrases построчно (см. postprocessTranscript), и эти
@@ -150,15 +156,73 @@ export class YcYandexGptGateway {
       .replace(/\s+/g, " ")
       .trim();
 
-    const { system, user, options } = promptDiarizationByTeam({
-      transcriptText: cleanText.slice(0, 20_000),
-      domain,
-      participants
+    // Чанкуем ПО СЛОВАМ (не построчно — построчная структура уже ошибочна,
+    // см. выше). Один вызов на весь длинный текст сразу даёт грубое обобщение
+    // (модель на глаз "экономит" и сливает разговор в несколько огромных
+    // реплик вместо построчной разметки) — обнаружено на реальной 19-минутной
+    // записи: без чанкинга 19000 символов дали всего 6 реплик на весь разговор.
+    const chunks = this._chunkTextForDiarization(cleanText, DIARIZE_CHUNK_CHARS);
+    logger.info("GPT A1b: diarization by project team", {
+      chars: rawText.length, domain, participants: participants.length, chunks: chunks.length
     });
 
-    const raw = await this.client.complete(system, user, options);
-    const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1b");
-    return this._segmentsToTranscript(result.segments, transcript, "A1b");
+    const allSegments = [];
+    let contextTail = null;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const { system, user, options } = promptDiarizationByTeam({
+        transcriptText: chunks[i],
+        domain,
+        participants,
+        contextTail
+      });
+
+      const raw = await this.client.complete(system, user, options);
+      const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1b");
+      const segments = Array.isArray(result.segments) ? result.segments : [];
+
+      if (segments.length === 0) {
+        logger.warn("GPT A1b: chunk returned no segments, skipping chunk", { chunk: i });
+        continue;
+      }
+
+      allSegments.push(...segments);
+      // Хвост для согласования нумерации спикеров в следующем чанке
+      contextTail = segments.slice(-DIARIZE_CONTEXT_SEGMENTS)
+        .map((s) => `${s.speaker}: ${s.text}`)
+        .join("\n");
+    }
+
+    if (allSegments.length === 0) {
+      logger.warn("GPT A1b: no segments across all chunks, keeping original");
+      return transcript;
+    }
+
+    return this._segmentsToTranscript(allSegments, transcript, "A1b");
+  }
+
+  /**
+   * Режет сплошной текст на чанки ≤ maxChars по границам слов (не разрывая
+   * слово пополам). Используется диаризацией — line-ID протокол здесь не
+   * подходит, потому что на входе ещё нет надёжной построчной структуры.
+   */
+  _chunkTextForDiarization(text, maxChars) {
+    const words = text.split(" ");
+    const chunks = [];
+    let current = [];
+    let currentChars = 0;
+
+    for (const word of words) {
+      if (currentChars + word.length + 1 > maxChars && current.length > 0) {
+        chunks.push(current.join(" "));
+        current = [];
+        currentChars = 0;
+      }
+      current.push(word);
+      currentChars += word.length + 1;
+    }
+    if (current.length > 0) chunks.push(current.join(" "));
+    return chunks;
   }
 
   /**
