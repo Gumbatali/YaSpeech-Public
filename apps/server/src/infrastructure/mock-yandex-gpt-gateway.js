@@ -3,7 +3,7 @@ export class MockYandexGptGateway {
     this.remainingFailures = failAttempts;
   }
 
-  // ── Методы refine-флоу (кнопка «Улучшить с помощью ИИ») ──────────────
+  // ── Методы refine-флоу (кнопка «Разметить аудио с ИИ») ──────────────
 
   async analyzeContext({ projectName }) {
     return {
@@ -18,6 +18,12 @@ export class MockYandexGptGateway {
 
   async diarizeTranscript(transcript) {
     // Mock: диаризацию не выполняем — возвращаем как есть
+    return transcript;
+  }
+
+  async diarizeByProjectTeam(transcript) {
+    // Mock: диаризацию по составу проекта не выполняем — возвращаем как есть
+    // (SpeechKit-мок уже расставляет speaker-1/2/3 в тестовых данных)
     return transcript;
   }
 

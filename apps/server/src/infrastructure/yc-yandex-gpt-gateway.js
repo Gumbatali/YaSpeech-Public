@@ -13,6 +13,7 @@
 import { YandexGptClient } from "./llm/yandex-gpt-client.js";
 import {
   promptDiarization,
+  promptDiarizationByTeam,
   promptGlossary,
   promptContextAnalysis,
   promptSpeakerIdentification,
@@ -65,7 +66,7 @@ export class YcYandexGptGateway {
   }
 
   // ============================================================
-  // STAGE A1: GPT Diarization (mono transcripts only)
+  // STAGE A1: GPT Diarization
   // ============================================================
 
   /**
@@ -105,10 +106,57 @@ export class YcYandexGptGateway {
 
     const raw = await this.client.complete(system, user, options);
     const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1");
+    return this._segmentsToTranscript(result.segments, transcript, "A1");
+  }
 
-    const segments = Array.isArray(result.segments) ? result.segments : [];
+  /**
+   * Разбивает ЛЮБОЙ транскрипт (не только mono) на реплики по спикерам через
+   * GPT, опираясь на известный состав участников встречи (команда проекта +
+   * гости). Вызывается ВСЕГДА кнопкой «Разметить аудио с ИИ» — диаризация
+   * SpeechKit (channelTag) на реальных записях часто ошибается (одноканальная
+   * запись, перегородки, шум), поэтому не считаем её достаточной сама по себе.
+   *
+   * @param {object} transcript - { phrases, rawText, ... }
+   * @param {string} domain - предметная сфера для промпта
+   * @param {string[]} participants - имена участников встречи (команда + гости)
+   * @returns {object} обновлённый transcript с разбивкой по спикерам
+   */
+  async diarizeByProjectTeam(transcript, domain, participants = []) {
+    const rawText = transcript.rawText ?? "";
+    if (rawText.trim().length < 50) {
+      logger.info("GPT A1b: skipped (transcript too short for diarization)");
+      return transcript;
+    }
+
+    logger.info("GPT A1b: diarization by project team", {
+      chars: rawText.length, domain, participants: participants.length
+    });
+
+    // Убираем метки спикеров SpeechKit перед подачей в GPT — не хотим, чтобы
+    // модель просто скопировала уже имеющуюся (возможно, ошибочную) разбивку
+    const cleanText = rawText
+      .replace(/^Спикер \d+:\s*/gm, "")
+      .trim();
+
+    const { system, user, options } = promptDiarizationByTeam({
+      transcriptText: cleanText.slice(0, 20_000),
+      domain,
+      participants
+    });
+
+    const raw = await this.client.complete(system, user, options);
+    const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1b");
+    return this._segmentsToTranscript(result.segments, transcript, "A1b");
+  }
+
+  /**
+   * Общий постпроцессинг ответа диаризации (A1/A1b): валидация, назначение
+   * speakerId по порядку появления, пропорциональный пересчёт временных меток.
+   */
+  _segmentsToTranscript(rawSegments, transcript, passLabel) {
+    const segments = Array.isArray(rawSegments) ? rawSegments : [];
     if (segments.length < 2) {
-      logger.warn("GPT A1: returned <2 segments, keeping original", {
+      logger.warn(`GPT ${passLabel}: returned <2 segments, keeping original`, {
         segments: segments.length
       });
       return transcript;
@@ -150,7 +198,7 @@ export class YcYandexGptGateway {
       .map((p) => `${p.speakerLabel}: ${p.text}`)
       .join("\n");
 
-    logger.info("GPT A1: diarization done", {
+    logger.info(`GPT ${passLabel}: diarization done`, {
       segments: phrases.length,
       speakers: speakerLabels.length
     });

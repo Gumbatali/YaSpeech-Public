@@ -1225,7 +1225,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
     }
 
     function renderDraftScreen() {
-      // Лучшая доступная версия: после «Улучшить с ИИ» показываем её,
+      // Лучшая доступная версия: после «Разметить аудио с ИИ» показываем её,
       // правки и протокол тоже идут по ней
       const draftSegments = (activeMeeting?.llmTranscriptSegments?.length
         ? activeMeeting.llmTranscriptSegments
@@ -1233,15 +1233,21 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       const refineBusy = ["queued", "processing"].includes(
         activeMeeting?.llmRefine?.status
       );
+      // До разметки ИИ спикеров ещё нет — сплошной текст SpeechKit по паузам,
+      // без деления на "Спикер N" (диаризация SpeechKit ненадёжна на слух,
+      // не хотим показывать пользователю неверные ярлыки раньше времени)
+      const isMarked = activeMeeting?.llmRefine?.status === "done";
 
       function startDraftTranscriptEdit() {
         setTranscriptEditText(
-          draftSegments
-            .map((s) => {
-              const label = s.guessedName || s.speakerLabel || "";
-              return label ? `${label}: ${s.text}` : s.text;
-            })
-            .join("\n")
+          isMarked
+            ? draftSegments
+                .map((s) => {
+                  const label = s.guessedName || s.speakerLabel || "";
+                  return label ? `${label}: ${s.text}` : s.text;
+                })
+                .join("\n")
+            : draftSegments.map((s) => s.text).join(" ")
         );
         setEditingTranscript(true);
       }
@@ -1271,7 +1277,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
               <div className="panel-head-top">
                 <div>
                   <div className="eyebrow">Черновик встречи</div>
-                  <h2>Проверьте название и спикеров</h2>
+                  <h2>${isMarked ? "Проверьте название и спикеров" : "Проверьте название"}</h2>
                 </div>
                 <button
                   className="primary-button"
@@ -1290,8 +1296,9 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                 </div>
               ` : null}
               <p className="panel-copy">
-                Если нужно, поправьте подписи. После подтверждения соберём
-                итоговый протокол.
+                ${isMarked
+                  ? "Если нужно, поправьте подписи. После подтверждения соберём итоговый протокол."
+                  : "Нажмите «Разметить аудио с ИИ», чтобы разделить запись по спикерам из состава проекта."}
               </p>
               ${RefineControl({
                 api,
@@ -1313,39 +1320,41 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
               />
             </label>
 
-            <div className="speaker-list">
-              ${draftForm.speakerDrafts.map(
-                (speaker, index) => html`
-                  <label key=${speaker.id || index} className="speaker-item">
-                    <div className="speaker-item-header">
-                      <span>${speaker.label}</span>
-                      ${!speaker.guessedName
-                        ? html`<span className="speaker-unidentified">Не удалось определить</span>`
-                        : speaker.confidence === "high"
-                          ? html`<span className="speaker-confidence speaker-confidence--high">уверен</span>`
-                          : speaker.confidence === "medium"
-                            ? html`<span className="speaker-confidence speaker-confidence--medium">предположение</span>`
-                            : null}
-                    </div>
-                    <input
-                      value=${speaker.guessedName ?? ""}
-                      placeholder=${speaker.guessedName ? "Имя или подпись" : "Введите имя вручную"}
-                      onInput=${(event) => updateDraftSpeaker(index, event.target.value)}
-                    />
-                    ${speaker.reasoning && speaker.reasoning !== "fallback"
-                      ? html`<span className="speaker-reasoning">${speaker.reasoning}</span>`
-                      : null}
-                  </label>
-                `
-              )}
-            </div>
+            ${isMarked ? html`
+              <div className="speaker-list">
+                ${draftForm.speakerDrafts.map(
+                  (speaker, index) => html`
+                    <label key=${speaker.id || index} className="speaker-item">
+                      <div className="speaker-item-header">
+                        <span>${speaker.label}</span>
+                        ${!speaker.guessedName
+                          ? html`<span className="speaker-unidentified">Не удалось определить</span>`
+                          : speaker.confidence === "high"
+                            ? html`<span className="speaker-confidence speaker-confidence--high">уверен</span>`
+                            : speaker.confidence === "medium"
+                              ? html`<span className="speaker-confidence speaker-confidence--medium">предположение</span>`
+                              : null}
+                      </div>
+                      <input
+                        value=${speaker.guessedName ?? ""}
+                        placeholder=${speaker.guessedName ? "Имя или подпись" : "Введите имя вручную"}
+                        onInput=${(event) => updateDraftSpeaker(index, event.target.value)}
+                      />
+                      ${speaker.reasoning && speaker.reasoning !== "fallback"
+                        ? html`<span className="speaker-reasoning">${speaker.reasoning}</span>`
+                        : null}
+                    </label>
+                  `
+                )}
+              </div>
+            ` : null}
 
             <div className="transcript-box">
               <div className="transcript-box-head">
                 <div className="eyebrow">
                   ${activeMeeting?.llmTranscriptSegments?.length
-                    ? "Транскрипт (улучшен ИИ)"
-                    : "Фрагмент транскрипта"}
+                    ? "Транскрипт (размечен ИИ)"
+                    : "Расшифровка транскрипта"}
                 </div>
                 ${!editingTranscript && !refineBusy
                   ? html`
@@ -1360,8 +1369,9 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
               ${editingTranscript
                 ? html`
                     <p className="transcript-edit-hint">
-                      Формат строки: <code>Имя спикера: текст реплики</code>.
-                      Сохранённые правки учтёт и «Улучшить с помощью ИИ», и сборка протокола.
+                      ${isMarked
+                        ? html`Формат строки: <code>Имя спикера: текст реплики</code>. Сохранённые правки учтёт и «Разметить аудио с ИИ», и сборка протокола.`
+                        : "Правьте сплошной текст расшифровки. Сохранённые правки учтёт разметка ИИ и сборка протокола."}
                     </p>
                     <textarea
                       className="transcript-editor"
@@ -1383,7 +1393,8 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                       >Отмена</button>
                     </div>
                   `
-                : draftSegments.map(
+                : isMarked
+                ? draftSegments.map(
                     (segment, index) => html`
                       <div key=${index} className="transcript-row">
                         <strong>
@@ -1393,7 +1404,12 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                         <p>${segment.text}</p>
                       </div>
                     `
-                  )}
+                  )
+                : html`
+                    <p className="transcript-plain">
+                      ${draftSegments.map((segment) => segment.text).join(" ")}
+                    </p>
+                  `}
             </div>
 
             <div className="button-row">

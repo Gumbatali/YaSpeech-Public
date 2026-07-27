@@ -408,6 +408,11 @@ button { cursor: pointer; }
   gap: 0.5rem;
 }
 
+.transcript-plain {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
 .speaker-unidentified {
   font-size: 0.75rem;
   color: #aaa;

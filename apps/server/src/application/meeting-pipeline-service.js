@@ -565,9 +565,19 @@ export class MeetingPipelineService {
       });
       domain = context.domain || "общий";
 
-      // A1: диаризация, если SpeechKit слил всё в одного спикера
-      const diarized = await this.yandexGptGateway.diarizeTranscript(
-        transcript, domain, context.mentionedEntities?.people ?? []
+      // A1: диаризация ВСЕГДА по составу проекта (не только для mono) —
+      // диаризация SpeechKit (channelTag) на реальных записях часто ошибается,
+      // а известный состав участников — сильная подсказка для LLM.
+      const scopedTeam = (project?.team ?? []).filter((member) =>
+        meeting.participantIds?.includes(member.id)
+      );
+      const participantNames = [
+        ...(scopedTeam.length > 0 ? scopedTeam : project?.team ?? []).map((m) => m.name),
+        ...(meeting.guests ?? []).map((g) => g.name)
+      ].filter(Boolean);
+
+      const diarized = await this.yandexGptGateway.diarizeByProjectTeam(
+        transcript, domain, participantNames
       );
       phrases = diarized.phrases ?? [];
 

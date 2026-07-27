@@ -70,12 +70,12 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
       const res = await api.refineTranscript(activeMeeting.id);
       if (res?.meeting) setActiveMeeting(res.meeting);
     } catch (e) {
-      setError("Не удалось запустить улучшение: " + (e.message ?? e));
+      setError("Не удалось запустить разметку: " + (e.message ?? e));
     }
   }
 
   if (status === "queued") {
-    return html`<div className="refine-progress">⏳ Улучшение поставлено в очередь…</div>`;
+    return html`<div className="refine-progress">⏳ Разметка поставлена в очередь…</div>`;
   }
 
   if (status === "processing") {
@@ -85,7 +85,7 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
     return html`
       <div className="refine-progress">
         <div className="refine-progress-label">
-          ✨ Улучшаем расшифровку… ${total > 0 ? `фрагмент ${Math.min(done + 1, total)} из ${total}` : ""}
+          ✨ Размечаем аудио… ${total > 0 ? `фрагмент ${Math.min(done + 1, total)} из ${total}` : ""}
         </div>
         <div className="refine-progress-bar">
           <div className="refine-progress-fill" style=${{ width: `${percent}%` }}></div>
@@ -97,20 +97,20 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
   if (status === "done") {
     return compact
       ? null
-      : html`<div className="refine-done">✨ Расшифровка улучшена ИИ</div>`;
+      : html`<div className="refine-done">✨ Аудио размечено ИИ</div>`;
   }
 
   // idle | stale | failed → кнопка
   return html`
     <div className="refine-control">
       ${status === "failed"
-        ? html`<div className="refine-error">Не удалось улучшить: ${refine?.error ?? "ошибка"}</div>`
+        ? html`<div className="refine-error">Не удалось разметить: ${refine?.error ?? "ошибка"}</div>`
         : null}
       <button className="ghost-button ghost-button--sm refine-button" onClick=${handleRefine}>
-        ✨ ${status === "failed" ? "Повторить улучшение" : "Улучшить с помощью ИИ"}
+        ✨ ${status === "failed" ? "Повторить разметку" : "Разметить аудио с ИИ"}
       </button>
       ${!compact
-        ? html`<span className="refine-hint">Исправит ошибки распознавания, определит спикеров. Займёт около минуты.</span>`
+        ? html`<span className="refine-hint">Разделит запись по спикерам из состава проекта, исправит ошибки распознавания. Займёт около минуты.</span>`
         : null}
     </div>
   `;
@@ -137,7 +137,7 @@ export function DialogueControl({ api, activeMeeting, setActiveMeeting, setError
   if (!refineDone) {
     return compact
       ? null
-      : html`<span className="refine-hint">Сначала улучшите расшифровку — диалог собирается поверх неё.</span>`;
+      : html`<span className="refine-hint">Сначала разметьте аудио с ИИ — диалог собирается поверх неё.</span>`;
   }
 
   if (status === "queued") {
@@ -340,7 +340,7 @@ export function TranscriptTab({
         ? DialogueControl({ api, activeMeeting, setActiveMeeting, setError, compact: false })
         : RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
-        ? html`<div className="empty-state">Нажмите «Улучшить с помощью ИИ», чтобы получить исправленную версию.</div>`
+        ? html`<div className="empty-state">Нажмите «Разметить аудио с ИИ», чтобы получить исправленную версию.</div>`
         : transcriptVersion === "dialogue" && !hasDialogue
         ? html`<div className="empty-state">Нажмите «Собрать диалог», чтобы получить читаемую запись беседы.</div>`
         : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
