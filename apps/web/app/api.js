@@ -104,10 +104,13 @@ export class ApiClient {
   }
 
   uploadFile(upload, file, onProgress) {
+    const UPLOAD_TIMEOUT_MS = 30 * 60 * 1000; // большие записи на медленном канале
+
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(upload.method, upload.uploadUrl);
       xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
           onProgress(Math.round((e.loaded / e.total) * 100));
@@ -117,10 +120,20 @@ export class ApiClient {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(xhr);
         } else {
-          reject(new Error(`Ошибка загрузки файла на сервер (HTTP ${xhr.status}).`));
+          reject(new Error(`Хранилище отклонило файл (HTTP ${xhr.status}). Попробуйте ещё раз.`));
         }
       };
-      xhr.onerror = () => reject(new Error("Ошибка загрузки файла."));
+      xhr.onerror = () =>
+        reject(new Error(
+          "Не удалось передать файл: обрыв соединения с хранилищем. " +
+          "Проверьте интернет и попробуйте ещё раз — загрузка начнётся заново."
+        ));
+      xhr.ontimeout = () =>
+        reject(new Error(
+          "Загрузка не уложилась в 30 минут и была остановлена. " +
+          "Проверьте скорость интернета и попробуйте ещё раз."
+        ));
+      xhr.onabort = () => reject(new Error("Загрузка была отменена."));
       xhr.send(file);
     });
   }
@@ -180,6 +193,13 @@ export class ApiClient {
 
   refineTranscript(meetingId) {
     return this.json(`/api/meetings/${meetingId}/transcript/refine`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
+  buildDialogue(meetingId) {
+    return this.json(`/api/meetings/${meetingId}/transcript/dialogue`, {
       method: "POST",
       body: JSON.stringify({})
     });

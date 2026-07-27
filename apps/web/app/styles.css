@@ -1057,7 +1057,7 @@ button { cursor: pointer; }
   background: #fff;
 }
 
-/* ── Transcript version toggle (Дословно / LLM восстановил) ── */
+/* ── Transcript version toggle (Дословно / LLM восстановил / Диалог) ── */
 .transcript-version-toggle {
   display: flex;
   gap: 0.25rem;

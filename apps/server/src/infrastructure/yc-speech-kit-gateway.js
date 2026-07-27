@@ -36,10 +36,17 @@ export class YcSpeechKitGateway {
   /**
    * Запускает асинхронное распознавание и немедленно возвращает operationId.
    * Используется в split-flow: воркер отдельно стартует, отдельно поллит.
+   *
+   * @param {{ meeting: object, project?: object, audioKey?: string }} params
+   *   audioKey — переопределяет ключ аудио в S3 (для параллельного ASR
+   *   больших записей: каждый чанк лежит по своему ключу, см.
+   *   meeting-pipeline-service.js _startParallelRecognition). По умолчанию —
+   *   оригинальный файл целиком.
    */
-  async startRecognition({ meeting }) {
+  async startRecognition({ meeting, audioKey }) {
     let iamToken = await getIamToken();
-    const audioUri = `https://storage.yandexcloud.net/${this.bucket}/${meeting.artifacts.audioOriginalKey}`;
+    const key = audioKey ?? meeting.artifacts.audioOriginalKey;
+    const audioUri = `https://storage.yandexcloud.net/${this.bucket}/${key}`;
     logger.info("SpeechKit v3: startRecognition", { meetingId: meeting.id, audioUri });
 
     const makeRequest = async (token) => fetch(SPEECHKIT_V3_URL, {

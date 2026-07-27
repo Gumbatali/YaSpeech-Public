@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createTestServer } from "../src/test-server.js";
 
 class FakeClock {
@@ -26,7 +26,7 @@ async function withServer(run) {
 
   try {
     await server.start();
-    await run(server, clock);
+    await run(server, clock, dataDir);
   } finally {
     await server.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -167,5 +167,45 @@ test("reupload отклоняется для встреч, у которых з�
       body: JSON.stringify({})
     });
     assert.equal(rejected.response.status, 400);
+  });
+});
+
+test("зависшая обработка (умерший worker) лечится в failed/PROCESSING_STALLED", async () => {
+  await withServer(async (server, clock, dataDir) => {
+    const { meeting } = await createUploadingMeeting(server);
+
+    await fetch(`${server.baseUrl}${meeting.upload.uploadUrl}`, {
+      method: meeting.upload.method,
+      body: Buffer.from("fake-audio-bytes-".repeat(10))
+    });
+    await requestJson(server, `/api/meetings/${meeting.id}/upload-complete`, {
+      method: "POST",
+      body: JSON.stringify({ sizeBytes: 170 })
+    });
+    await waitForPipelineSettled(server, meeting.id);
+
+    // Имитируем смерть worker посреди генерации протокола: откатываем статус
+    // напрямую в хранилище (обновлений от worker больше не будет)
+    const manifestPath = path.join(
+      dataDir, "projects", meeting.projectId, "meetings", meeting.id, "meeting.json"
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, JSON.stringify({
+      ...manifest,
+      status: "protocol_generating",
+      currentStage: "protocol_generating"
+    }));
+
+    // 29 минут — ещё «работает», 31 минута — уже зависание
+    clock.advanceMinutes(29);
+    const alive = await requestJson(server, `/api/meetings/${meeting.id}`);
+    assert.equal(alive.body.meeting.status, "protocol_generating");
+
+    clock.advanceMinutes(2);
+    const stalled = await requestJson(server, `/api/meetings/${meeting.id}`);
+    assert.equal(stalled.body.meeting.status, "failed");
+    assert.equal(stalled.body.meeting.error.code, "PROCESSING_STALLED");
+    // retry сможет продолжить с этапа протокола, не перегоняя ASR
+    assert.equal(stalled.body.meeting.currentStage, "protocol_generating");
   });
 });

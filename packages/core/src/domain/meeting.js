@@ -64,14 +64,18 @@ export function createMeeting({
 
 /**
  * Встреча переходит в режим поллинга ASR.
- * Сохраняем operationId и момент старта для timeout-защиты.
+ * jobs — массив задач распознавания: [{ operationId, offsetSeconds, audioKey? }].
+ * Больше одной задачи — запись была разрезана на параллельные чанки (см.
+ * meeting-pipeline-service.js startAsrPhase/_startParallelRecognition).
+ * asrStartedAt — момент старта ВСЕЙ партии, для timeout-защиты (лимит на
+ * время обработки применяется к партии целиком, не к отдельному чанку).
  */
-export function markAsrStarted(meeting, operationId, updatedAt) {
+export function markAsrStarted(meeting, jobs, updatedAt) {
   return {
     ...meeting,
     status: "speechkit_processing",
     currentStage: "speechkit_processing",
-    asrOperationId: operationId,
+    asrJobs: jobs,
     asrStartedAt: updatedAt,
     asrPollCount: 0,
     updatedAt
@@ -142,6 +146,45 @@ export function reopenMeetingUpload(meeting, updatedAt) {
     uploadProgress: 0,
     error: undefined,
     updatedAt
+  };
+}
+
+// Обработка идёт в worker-функции: ASR-поллинг обновляет встречу каждые ~15 сек,
+// самый долгий этап без записи в статус — генерация протокола (минуты).
+// 30 минут тишины в «рабочем» статусе — очередь/триггер мертвы или worker упал.
+export const PROCESSING_STALL_TIMEOUT_MS = 30 * 60 * 1000;
+const PROCESSING_STATUSES = ["uploaded", "speechkit_processing", "protocol_generating"];
+
+export function isProcessingStalled(meeting, nowIso, timeoutMs = PROCESSING_STALL_TIMEOUT_MS) {
+  if (!PROCESSING_STATUSES.includes(meeting?.status)) {
+    return false;
+  }
+
+  const lastActivity = Date.parse(meeting.updatedAt ?? meeting.createdAt ?? "");
+  if (!Number.isFinite(lastActivity)) {
+    return false;
+  }
+
+  return Date.parse(nowIso) - lastActivity > timeoutMs;
+}
+
+// currentStage сохраняется: retry по failed на protocol_generating
+// пропускает повторное распознавание (см. MeetingPipelineService.retry)
+export function markProcessingStalled(meeting, updatedAt) {
+  if (!PROCESSING_STATUSES.includes(meeting?.status)) {
+    return meeting;
+  }
+
+  return {
+    ...meeting,
+    status: "failed",
+    updatedAt,
+    error: {
+      code: "PROCESSING_STALLED",
+      message:
+        "Обработка записи прервалась и не завершилась в разумное время. " +
+        "Нажмите «Попробовать снова» — обработка продолжится с последнего этапа."
+    }
   };
 }
 

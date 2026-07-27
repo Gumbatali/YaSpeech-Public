@@ -20,21 +20,48 @@ import {
   promptProtocolReduce,
   promptFaithfulnessCheck,
   promptCompletenessCheck,
-  promptTranscriptRefine
+  promptTranscriptRefine,
+  promptDialogueRewrite
 } from "./llm/prompts.js";
 import { parseRefinedLines } from "../application/transcription/refiner.js";
 import { logger } from "../shared/logger.js";
 
 const MAX_TRANSCRIPT_CHARS = 22_000;
 
+// Полный промах (ни одной строки "[N] текст" в ответе) чаще всего значит не
+// "модель ошиблась форматом", а отказ модерации ("не могу обсуждать эту
+// тему") — parseRefinedLines такой ответ тоже помечает как missingIds=все,
+// и снаружи это неотличимо от обрыва вывода без сырого текста в логах.
+// Не бросаем ошибку (это ортогонально к самому REFINE/DIALOGUE — уже
+// обработанный chunk просто останется неизменным, applyRefinedLines/
+// applyDialogueLines это переживают), но логируем, иначе причину нулевого
+// changedRatio на проде не продиагностировать без ручного репро.
+function logIfTotalMiss(pass, raw, { byId, missingIds }, ids) {
+  if (byId.size > 0 || missingIds.length !== ids.length) return;
+  logger.warn(`${pass}: total miss — модель не вернула ни одной строки в ожидаемом формате`, {
+    idsCount: ids.length,
+    rawPreview: (raw ?? "").slice(0, 300)
+  });
+}
+
 export class YcYandexGptGateway {
-  constructor({ folderId, model = process.env.GPT_MODEL ?? "yandexgpt-lite" }) {
+  constructor({
+    folderId,
+    model = process.env.GPT_MODEL ?? "yandexgpt-lite",
+    // Диалог зовётся редко (по кнопке, раз на встречу) и требует лучшего
+    // владения языком, чем термин-ориентированный REFINE — Pro оправдан.
+    dialogueModel = process.env.GPT_DIALOGUE_MODEL ?? "yandexgpt"
+  }) {
     this.folderId = folderId;
     // Lite выбран по бенчмарку (scripts/experiments/llm-refine-bench):
     // WER-восстановление 63% при цене в 6 раз ниже Pro
     this.modelUri = `gpt://${folderId}/${model}/latest`;
     this.client = new YandexGptClient({ modelUri: this.modelUri });
-    logger.info("YandexGPT: initialized", { folderId, modelUri: this.modelUri });
+    this.dialogueModelUri = `gpt://${folderId}/${dialogueModel}/latest`;
+    this.dialogueClient = new YandexGptClient({ modelUri: this.dialogueModelUri });
+    logger.info("YandexGPT: initialized", {
+      folderId, modelUri: this.modelUri, dialogueModelUri: this.dialogueModelUri
+    });
   }
 
   // ============================================================
@@ -181,7 +208,29 @@ export class YcYandexGptGateway {
       glossary
     });
     const raw = await this.client.complete(system, user, options);
-    return parseRefinedLines(raw, ids);
+    const result = parseRefinedLines(raw, ids);
+    logIfTotalMiss("refine", raw, result, ids);
+    return result;
+  }
+
+  /**
+   * Литературная запись чанка реплик (проход «Диалог», после REFINE).
+   * На Pro-модели (см. конструктор) — вызывается редко, качество важнее цены.
+   *
+   * @param {{ lines: string[], ids: number[], contextLines: string[], domain: string, glossary: object|null }} params
+   * @returns {Promise<{ byId: Map<number, string>, missingIds: number[] }>}
+   */
+  async rewriteDialogueLines({ lines, ids, contextLines = [], domain, glossary = null }) {
+    const { system, user, options } = promptDialogueRewrite({
+      numberedLines: lines,
+      contextLines,
+      domain,
+      glossary
+    });
+    const raw = await this.dialogueClient.complete(system, user, options);
+    const result = parseRefinedLines(raw, ids);
+    logIfTotalMiss("dialogue", raw, result, ids);
+    return result;
   }
 
   // ============================================================

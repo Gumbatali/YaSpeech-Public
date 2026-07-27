@@ -116,6 +116,70 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
   `;
 }
 
+/**
+ * Кнопка/прогресс сборки «Диалога» — литературной записи поверх уже
+ * улучшенной (refine) расшифровки. Появляется только после llmRefine=done.
+ */
+export function DialogueControl({ api, activeMeeting, setActiveMeeting, setError, compact = false }) {
+  const refineDone = activeMeeting?.llmRefine?.status === "done";
+  const dialogue = activeMeeting?.llmDialogue;
+  const status = dialogue?.status;
+
+  async function handleBuildDialogue() {
+    try {
+      const res = await api.buildDialogue(activeMeeting.id);
+      if (res?.meeting) setActiveMeeting(res.meeting);
+    } catch (e) {
+      setError("Не удалось собрать диалог: " + (e.message ?? e));
+    }
+  }
+
+  if (!refineDone) {
+    return compact
+      ? null
+      : html`<span className="refine-hint">Сначала улучшите расшифровку — диалог собирается поверх неё.</span>`;
+  }
+
+  if (status === "queued") {
+    return html`<div className="refine-progress">⏳ Сборка диалога поставлена в очередь…</div>`;
+  }
+
+  if (status === "processing") {
+    const done = dialogue.done ?? 0;
+    const total = dialogue.total ?? 0;
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    return html`
+      <div className="refine-progress">
+        <div className="refine-progress-label">
+          💬 Собираем диалог… ${total > 0 ? `фрагмент ${Math.min(done + 1, total)} из ${total}` : ""}
+        </div>
+        <div className="refine-progress-bar">
+          <div className="refine-progress-fill" style=${{ width: `${percent}%` }}></div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (status === "done") {
+    return compact ? null : html`<div className="refine-done">💬 Диалог собран</div>`;
+  }
+
+  // idle | stale | failed → кнопка
+  return html`
+    <div className="refine-control">
+      ${status === "failed"
+        ? html`<div className="refine-error">Не удалось собрать диалог: ${dialogue?.error ?? "ошибка"}</div>`
+        : null}
+      <button className="ghost-button ghost-button--sm refine-button" onClick=${handleBuildDialogue}>
+        💬 ${status === "failed" ? "Повторить сборку" : "Собрать диалог"}
+      </button>
+      ${!compact
+        ? html`<span className="refine-hint">Уберёт слова-паразиты и рваные фразы, сохранив смысл и факты. Займёт около минуты.</span>`
+        : null}
+    </div>
+  `;
+}
+
 export function TranscriptTab({
   api,
   activeMeeting,
@@ -143,10 +207,20 @@ export function TranscriptTab({
     ? refinedSegments
     : parseLlmTranscript(activeMeeting?.gptContext?.correctedText);
   const hasLlm = llmSegments.length > 0;
-  const showDiff = refinedSegments.length > 0;
-  const activeSegments = (transcriptVersion === "llm" && hasLlm)
-    ? llmSegments
-    : rawSegments;
+  // Диалог — только новый пайплайн, fallback-парсинг для него не нужен
+  // (появился уже после введения llmTranscriptSegments)
+  const dialogueSegments = activeMeeting?.llmDialogueSegments ?? [];
+  const hasDialogue = dialogueSegments.length > 0;
+
+  let activeSegments = rawSegments;
+  let showDiff = false;
+  if (transcriptVersion === "dialogue" && hasDialogue) {
+    activeSegments = dialogueSegments;
+    showDiff = true;
+  } else if (transcriptVersion === "llm" && hasLlm) {
+    activeSegments = llmSegments;
+    showDiff = refinedSegments.length > 0;
+  }
 
   // colorMap строится ПОСЛЕ activeSegments — один проход, первый спикер = color[0] и т.д.
   const colorMap = buildSpeakerColorMap(activeSegments);
@@ -255,13 +329,22 @@ export function TranscriptTab({
             onClick=${() => setTranscriptVersion("llm")}
             disabled=${!hasLlm}
           >LLM восстановил</button>
+          <button
+            className=${"tvt-btn" + (transcriptVersion === "dialogue" ? " tvt-btn--active" : "")}
+            onClick=${() => setTranscriptVersion("dialogue")}
+            disabled=${!hasDialogue}
+          >Диалог</button>
         </div>
       </div>
-      ${RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
+      ${transcriptVersion === "dialogue"
+        ? DialogueControl({ api, activeMeeting, setActiveMeeting, setError, compact: false })
+        : RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
         ? html`<div className="empty-state">Нажмите «Улучшить с помощью ИИ», чтобы получить исправленную версию.</div>`
+        : transcriptVersion === "dialogue" && !hasDialogue
+        ? html`<div className="empty-state">Нажмите «Собрать диалог», чтобы получить читаемую запись беседы.</div>`
         : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
-            showDiff: transcriptVersion === "llm" && showDiff
+            showDiff: (transcriptVersion === "llm" || transcriptVersion === "dialogue") && showDiff
           })
       }
       <div className="transcript-actions">

@@ -8,11 +8,49 @@ import {
 } from "../../../../packages/core/src/domain/meeting.js";
 import { logger } from "../shared/logger.js";
 import { postprocessTranscript } from "./transcript-postprocessor.js";
-import { buildRefineChunks, applyRefinedLines } from "./transcription/refiner.js";
+import { buildRefineChunks, applyRefinedLines, applyDialogueLines } from "./transcription/refiner.js";
+import { splitWavBySeconds } from "./audio-splitting.js";
+import { mergeChunkTranscripts } from "./asr-merge.js";
 
 // Бюджет одного вызова worker-функции: при приближении к таймауту
-// refine чекпоинтится и пере-enqueue'ится (любая длина аудио)
+// refine/dialogue чекпоинтится и пере-enqueue'ится (любая длина аудио).
+// Держим запас (execution-timeout функции — 300s, см. scripts/deploy.sh):
+// бюджет проверяется ПОСЛЕ каждого чанка, поэтому нужен зазор на сам
+// последний вызов LLM + финализацию (identifySpeakers и т.п.), а не только
+// на сумму уже выполненных чанков.
 const REFINE_TIME_BUDGET_MS = 200_000;
+
+// Лимит на время ОБРАБОТКИ записи (SpeechKit-распознавание), а не на длину
+// самого аудиофайла — файл принимается любой длины. Если распознавание не
+// укладывается в лимит (зависание, перегрузка сервиса) — встреча падает
+// с понятной ошибкой вместо бесконечного поллинга каждые 15 сек.
+const PROCESSING_TIME_LIMIT_MS = 20 * 60 * 1000;
+
+// DIALOGUE зовёт Pro-модель (медленнее и дороже Lite, см. yc-yandex-gpt-gateway.js) —
+// чанки режем вдвое мельче, чем у REFINE (буфер CHUNK_CHARS в refiner.js),
+// чтобы единичный вызов не рисковал сам по себе упереться в таймаут функции
+// ДО того, как цикл вообще успеет проверить бюджет времени.
+const DIALOGUE_CHUNK_CHARS = 4_000;
+
+// Как подписывать реплики в промпте DIALOGUE — так модель пишет живее,
+// чем видя голые "Спикер 1/2/3"
+function dialoguePromptLabel(speakerLabel, speakerDraft) {
+  if (!speakerDraft?.guessedName) return speakerLabel;
+  return speakerDraft.guessedRole
+    ? `${speakerDraft.guessedName} (${speakerDraft.guessedRole})`
+    : speakerDraft.guessedName;
+}
+
+// Записи длиннее этого порога распознаются НЕСКОЛЬКИМИ параллельными
+// запросами к SpeechKit (по CHUNK_TARGET_SECONDS каждый) вместо одного
+// длинного — так большой файл не рискует упереться в PROCESSING_TIME_LIMIT_MS
+// и обрабатывается за время одного чанка, а не суммарно всех.
+// Байты, не секунды: размер уже известен на upload-complete (audioFile.sizeBytes),
+// а точная длительность — нет (клиент присылает её отдельно, не всегда точно).
+// 16kHz mono 16-bit PCM = 32000 байт/сек (см. audio-splitting.js) →
+// 30 минут ≈ 57.6 MB.
+const PARALLEL_SPLIT_THRESHOLD_BYTES = 30 * 60 * 32_000;
+const CHUNK_TARGET_SECONDS = 10 * 60;
 
 export class MeetingPipelineService {
   constructor({
@@ -22,7 +60,9 @@ export class MeetingPipelineService {
     speechKitGateway,
     yandexGptGateway,
     queueRunner,
-    clock
+    clock,
+    parallelSplitThresholdBytes = PARALLEL_SPLIT_THRESHOLD_BYTES,
+    chunkTargetSeconds = CHUNK_TARGET_SECONDS
   }) {
     this.meetingRepository = meetingRepository;
     this.projectRepository = projectRepository;
@@ -31,6 +71,10 @@ export class MeetingPipelineService {
     this.yandexGptGateway = yandexGptGateway;
     this.queueRunner = queueRunner;
     this.clock = clock;
+    // Настраиваемо для тестов — гонять реальные 57 MB буферы в юнит-тестах
+    // непрактично, тесты подставляют маленькие пороги.
+    this.parallelSplitThresholdBytes = parallelSplitThresholdBytes;
+    this.chunkTargetSeconds = chunkTargetSeconds;
   }
 
   async enqueueProcessing(meetingId) {
@@ -96,6 +140,31 @@ export class MeetingPipelineService {
     await this.meetingRepository.save(updated);
     await this._enqueuePhase(meetingId, "refine", 0);
     logger.info("Refine enqueued", { meetingId });
+    return updated;
+  }
+
+  /**
+   * Ставит в очередь литературную запись диалога («Собрать диалог»).
+   * Требует завершённого REFINE — DIALOGUE переписывает уже точный текст,
+   * а не сырой ASR-вывод. Ортогонально статусу встречи, как и enqueueRefine.
+   */
+  async enqueueDialogue(meetingId) {
+    const meeting = await this.meetingRepository.getById(meetingId);
+    if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+
+    const updated = {
+      ...meeting,
+      llmDialogue: {
+        status: "queued",
+        done: 0,
+        total: 0,
+        requestedAt: this.clock.now().toISOString()
+      },
+      updatedAt: this.clock.now().toISOString()
+    };
+    await this.meetingRepository.save(updated);
+    await this._enqueuePhase(meetingId, "dialogue", 0);
+    logger.info("Dialogue enqueued", { meetingId });
     return updated;
   }
 
@@ -169,6 +238,35 @@ export class MeetingPipelineService {
       return;
     }
 
+    // Dialogue — тот же независимый контур, что и refine, но со своим полем
+    // llmDialogue и требованием "refine уже завершён" (проверяется в маршруте)
+    if (phase === "dialogue") {
+      if (!meeting || !["draft_ready", "done", "failed"].includes(meeting.status)) {
+        logger.warn("processMeeting: dialogue skipped", { meetingId, status: meeting?.status });
+        return;
+      }
+      const project = await this.projectRepository.getById(meeting.projectId);
+      try {
+        await this.runDialoguePhase(meeting, project);
+      } catch (error) {
+        logger.error(`dialogue failed: ${error.message}`, { meetingId });
+        const fresh = await this.meetingRepository.getById(meetingId);
+        if (fresh) {
+          await this.meetingRepository.save({
+            ...fresh,
+            llmDialogue: {
+              ...(fresh.llmDialogue ?? {}),
+              status: "failed",
+              error: error.message,
+              finishedAt: this.clock.now().toISOString()
+            },
+            updatedAt: this.clock.now().toISOString()
+          });
+        }
+      }
+      return;
+    }
+
     const VALID_STATUSES = ["uploaded", "speechkit_processing", "protocol_generating"];
     if (!meeting || !VALID_STATUSES.includes(meeting.status)) {
       logger.warn("processMeeting: skipped", { meetingId, status: meeting?.status, phase });
@@ -221,7 +319,12 @@ export class MeetingPipelineService {
 
   /**
    * Фаза 1 — запускаем ASR и немедленно выходим.
-   * Время работы: секунды (только HTTP-запрос к SpeechKit).
+   * Большие записи (см. parallelSplitThresholdBytes) режутся на куски по
+   * chunkTargetSeconds и распознаются НЕСКОЛЬКИМИ параллельными запросами —
+   * так длинная запись обрабатывается за время одного куска, а не суммарно
+   * всех. Короткие записи — как раньше, один запрос.
+   * Время работы: секунды-минуты (HTTP-запрос(ы) к SpeechKit + опционально
+   * скачивание/разрезание/заливка чанков).
    */
   async startAsrPhase(meeting, project) {
     await this.meetingRepository.save({
@@ -231,53 +334,120 @@ export class MeetingPipelineService {
       updatedAt: this.clock.now().toISOString()
     });
 
-    const { operationId } = await this.speechKitGateway.startRecognition({ meeting, project });
+    const sizeBytes = meeting.audioFile?.sizeBytes ?? 0;
+    const jobs = sizeBytes > this.parallelSplitThresholdBytes
+      ? await this._startParallelRecognition(meeting, project)
+      : await this._startSingleRecognition(meeting, project);
 
-    const updatedMeeting = markAsrStarted(meeting, operationId, this.clock.now().toISOString());
+    const updatedMeeting = markAsrStarted(meeting, jobs, this.clock.now().toISOString());
     await this.meetingRepository.save(updatedMeeting);
 
     // Ставим poll в очередь с задержкой 15 сек
     await this._enqueuePhase(meeting.id, "poll-asr", 15);
-    logger.info("startAsrPhase: done", { meetingId: meeting.id, operationId });
+    logger.info("startAsrPhase: done", { meetingId: meeting.id, jobs: jobs.length });
+  }
+
+  async _startSingleRecognition(meeting, project) {
+    const { operationId } = await this.speechKitGateway.startRecognition({ meeting, project });
+    return [{ operationId, offsetSeconds: 0 }];
   }
 
   /**
-   * Фаза 2 — однократный опрос ASR.
-   * Не готово → re-enqueue; готово → продолжаем в prepareDraft.
-   * Время работы: секунды (один HTTP-запрос).
+   * Скачивает аудио из S3, режет на WAV-чанки по chunkTargetSeconds, заливает
+   * каждый обратно в S3 и запускает распознавание ВСЕХ чанков ОДНОВРЕМЕННО
+   * (Promise.all — не по очереди). Чанки хранятся рядом с оригиналом
+   * (parts/chunk-N.wav), их можно удалить после успешной обработки, но
+   * оставлять безвредно (артефакт для отладки).
    */
-  async pollAsrPhase(meeting, project) {
-    const operationId  = meeting.asrOperationId;
-    const asrStartedAt = meeting.asrStartedAt ? new Date(meeting.asrStartedAt) : null;
-    const ASR_TIMEOUT_MS = 40 * 60 * 1000; // 40 минут — hard ceiling
-
-    if (!operationId) {
-      throw new Error(`pollAsrPhase: no asrOperationId on meeting ${meeting.id}`);
+  async _startParallelRecognition(meeting, project) {
+    const audioBuffer = await this.artifactStorage.readBuffer(meeting.artifacts.audioOriginalKey);
+    if (!audioBuffer) {
+      throw new Error(`startAsrPhase: audio not found at ${meeting.artifacts.audioOriginalKey}`);
     }
 
-    // Timeout-защита: если ASR зависло — фейлим встречу
-    if (asrStartedAt && Date.now() - asrStartedAt.getTime() > ASR_TIMEOUT_MS) {
-      const err = new Error("SpeechKit: recognition timed out after 40 minutes");
-      err.code = "SPEECHKIT_TIMEOUT";
+    const chunks = splitWavBySeconds(audioBuffer, this.chunkTargetSeconds);
+    logger.info("startAsrPhase: splitting for parallel ASR", {
+      meetingId: meeting.id, sizeBytes: audioBuffer.length, chunks: chunks.length
+    });
+
+    if (chunks.length === 1) {
+      // Разрезать не потребовалось (короткая, но большая по sizeBytes из-за
+      // формата запись) — не плодим лишний файл в S3, шлём оригинал как есть
+      return this._startSingleRecognition(meeting, project);
+    }
+
+    const jobs = await Promise.all(chunks.map(async (chunk, index) => {
+      const audioKey = `${meeting.artifacts.baseKey}/parts/chunk-${index}.wav`;
+      await this.artifactStorage.writeBuffer(audioKey, chunk.wavBuffer, "audio/wav");
+      const { operationId } = await this.speechKitGateway.startRecognition({ meeting, project, audioKey });
+      return { operationId, offsetSeconds: chunk.offsetSeconds, audioKey };
+    }));
+
+    return jobs;
+  }
+
+  /**
+   * Фаза 2 — однократный опрос ВСЕХ ASR-задач записи (параллельно).
+   * Хотя бы одна не готова → re-enqueue; все готовы → сливаем транскрипты
+   * (см. asr-merge.js) и продолжаем в prepareDraft.
+   * Время работы: секунды (параллельные HTTP-запросы, не последовательные).
+   */
+  async pollAsrPhase(meeting, project) {
+    const jobs = meeting.asrJobs;
+    const asrStartedAt = meeting.asrStartedAt ? new Date(meeting.asrStartedAt) : null;
+
+    if (!jobs?.length) {
+      throw new Error(`pollAsrPhase: no asrJobs on meeting ${meeting.id}`);
+    }
+
+    // Лимит — на время ОБРАБОТКИ (распознавания), а не на длину аудио: файл
+    // может быть любой длины (большие режутся на параллельные чанки выше),
+    // но если SpeechKit не управился за отведённое время (завис, перегружен,
+    // аномально долгая обработка) — фейлим встречу с понятной ошибкой
+    // вместо бесконечного поллинга.
+    // this.clock.now(), НЕ Date.now(): asrStartedAt записан через инжектируемые
+    // часы (RuntimeClock в проде, FakeClock в тестах) — сравнение с реальным
+    // Date.now() в тестах молча расходится с ходом реального времени сессии
+    // и рано или поздно ложно превышает порог.
+    const elapsedMs = asrStartedAt ? this.clock.now().getTime() - asrStartedAt.getTime() : 0;
+    if (asrStartedAt && elapsedMs > PROCESSING_TIME_LIMIT_MS) {
+      const limitMinutes = Math.round(PROCESSING_TIME_LIMIT_MS / 60000);
+      const err = new Error(
+        `Обработка записи не уложилась в лимит времени (${limitMinutes} мин). ` +
+        "Попробуйте позже — возможно, сервис распознавания сейчас перегружен."
+      );
+      err.code = "PROCESSING_TIME_LIMIT_EXCEEDED";
       throw err;
     }
 
-    const result = await this.speechKitGateway.pollRecognitionOnce({ meeting, project, operationId });
+    const results = await Promise.all(jobs.map((job) =>
+      this.speechKitGateway.pollRecognitionOnce({ meeting, project, operationId: job.operationId })
+    ));
 
-    if (!result.done) {
-      // Не готово — incrementируем счётчик и перепланируем через 15 сек
+    if (results.some((r) => !r.done)) {
+      // Хотя бы один чанк ещё не готов — incrementируем счётчик и перепланируем
       const polled = incrementAsrPoll(meeting, this.clock.now().toISOString());
       await this.meetingRepository.save(polled);
-      logger.info("pollAsrPhase: not ready, re-enqueue", {
-        meetingId: meeting.id, pollCount: polled.asrPollCount
+      logger.info("pollAsrPhase: not all ready, re-enqueue", {
+        meetingId: meeting.id, pollCount: polled.asrPollCount,
+        done: results.filter((r) => r.done).length, total: jobs.length
       });
       await this._enqueuePhase(meeting.id, "poll-asr", 15);
       return;
     }
 
-    // ASR готов — передаём управление в prepareDraftFromTranscript
-    logger.info("pollAsrPhase: ASR done, continuing to draft", { meetingId: meeting.id });
-    await this.prepareDraftFromTranscript(meeting, project, result.jobId, result.transcript);
+    // Все чанки готовы — сливаем в один транскрипт (offset + сквозная
+    // нумерация спикеров по границам чанков, см. asr-merge.js)
+    const merged = jobs.length > 1
+      ? mergeChunkTranscripts(jobs.map((job, i) => ({
+          offsetSeconds: job.offsetSeconds,
+          transcript: results[i].transcript
+        })))
+      : results[0].transcript;
+    const jobId = jobs.length > 1 ? `merged:${meeting.id}` : results[0].jobId;
+
+    logger.info("pollAsrPhase: ASR done, continuing to draft", { meetingId: meeting.id, chunks: jobs.length });
+    await this.prepareDraftFromTranscript(meeting, project, jobId, merged);
   }
 
   /**
@@ -585,6 +755,8 @@ export class MeetingPipelineService {
         changedRatio,
         finishedAt: this.clock.now().toISOString()
       },
+      // Новый refine делает старый «Диалог» устаревшим — построен на другом тексте
+      ...(fresh.llmDialogue ? { llmDialogue: { status: "stale" } } : {}),
       updatedAt: this.clock.now().toISOString()
     };
     await this.meetingRepository.save(updated);
@@ -601,6 +773,177 @@ export class MeetingPipelineService {
       chunks: total,
       applied: stats.applied,
       rejectedByValidator: stats.rejectedByValidator,
+      changedRatio: changedRatio.toFixed(2)
+    });
+  }
+
+  /**
+   * DIALOGUE-job: литературная запись реплик поверх уже исправленного
+   * (REFINE) текста. Структура — намеренная копия runRefinePhase: тот же
+   * resumable чекпоинт, тот же бюджет времени, та же supersede-логика,
+   * только источник данных (transcript.refined.json вместо raw) и
+   * validator (applyDialogueLines вместо applyRefinedLines).
+   */
+  async runDialoguePhase(meeting, project) {
+    const startedMs = Date.now();
+    const refinedKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".refined.json");
+    const dialogueKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".dialogue.json");
+
+    if (meeting.llmRefine?.status !== "done") {
+      throw new Error("Сначала нужно улучшить расшифровку («Улучшить с помощью ИИ») — диалог строится поверх неё.");
+    }
+
+    const refined = await this.artifactStorage.readJson(refinedKey);
+    if (!refined?.completed || !refined.phrases?.length) {
+      throw new Error("Улучшенная расшифровка не найдена — запустите улучшение заново.");
+    }
+
+    const domain = meeting.gptContext?.domain || "общий";
+    const glossary = meeting.gptContext?.glossary ?? null;
+    const speakerById = new Map((meeting.speakerDrafts ?? []).map((s) => [s.id, s]));
+
+    // ── Resume или старт ───────────────────────────────────────────────────
+    let checkpoint = null;
+    if (meeting.llmDialogue?.status === "processing") {
+      checkpoint = await this.artifactStorage.readJson(dialogueKey).catch(() => null);
+      if (checkpoint && checkpoint.completed) checkpoint = null;
+    }
+
+    let phrases, nextChunk, stats;
+    if (checkpoint?.checkpoint) {
+      ({ phrases, nextChunk, stats } = checkpoint);
+      logger.info("dialogue: resuming from checkpoint", { meetingId: meeting.id, nextChunk });
+    } else {
+      phrases = refined.phrases;
+      nextChunk = 0;
+      stats = { applied: 0, rejectedByValidator: 0, retries: 0 };
+    }
+
+    // Отдельные "промпт-фразы" с именами вместо "Спикер N" — только для построения
+    // строк запроса, на исходные phrases (и их порядок/ID) не влияет
+    const promptPhrases = phrases.map((p) => ({
+      ...p,
+      speakerLabel: dialoguePromptLabel(p.speakerLabel, speakerById.get(p.speakerId))
+    }));
+    const chunks = buildRefineChunks(promptPhrases, { chunkChars: DIALOGUE_CHUNK_CHARS });
+    const total = chunks.length;
+
+    const jobRequestedAt = meeting.llmDialogue?.requestedAt ?? null;
+    const isJobSuperseded = (fresh) =>
+      fresh?.llmDialogue?.status === "stale" ||
+      fresh?.llmRefine?.status !== "done" || // текст переоткрыт заново (правка/restore)
+      (jobRequestedAt && fresh?.llmDialogue?.requestedAt !== jobRequestedAt);
+
+    const saveProgress = async (status, extra = {}) => {
+      const fresh = await this.meetingRepository.getById(meeting.id);
+      if (isJobSuperseded(fresh)) return false;
+      await this.meetingRepository.save({
+        ...fresh,
+        llmDialogue: { ...(fresh.llmDialogue ?? {}), status, done: nextChunk, total, ...extra },
+        updatedAt: this.clock.now().toISOString()
+      });
+      return true;
+    };
+
+    if (!(await saveProgress("processing"))) {
+      logger.info("dialogue: superseded before start, aborting", { meetingId: meeting.id });
+      return;
+    }
+
+    // ── Цикл по чанкам ─────────────────────────────────────────────────────
+    for (; nextChunk < total; nextChunk++) {
+      const chunk = chunks[nextChunk];
+
+      let result = await this.yandexGptGateway.rewriteDialogueLines({
+        lines: chunk.lines,
+        ids: chunk.ids,
+        contextLines: chunk.contextLines,
+        domain,
+        glossary
+      });
+
+      if (result.missingIds.length > 0) {
+        stats.retries++;
+        logger.warn("dialogue: missing ids, retrying chunk", {
+          meetingId: meeting.id, chunk: nextChunk, missing: result.missingIds.length
+        });
+        const retry = await this.yandexGptGateway.rewriteDialogueLines({
+          lines: chunk.lines, ids: chunk.ids,
+          contextLines: chunk.contextLines, domain, glossary
+        });
+        for (const [id, text] of retry.byId) {
+          if (!result.byId.has(id)) result.byId.set(id, text);
+        }
+      }
+
+      const appliedResult = applyDialogueLines(phrases, result.byId);
+      phrases = appliedResult.phrases;
+      stats.applied += appliedResult.applied;
+      stats.rejectedByValidator += appliedResult.rejectedByValidator;
+
+      await this.artifactStorage.writeJson(dialogueKey, {
+        checkpoint: true, phrases, nextChunk: nextChunk + 1, stats
+      });
+      if (!(await saveProgress("processing"))) {
+        logger.info("dialogue: superseded mid-job, aborting", {
+          meetingId: meeting.id, done: nextChunk + 1, total
+        });
+        return;
+      }
+
+      if (Date.now() - startedMs > REFINE_TIME_BUDGET_MS && nextChunk + 1 < total) {
+        logger.info("dialogue: time budget exhausted, re-enqueueing", {
+          meetingId: meeting.id, done: nextChunk + 1, total
+        });
+        await this._enqueuePhase(meeting.id, "dialogue", 1);
+        return;
+      }
+    }
+
+    // ── Финализация ──────────────────────────────────────────────────────
+    const changedRatio = phrases.length > 0 ? stats.applied / phrases.length : 0;
+
+    await this.artifactStorage.writeJson(dialogueKey, {
+      completed: true, phrases, stats, changedRatio,
+      dialogueAt: this.clock.now().toISOString()
+    });
+
+    const llmDialogueSegments = phrases.map((p) => ({
+      speakerId: p.speakerId,
+      speakerLabel: p.speakerLabel,
+      guessedName: speakerById.get(p.speakerId)?.guessedName ?? p.detectedName ?? null,
+      text: p.text,
+      originalText: p.dialogueOriginalText ?? null,
+      refined: p.dialogueRewritten === true,
+      startTimeMs: p.startTimeMs ?? null,
+      endTimeMs: p.endTimeMs ?? null
+    }));
+
+    const fresh = await this.meetingRepository.getById(meeting.id);
+    if (isJobSuperseded(fresh)) {
+      logger.info("dialogue: superseded at finalization, discarding result", { meetingId: meeting.id });
+      return;
+    }
+
+    await this.meetingRepository.save({
+      ...fresh,
+      llmDialogueSegments,
+      llmDialogue: {
+        ...(fresh.llmDialogue ?? {}),
+        status: "done", done: total, total, changedRatio,
+        finishedAt: this.clock.now().toISOString()
+      },
+      updatedAt: this.clock.now().toISOString()
+    });
+
+    // applied=0 на непустой встрече обычно значит отказ модели/сплошной
+    // missing (см. logIfTotalMiss в yc-yandex-gpt-gateway.js) — job технически
+    // "done", но пользователь получил исходный (refine) текст без переписывания.
+    // warn, а не info — чтобы это было видно в логах без ручного репро.
+    const logLevel = stats.applied === 0 && total > 0 ? "warn" : "info";
+    logger[logLevel]("dialogue: done", {
+      meetingId: meeting.id, chunks: total,
+      applied: stats.applied, rejectedByValidator: stats.rejectedByValidator,
       changedRatio: changedRatio.toFixed(2)
     });
   }

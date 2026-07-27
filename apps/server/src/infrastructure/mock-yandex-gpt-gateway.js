@@ -47,6 +47,30 @@ export class MockYandexGptGateway {
     return { byId, missingIds };
   }
 
+  /**
+   * Mock-«литературная запись»: убирает частые слова-паразиты через regex;
+   * если стирать нечего — ставит видимую пометку (как refineLines), чтобы
+   * тесты и локальная разработка гарантированно видели dialogueRewritten=true.
+   * Числа/имена не трогает — реальный validator (applyDialogueLines) тестируется отдельно.
+   */
+  async rewriteDialogueLines({ lines, ids }) {
+    const FILLERS = /\b(ну|вот|короче|типа|как бы|в общем-то|значит|э+|м+)\b[,]?\s*/gi;
+    const byId = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\[(\d+)\]\s*(?:[^:]{1,50}:\s*)?(.*)$/);
+      if (!m) continue;
+      const text = m[2].trim();
+      const cleaned = text.replace(FILLERS, "").replace(/\s+/g, " ").trim();
+      let result = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+      if (result === text) {
+        result = text.replace(/\.$/, "") + " — литературная запись.";
+      }
+      byId.set(Number(m[1]), result || text);
+    }
+    const missingIds = ids.filter((id) => !byId.has(id));
+    return { byId, missingIds };
+  }
+
   async identifySpeakers({ transcript }) {
     const speakerIds = [...new Set((transcript.phrases ?? []).map((p) => p.speakerId))];
     return speakerIds.map((id, i) => ({

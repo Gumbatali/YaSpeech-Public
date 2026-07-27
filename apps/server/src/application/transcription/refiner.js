@@ -238,3 +238,87 @@ export function applyRefinedLines(phrases, byId) {
 
   return { phrases: next, applied, rejectedByValidator };
 }
+
+// Порог длины для applyDialogueLines: литературная запись убирает слова-паразиты
+// («ну», «вот», «как бы»), но не должна терять содержательные куски реплики.
+// 0.35 подобран так, чтобы обычная чистка филлеров (обычно −10…−30% символов)
+// проходила, а «модель придумала короткий пересказ вместо реплики» — отклонялась.
+const DIALOGUE_MIN_LENGTH_RATIO = 0.35;
+
+// Обнаружено на реальной 35-минутной записи (628 реплик, боевой прогон
+// 2026-07-14): Pro-модель в части чанков вернула валидный по формату ответ
+// ([N] на каждой строке), но с контентом, СДВИНУТЫМ на несколько строк
+// относительно исходных ID — reплика 16 дословно получила текст reплики 24.
+// Ни numbersPreserved (чисел не было), ни порог длины (длина сопоставима)
+// такое не ловят — тексты просто про разное. Порог 0.4 подобран по реальным
+// данным того прогона: подмены дали пересечение слов 0.0–0.33, легитимные
+// правки (включая тяжёлую чистку филлеров) — 0.75–1.0. Заметный разрыв.
+const DIALOGUE_MIN_WORD_OVERLAP = 0.4;
+
+/**
+ * Доля общих слов между двумя текстами относительно более короткого из них.
+ * Считает по множествам (без учёта частоты) — устойчиво к перестановкам
+ * порядка слов при переписывании, но не восстановит смысл: если тексты
+ * почти не пересекаются по словарю, это разные реплики, а не литературная
+ * правка одной и той же.
+ */
+export function wordOverlapRatio(a, b) {
+  const wordsOf = (text) => new Set((text ?? "").toLowerCase().match(/[а-яё]+/g) ?? []);
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  if (wa.size === 0 || wb.size === 0) return wa.size === wb.size ? 1 : 0;
+
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.min(wa.size, wb.size);
+}
+
+/**
+ * Применяет результаты «читаемого диалога» к phrases: проверка чисел (как
+ * в applyRefinedLines), порог длины (защита от пересказа вместо переписывания)
+ * и пересечение словаря (защита от подмены — контент чужой реплики, ушедшей
+ * не на тот ID, см. комментарий у DIALOGUE_MIN_WORD_OVERLAP). Отклонённые
+ * строки откатываются на исходный (уже прошедший refine) текст.
+ *
+ * @param {Array<object>} phrases - phrases ПОСЛЕ refine-прохода
+ * @param {Map<number, string>} byId - id (1-based) → переписанный текст
+ * @returns {{ phrases: Array<object>, applied: number, rejectedByValidator: number }}
+ */
+export function applyDialogueLines(
+  phrases,
+  byId,
+  { minLengthRatio = DIALOGUE_MIN_LENGTH_RATIO, minWordOverlap = DIALOGUE_MIN_WORD_OVERLAP } = {}
+) {
+  let applied = 0;
+  let rejectedByValidator = 0;
+
+  const next = phrases.map((phrase, i) => {
+    const rewritten = byId.get(i + 1);
+    if (rewritten === undefined) return phrase;
+
+    if (!numbersPreserved(phrase.text, rewritten)) {
+      rejectedByValidator++;
+      return { ...phrase, dialogueRewritten: false, dialogueRejected: "numbers" };
+    }
+
+    const trimmedOriginal = phrase.text.trim();
+    if (trimmedOriginal.length > 0 && rewritten.trim().length < trimmedOriginal.length * minLengthRatio) {
+      rejectedByValidator++;
+      return { ...phrase, dialogueRewritten: false, dialogueRejected: "too-short" };
+    }
+
+    if (wordOverlapRatio(phrase.text, rewritten) < minWordOverlap) {
+      rejectedByValidator++;
+      return { ...phrase, dialogueRewritten: false, dialogueRejected: "content-mismatch" };
+    }
+
+    if (rewritten === phrase.text) {
+      return { ...phrase, dialogueRewritten: false };
+    }
+
+    applied++;
+    return { ...phrase, dialogueOriginalText: phrase.text, text: rewritten, dialogueRewritten: true };
+  });
+
+  return { phrases: next, applied, rejectedByValidator };
+}

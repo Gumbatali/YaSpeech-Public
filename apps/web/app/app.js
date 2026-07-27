@@ -180,11 +180,14 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       const refineActive = ["queued", "processing"].includes(
         activeMeeting?.llmRefine?.status
       );
+      const dialogueActive = ["queued", "processing"].includes(
+        activeMeeting?.llmDialogue?.status
+      );
       if (
         !activeMeeting ||
         (!["uploading", "uploaded", "speechkit_processing", "protocol_generating"].includes(
           activeMeeting.status
-        ) && !refineActive)
+        ) && !refineActive && !dialogueActive)
       ) {
         return;
       }
@@ -194,7 +197,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       }, 1500);
 
       return () => clearInterval(timer);
-    }, [activeMeeting?.id, activeMeeting?.status, activeMeeting?.llmRefine?.status]);
+    }, [activeMeeting?.id, activeMeeting?.status, activeMeeting?.llmRefine?.status, activeMeeting?.llmDialogue?.status]);
 
     async function checkAuth() {
       try {
@@ -538,7 +541,11 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
         "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac",
         "audio/flac", "audio/x-flac", "video/mp4"
       ];
-      const MAX_SIZE_BYTES = 1 * 1024 * 1024 * 1024; // 1 GB
+      // 5 GB: большие записи режутся на параллельные чанки на сервере (см.
+      // meeting-pipeline-service.js) — реальный лимит теперь не в размере
+      // файла, а в PROCESSING_TIME_LIMIT_MS (лимит времени распознавания).
+      // 5 GB — щедрый потолок только от случайных ошибок (не тот файл и т.п.).
+      const MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 
       const fileType = meetingForm.file.type || "";
       const fileName = meetingForm.file.name || "";
@@ -1021,7 +1028,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                     `
                   : html`
                       <strong>Файл пока не выбран</strong>
-                      <span>MP3, M4A, WAV, OGG, FLAC, AAC · максимум 1 ГБ</span>
+                      <span>MP3, M4A, WAV, OGG, FLAC, AAC · максимум 5 ГБ</span>
                     `}
             </div>
           </div>

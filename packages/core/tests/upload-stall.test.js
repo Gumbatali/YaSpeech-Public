@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   UPLOAD_STALL_TIMEOUT_MS,
   isUploadStalled,
+  isProcessingStalled,
   markUploadStalled,
+  markProcessingStalled,
   reopenMeetingUpload,
   touchUploadHeartbeat
 } from "../src/domain/meeting.js";
@@ -80,6 +82,37 @@ test("markUploadStalled переводит в failed с кодом UPLOAD_STALLE
   // Для не-uploading статусов — no-op
   const done = uploadingMeeting({ status: "done" });
   assert.equal(markUploadStalled(done, later), done);
+});
+
+test("isProcessingStalled: рабочие статусы виснут после 30 минут тишины", () => {
+  for (const status of ["uploaded", "speechkit_processing", "protocol_generating"]) {
+    const meeting = uploadingMeeting({ status, currentStage: status });
+    assert.equal(isProcessingStalled(meeting, minutesAfter(T0, 29)), false, status);
+    assert.equal(isProcessingStalled(meeting, minutesAfter(T0, 31)), true, status);
+  }
+
+  // Терминальные и «пользовательские» статусы не считаются зависшими
+  for (const status of ["uploading", "draft_ready", "done", "failed"]) {
+    const meeting = uploadingMeeting({ status });
+    assert.equal(isProcessingStalled(meeting, minutesAfter(T0, 120)), false, status);
+  }
+});
+
+test("markProcessingStalled: failed с кодом PROCESSING_STALLED, currentStage сохраняется", () => {
+  const meeting = uploadingMeeting({
+    status: "protocol_generating",
+    currentStage: "protocol_generating"
+  });
+  const later = minutesAfter(T0, 31);
+
+  const stalled = markProcessingStalled(meeting, later);
+  assert.equal(stalled.status, "failed");
+  assert.equal(stalled.error.code, "PROCESSING_STALLED");
+  // retry смотрит на currentStage, чтобы пропустить повторное распознавание
+  assert.equal(stalled.currentStage, "protocol_generating");
+
+  const done = uploadingMeeting({ status: "done" });
+  assert.equal(markProcessingStalled(done, later), done);
 });
 
 test("reopenMeetingUpload возвращает встречу в uploading и чистит ошибку", () => {

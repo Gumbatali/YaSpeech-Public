@@ -35,7 +35,11 @@ export async function createRuntimeServer({
   sessionSecret = null,
   adminLogin = null,
   // Подменяемые часы для тестов (staleness-логика загрузки зависит от времени)
-  clock: providedClock = null
+  clock: providedClock = null,
+  // Пороги параллельного ASR — настраиваемо для тестов (гонять реальные
+  // десятки МБ в юнит-тестах непрактично), см. MeetingPipelineService.
+  parallelSplitThresholdBytes,
+  chunkTargetSeconds
 }) {
   const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
   const webRootDirectory = path.resolve(currentDirectory, "../../../web");
@@ -57,7 +61,9 @@ export async function createRuntimeServer({
       failAttempts: failAiStudioAttempts
     }),
     queueRunner,
-    clock
+    clock,
+    ...(parallelSplitThresholdBytes != null ? { parallelSplitThresholdBytes } : {}),
+    ...(chunkTargetSeconds != null ? { chunkTargetSeconds } : {})
   });
 
   const requestHandler = createHttpHandler({
