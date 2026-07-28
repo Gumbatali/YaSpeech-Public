@@ -3,7 +3,7 @@ export class MockYandexGptGateway {
     this.remainingFailures = failAttempts;
   }
 
-  // ── Методы refine-флоу (кнопка «Улучшить с помощью ИИ») ──────────────
+  // ── Методы refine-флоу (кнопка «Разметить аудио с ИИ») ──────────────
 
   async analyzeContext({ projectName }) {
     return {
@@ -18,6 +18,12 @@ export class MockYandexGptGateway {
 
   async diarizeTranscript(transcript) {
     // Mock: диаризацию не выполняем — возвращаем как есть
+    return transcript;
+  }
+
+  async diarizeByProjectTeam(transcript) {
+    // Mock: диаризацию по составу проекта не выполняем — возвращаем как есть
+    // (SpeechKit-мок уже расставляет speaker-1/2/3 в тестовых данных)
     return transcript;
   }
 
@@ -42,6 +48,30 @@ export class MockYandexGptGateway {
         improved = text.replace(/\.$/, " (отредактировано ИИ).");
       }
       byId.set(Number(m[1]), improved);
+    }
+    const missingIds = ids.filter((id) => !byId.has(id));
+    return { byId, missingIds };
+  }
+
+  /**
+   * Mock-«литературная запись»: убирает частые слова-паразиты через regex;
+   * если стирать нечего — ставит видимую пометку (как refineLines), чтобы
+   * тесты и локальная разработка гарантированно видели dialogueRewritten=true.
+   * Числа/имена не трогает — реальный validator (applyDialogueLines) тестируется отдельно.
+   */
+  async rewriteDialogueLines({ lines, ids }) {
+    const FILLERS = /\b(ну|вот|короче|типа|как бы|в общем-то|значит|э+|м+)\b[,]?\s*/gi;
+    const byId = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\[(\d+)\]\s*(?:[^:]{1,50}:\s*)?(.*)$/);
+      if (!m) continue;
+      const text = m[2].trim();
+      const cleaned = text.replace(FILLERS, "").replace(/\s+/g, " ").trim();
+      let result = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+      if (result === text) {
+        result = text.replace(/\.$/, "") + " — литературная запись.";
+      }
+      byId.set(Number(m[1]), result || text);
     }
     const missingIds = ids.filter((id) => !byId.has(id));
     return { byId, missingIds };

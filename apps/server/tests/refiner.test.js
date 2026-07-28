@@ -5,7 +5,9 @@ import {
   parseRefinedLines,
   extractNumericValues,
   numbersPreserved,
-  applyRefinedLines
+  applyRefinedLines,
+  applyDialogueLines,
+  wordOverlapRatio
 } from "../src/application/transcription/refiner.js";
 
 function makePhrases(count, textLength = 100) {
@@ -127,4 +129,95 @@ test("applyRefinedLines: применяет правки, валидатор о�
 
   // Исходный массив не мутирован
   assert.equal(phrases[0].text, "исполниловка по третьему этажу");
+});
+
+test("applyDialogueLines: чистка филлеров проходит, подмена чисел и пересказ откатываются", () => {
+  const phrases = [
+    { speakerId: "s1", speakerLabel: "Иван", text: "ну вот короче я в общем-то думаю что кс три готов уже" },
+    { speakerId: "s2", speakerLabel: "Пётр", text: "до двадцатого июня точно успеем сделать фасад" },
+    { speakerId: "s1", speakerLabel: "Иван", text: "смотрите там на объекте на харьковской у нас бригады работают и всё идёт по плану, но нужно ещё бетон подвезти" }
+  ];
+
+  const byId = new Map([
+    [1, "Я думаю, КС-3 уже готов."],                    // убрали филлеры, смысл сохранён
+    [2, "До двадцать первого июня успеем сделать фасад."], // подмена даты!
+    [3, "Всё по плану."]                                  // пересказ вместо литературной записи — слишком коротко
+  ]);
+
+  const result = applyDialogueLines(phrases, byId);
+
+  assert.equal(result.phrases[0].dialogueRewritten, true);
+  assert.equal(result.phrases[0].text, "Я думаю, КС-3 уже готов.");
+  assert.equal(result.phrases[0].dialogueOriginalText, phrases[0].text);
+
+  assert.equal(result.phrases[1].dialogueRewritten, false);
+  assert.equal(result.phrases[1].dialogueRejected, "numbers");
+  assert.equal(result.phrases[1].text, phrases[1].text);
+
+  assert.equal(result.phrases[2].dialogueRewritten, false);
+  assert.equal(result.phrases[2].dialogueRejected, "too-short");
+  assert.equal(result.phrases[2].text, phrases[2].text);
+
+  assert.equal(result.applied, 1);
+  assert.equal(result.rejectedByValidator, 2);
+
+  // Исходный массив не мутирован
+  assert.equal(phrases[0].text, "ну вот короче я в общем-то думаю что кс три готов уже");
+});
+
+test("applyDialogueLines: минимальный порог длины настраивается", () => {
+  const phrases = [{ speakerId: "s1", speakerLabel: "Иван", text: "да, согласен полностью с этим предложением" }];
+  const byId = new Map([[1, "Согласен."]]); // короче 35%, но допустимо при более мягком пороге
+
+  const strict = applyDialogueLines(phrases, byId);
+  assert.equal(strict.phrases[0].dialogueRewritten, false);
+
+  const lenient = applyDialogueLines(phrases, byId, { minLengthRatio: 0.2 });
+  assert.equal(lenient.phrases[0].dialogueRewritten, true);
+});
+
+test("wordOverlapRatio: пересечение по множеству слов относительно короткого текста", () => {
+  assert.equal(wordOverlapRatio("да, давай, конечно", "Да, давай, конечно"), 1);
+  assert.equal(wordOverlapRatio("совсем разные слова тут", "ничего общего вообще нет"), 0);
+  // "вечером" общее, остальное разное — 1 из 2 слов короткого текста
+  assert.equal(wordOverlapRatio("встретимся вечером на объекте", "вечером"), 1);
+});
+
+// Найдено на реальной 35-минутной записи 2026-07-14 (628 реплик): в одном
+// из чанков DIALOGUE-прохода Pro-модель вернула валидный по формату ответ
+// ([N] на каждой строке), но контент реплики 16 дословно совпал с REFINE-
+// текстом реплики 24 — сдвиг на 8 позиций внутри чанка. numbersPreserved и
+// порог длины это пропускают (чисел нет, длина сопоставима) — только
+// пересечение словаря отличает подмену от литературной правки.
+test("applyDialogueLines: подмена контента чужой реплики отклоняется (content-mismatch)", () => {
+  const phrases = [
+    { speakerId: "s2", speakerLabel: "Спикер 2", text: "пусть так и будет, да, всё правильно, соответственно, это искусственный" },
+    { speakerId: "s2", speakerLabel: "Спикер 2", text: "ты с заказчиком согласовал схему, ты ему отправил сейчас или ты не отправлял" }
+  ];
+  const byId = new Map([
+    // Реальный сбой: byId[1] получил текст, реально относящийся к byId[2]
+    [1, "ты с заказчиком согласовал схему, ты ему отправил сейчас или ты не отправлял"],
+    [2, "ты с заказчиком согласовал схему, ты ему отправил сейчас или ты не отправлял."] // легитимно (это его собственный текст)
+  ]);
+
+  const result = applyDialogueLines(phrases, byId);
+
+  assert.equal(result.phrases[0].dialogueRewritten, false);
+  assert.equal(result.phrases[0].dialogueRejected, "content-mismatch");
+  assert.equal(result.phrases[0].text, phrases[0].text); // откат на исходный (refine) текст
+
+  assert.equal(result.phrases[1].dialogueRewritten, true);
+  assert.equal(result.rejectedByValidator, 1);
+  assert.equal(result.applied, 1);
+});
+
+test("applyDialogueLines: порог пересечения слов настраивается", () => {
+  const phrases = [{ speakerId: "s1", speakerLabel: "Иван", text: "полностью согласен с этим планом работ" }];
+  const byId = new Map([[1, "совершенно другая формулировка мысли тут"]]); // overlap = 0
+
+  const strict = applyDialogueLines(phrases, byId);
+  assert.equal(strict.phrases[0].dialogueRejected, "content-mismatch");
+
+  const permissive = applyDialogueLines(phrases, byId, { minWordOverlap: 0 });
+  assert.equal(permissive.phrases[0].dialogueRewritten, true);
 });

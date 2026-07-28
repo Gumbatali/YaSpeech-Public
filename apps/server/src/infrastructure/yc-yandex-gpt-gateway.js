@@ -13,6 +13,7 @@
 import { YandexGptClient } from "./llm/yandex-gpt-client.js";
 import {
   promptDiarization,
+  promptDiarizationByTeam,
   promptGlossary,
   promptContextAnalysis,
   promptSpeakerIdentification,
@@ -20,25 +21,62 @@ import {
   promptProtocolReduce,
   promptFaithfulnessCheck,
   promptCompletenessCheck,
-  promptTranscriptRefine
+  promptTranscriptRefine,
+  promptDialogueRewrite
 } from "./llm/prompts.js";
 import { parseRefinedLines } from "../application/transcription/refiner.js";
 import { logger } from "../shared/logger.js";
 
 const MAX_TRANSCRIPT_CHARS = 22_000;
 
+// Размер чанка для диаризации по составу проекта (A1b). Меньше, чем у REFINE
+// (CHUNK_CHARS=8000 в refiner.js) — здесь модель делает более сложную задачу
+// (разбить на реплики + приписать спикеров с нуля, без готовой построчной
+// структуры), поэтому меньший объём на вход снижает риск "экономии" на
+// детализации разметки.
+const DIARIZE_CHUNK_CHARS = 4_000;
+// Сколько последних реплик передаём как контекст в следующий чанк — чтобы
+// модель продолжала нумерацию Спикер 1/2 согласованно, а не с нуля.
+const DIARIZE_CONTEXT_SEGMENTS = 3;
+
+// Полный промах (ни одной строки "[N] текст" в ответе) чаще всего значит не
+// "модель ошиблась форматом", а отказ модерации ("не могу обсуждать эту
+// тему") — parseRefinedLines такой ответ тоже помечает как missingIds=все,
+// и снаружи это неотличимо от обрыва вывода без сырого текста в логах.
+// Не бросаем ошибку (это ортогонально к самому REFINE/DIALOGUE — уже
+// обработанный chunk просто останется неизменным, applyRefinedLines/
+// applyDialogueLines это переживают), но логируем, иначе причину нулевого
+// changedRatio на проде не продиагностировать без ручного репро.
+function logIfTotalMiss(pass, raw, { byId, missingIds }, ids) {
+  if (byId.size > 0 || missingIds.length !== ids.length) return;
+  logger.warn(`${pass}: total miss — модель не вернула ни одной строки в ожидаемом формате`, {
+    idsCount: ids.length,
+    rawPreview: (raw ?? "").slice(0, 300)
+  });
+}
+
 export class YcYandexGptGateway {
-  constructor({ folderId, model = process.env.GPT_MODEL ?? "yandexgpt-lite" }) {
+  constructor({
+    folderId,
+    model = process.env.GPT_MODEL ?? "yandexgpt-lite",
+    // Диалог зовётся редко (по кнопке, раз на встречу) и требует лучшего
+    // владения языком, чем термин-ориентированный REFINE — Pro оправдан.
+    dialogueModel = process.env.GPT_DIALOGUE_MODEL ?? "yandexgpt"
+  }) {
     this.folderId = folderId;
     // Lite выбран по бенчмарку (scripts/experiments/llm-refine-bench):
     // WER-восстановление 63% при цене в 6 раз ниже Pro
     this.modelUri = `gpt://${folderId}/${model}/latest`;
     this.client = new YandexGptClient({ modelUri: this.modelUri });
-    logger.info("YandexGPT: initialized", { folderId, modelUri: this.modelUri });
+    this.dialogueModelUri = `gpt://${folderId}/${dialogueModel}/latest`;
+    this.dialogueClient = new YandexGptClient({ modelUri: this.dialogueModelUri });
+    logger.info("YandexGPT: initialized", {
+      folderId, modelUri: this.modelUri, dialogueModelUri: this.dialogueModelUri
+    });
   }
 
   // ============================================================
-  // STAGE A1: GPT Diarization (mono transcripts only)
+  // STAGE A1: GPT Diarization
   // ============================================================
 
   /**
@@ -78,10 +116,123 @@ export class YcYandexGptGateway {
 
     const raw = await this.client.complete(system, user, options);
     const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1");
+    return this._segmentsToTranscript(result.segments, transcript, "A1");
+  }
 
-    const segments = Array.isArray(result.segments) ? result.segments : [];
+  /**
+   * Разбивает ЛЮБОЙ транскрипт (не только mono) на реплики по спикерам через
+   * GPT, опираясь на известный состав участников встречи (команда проекта +
+   * гости). Вызывается ВСЕГДА кнопкой «Разметить аудио с ИИ» — диаризация
+   * SpeechKit (channelTag) на реальных записях часто ошибается (одноканальная
+   * запись, перегородки, шум), поэтому не считаем её достаточной сама по себе.
+   *
+   * @param {object} transcript - { phrases, rawText, ... }
+   * @param {string} domain - предметная сфера для промпта
+   * @param {string[]} participants - имена участников встречи (команда + гости)
+   * @returns {object} обновлённый transcript с разбивкой по спикерам
+   */
+  async diarizeByProjectTeam(transcript, domain, participants = []) {
+    const rawText = transcript.rawText ?? "";
+    if (rawText.trim().length < 50) {
+      logger.info("GPT A1b: skipped (transcript too short for diarization)");
+      return transcript;
+    }
+
+    // Убираем метки спикеров SpeechKit И склеиваем текст в один сплошной
+    // поток без переносов строк. Просто убрать префиксы "Спикер N:" мало:
+    // rawText собран из phrases построчно (см. postprocessTranscript), и эти
+    // границы строк — уже ошибочная диаризация SpeechKit по каналу/паузам
+    // (на реальных записях канал общий на нескольких говорящих, поэтому
+    // SpeechKit режет одну фразу на "спикеров" через каждые несколько слов).
+    // Если оставить построчную структуру, модель в среднем просто повторяет
+    // эти же ложные границы вместо того, чтобы заново собрать текст в реплики
+    // по смыслу — что и есть весь смысл этого прохода.
+    const cleanText = rawText
+      .replace(/^Спикер \d+:\s*/gm, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Чанкуем ПО СЛОВАМ (не построчно — построчная структура уже ошибочна,
+    // см. выше). Один вызов на весь длинный текст сразу даёт грубое обобщение
+    // (модель на глаз "экономит" и сливает разговор в несколько огромных
+    // реплик вместо построчной разметки) — обнаружено на реальной 19-минутной
+    // записи: без чанкинга 19000 символов дали всего 6 реплик на весь разговор.
+    const chunks = this._chunkTextForDiarization(cleanText, DIARIZE_CHUNK_CHARS);
+    logger.info("GPT A1b: diarization by project team", {
+      chars: rawText.length, domain, participants: participants.length, chunks: chunks.length
+    });
+
+    const allSegments = [];
+    let contextTail = null;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const { system, user, options } = promptDiarizationByTeam({
+        transcriptText: chunks[i],
+        domain,
+        participants,
+        contextTail
+      });
+
+      const raw = await this.client.complete(system, user, options);
+      const result = YandexGptClient.parseJson(raw, { segments: [] }, "A1b");
+      const segments = Array.isArray(result.segments) ? result.segments : [];
+
+      if (segments.length === 0) {
+        logger.warn("GPT A1b: chunk returned no segments, skipping chunk", { chunk: i });
+        continue;
+      }
+
+      allSegments.push(...segments);
+      // Хвост для согласования нумерации спикеров в следующем чанке
+      contextTail = segments.slice(-DIARIZE_CONTEXT_SEGMENTS)
+        .map((s) => `${s.speaker}: ${s.text}`)
+        .join("\n");
+    }
+
+    if (allSegments.length === 0) {
+      logger.warn("GPT A1b: no segments across all chunks, keeping original");
+      return transcript;
+    }
+
+    return this._segmentsToTranscript(allSegments, transcript, "A1b");
+  }
+
+  /**
+   * Режет сплошной текст на чанки ≤ maxChars по границам слов (не разрывая
+   * слово пополам). Используется диаризацией — line-ID протокол здесь не
+   * подходит, потому что на входе ещё нет надёжной построчной структуры.
+   */
+  _chunkTextForDiarization(text, maxChars) {
+    const words = text.split(" ");
+    const chunks = [];
+    let current = [];
+    let currentChars = 0;
+
+    for (const word of words) {
+      if (currentChars + word.length + 1 > maxChars && current.length > 0) {
+        chunks.push(current.join(" "));
+        current = [];
+        currentChars = 0;
+      }
+      current.push(word);
+      currentChars += word.length + 1;
+    }
+    if (current.length > 0) chunks.push(current.join(" "));
+    return chunks;
+  }
+
+  /**
+   * Общий постпроцессинг ответа диаризации (A1/A1b): валидация, назначение
+   * speakerId по порядку появления, пропорциональный пересчёт временных меток.
+   */
+  _segmentsToTranscript(rawSegments, transcript, passLabel) {
+    const segments = Array.isArray(rawSegments) ? rawSegments : [];
     if (segments.length < 2) {
-      logger.warn("GPT A1: returned <2 segments, keeping original", {
+      logger.warn(`GPT ${passLabel}: returned <2 segments, keeping original`, {
         segments: segments.length
       });
       return transcript;
@@ -123,7 +274,7 @@ export class YcYandexGptGateway {
       .map((p) => `${p.speakerLabel}: ${p.text}`)
       .join("\n");
 
-    logger.info("GPT A1: diarization done", {
+    logger.info(`GPT ${passLabel}: diarization done`, {
       segments: phrases.length,
       speakers: speakerLabels.length
     });
@@ -181,7 +332,29 @@ export class YcYandexGptGateway {
       glossary
     });
     const raw = await this.client.complete(system, user, options);
-    return parseRefinedLines(raw, ids);
+    const result = parseRefinedLines(raw, ids);
+    logIfTotalMiss("refine", raw, result, ids);
+    return result;
+  }
+
+  /**
+   * Литературная запись чанка реплик (проход «Диалог», после REFINE).
+   * На Pro-модели (см. конструктор) — вызывается редко, качество важнее цены.
+   *
+   * @param {{ lines: string[], ids: number[], contextLines: string[], domain: string, glossary: object|null }} params
+   * @returns {Promise<{ byId: Map<number, string>, missingIds: number[] }>}
+   */
+  async rewriteDialogueLines({ lines, ids, contextLines = [], domain, glossary = null }) {
+    const { system, user, options } = promptDialogueRewrite({
+      numberedLines: lines,
+      contextLines,
+      domain,
+      glossary
+    });
+    const raw = await this.dialogueClient.complete(system, user, options);
+    const result = parseRefinedLines(raw, ids);
+    logIfTotalMiss("dialogue", raw, result, ids);
+    return result;
   }
 
   // ============================================================

@@ -16,8 +16,31 @@ const GPT_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion
 // Задержки для exponential backoff (ms)
 const RETRY_DELAYS = [1000, 3000, 8000];
 
+// Таймаут ОДНОЙ попытки запроса. Без него зависший запрос (сеть, перегрузка
+// API) не завершится вообще ничем — только жёстким убийством serverless-
+// функции по её собственному execution-timeout (см. scripts/deploy.sh),
+// без шанса на graceful retry или чекпоинт вызывающей стороны.
+// Худший случай при полном исчерпании ретраев: 4×45s + backoff(1+3+8s) ≈ 192s —
+// укладывается в execution-timeout воркера (300s) с запасом на остальной чанк.
+const REQUEST_TIMEOUT_MS = 45_000;
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`YandexGPT: request timed out after ${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -66,27 +89,27 @@ export class YandexGptClient {
 
       try {
         let iamToken = await getIamToken();
-        let res = await fetch(GPT_URL, {
+        let res = await fetchWithTimeout(GPT_URL, {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${iamToken}`,
             "Content-Type": "application/json"
           },
           body
-        });
+        }, REQUEST_TIMEOUT_MS);
 
         // IAM токен протух — обновляем и повторяем
         if (res.status === 401) {
           invalidateIamToken();
           iamToken = await getIamToken();
-          res = await fetch(GPT_URL, {
+          res = await fetchWithTimeout(GPT_URL, {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${iamToken}`,
               "Content-Type": "application/json"
             },
             body
-          });
+          }, REQUEST_TIMEOUT_MS);
         }
 
         // Сервер перегружен → retry

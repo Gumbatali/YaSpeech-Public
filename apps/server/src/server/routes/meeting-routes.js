@@ -7,7 +7,9 @@ import {
 } from "../../../../../packages/core/src/domain/user.js";
 import {
   isUploadStalled,
+  isProcessingStalled,
   markUploadStalled,
+  markProcessingStalled,
   reopenMeetingUpload,
   touchUploadHeartbeat
 } from "../../../../../packages/core/src/domain/meeting.js";
@@ -75,7 +77,10 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   router.add("POST", "/api/meetings/:id/upload-complete", async ({ request, response, params, currentUser }) => {
-    // Проверяем квоту расшифровок для текущего пользователя (до чтения тела — как раньше)
+    const payload = await readBody(request);
+    const durationSeconds = payload.durationSeconds ?? null;
+
+    // Проверяем квоту расшифровок для текущего пользователя
     if (currentUser && sessionSecret) {
       const freshUser = await userRepository.findById(currentUser.id);
       if (freshUser) {
@@ -90,13 +95,14 @@ export function registerMeetingRoutes(router, deps) {
       }
     }
 
-    const payload = await readBody(request);
     const meeting = await useCases.markUploadCompleted.execute({
       meetingId: params.id,
       sizeBytes: payload.sizeBytes ?? 0,
-      durationSeconds: payload.durationSeconds ?? null
+      durationSeconds
     });
-    pipelineService.enqueueProcessing(params.id);
+    // await обязателен: если постановка в очередь упала (права, YMQ),
+    // пользователь должен увидеть ошибку, а не «успех» с вечно зависшей встречей
+    await pipelineService.enqueueProcessing(params.id);
     sendJson(response, 200, { meeting });
   });
 
@@ -112,15 +118,26 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting });
   });
 
-  // Загрузка живёт в браузере — сервер узнаёт о её смерти только по отсутствию
-  // heartbeat'ов. Лечим на чтении: зависшая uploading-встреча становится failed.
-  async function healIfUploadStalled(meeting) {
-    if (!isUploadStalled(meeting, clock.now().toISOString())) {
-      return meeting;
+  // Зависания лечим на чтении (у serverless нет фонового процесса для этого):
+  // — uploading без heartbeat'ов = браузер бросил загрузку;
+  // — uploaded/speechkit_processing/protocol_generating без обновлений =
+  //   очередь/триггер мертвы или worker упал.
+  // В обоих случаях встреча становится failed с понятной ошибкой вместо
+  // вечного «Загружаем…»/«Готовим текст…».
+  async function healIfStalled(meeting) {
+    const nowIso = clock.now().toISOString();
+
+    let healed = meeting;
+    if (isUploadStalled(meeting, nowIso)) {
+      healed = markUploadStalled(meeting, nowIso);
+    } else if (isProcessingStalled(meeting, nowIso)) {
+      healed = markProcessingStalled(meeting, nowIso);
     }
-    const stalled = markUploadStalled(meeting, clock.now().toISOString());
-    await meetingRepository.save(stalled);
-    return stalled;
+
+    if (healed !== meeting) {
+      await meetingRepository.save(healed);
+    }
+    return healed;
   }
 
   router.add("GET", "/api/meetings/:id", async ({ response, params }) => {
@@ -129,7 +146,7 @@ export function registerMeetingRoutes(router, deps) {
       notFound(response);
       return;
     }
-    sendJson(response, 200, { meeting: await healIfUploadStalled(meeting) });
+    sendJson(response, 200, { meeting: await healIfStalled(meeting) });
   });
 
   // POST /api/meetings/:id/upload-heartbeat — браузер пингует во время загрузки
@@ -205,6 +222,38 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 202, { meeting: updated });
   });
 
+  // POST /api/meetings/:id/transcript/dialogue — литературная запись диалога.
+  // Строится поверх уже завершённого refine (требование), поэтому доступна
+  // только после llmRefine.status==="done".
+  router.add("POST", "/api/meetings/:id/transcript/dialogue", async ({ response, params }) => {
+    const meeting = await meetingRepository.getById(params.id);
+    if (!meeting) { notFound(response); return; }
+
+    if (!["draft_ready", "done", "failed"].includes(meeting.status)) {
+      badRequest(response, "Диалог доступен после готовности расшифровки.");
+      return;
+    }
+    if (meeting.llmRefine?.status !== "done") {
+      badRequest(response, "Сначала нажмите «Улучшить с помощью ИИ» — диалог строится поверх улучшенной расшифровки.");
+      return;
+    }
+
+    const dialogueStatus = meeting.llmDialogue?.status;
+    if (dialogueStatus === "queued" || dialogueStatus === "processing") {
+      sendJson(response, 409, { error: "Сборка диалога уже выполняется." });
+      return;
+    }
+    if (dialogueStatus === "done") {
+      sendJson(response, 409, {
+        error: "Диалог уже собран. Повторная сборка доступна после редактирования расшифровки."
+      });
+      return;
+    }
+
+    const updated = await pipelineService.enqueueDialogue(params.id);
+    sendJson(response, 202, { meeting: updated });
+  });
+
   // PATCH /api/meetings/:id/transcript — сохранить отредактированный текст расшифровки
   router.add("PATCH", "/api/meetings/:id/transcript", async ({ request, response, params }) => {
     const meeting = await meetingRepository.getById(params.id);
@@ -255,9 +304,12 @@ export function registerMeetingRoutes(router, deps) {
         correctedText: rawText.trim()
       },
       // Ручная правка инвалидирует LLM-улучшение: кнопка снова доступна,
-      // протокол собирается по отредактированному тексту
+      // протокол собирается по отредактированному тексту. Диалог построен
+      // поверх старого refine-текста — тоже устарел.
       ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
+      ...(meeting.llmDialogue ? { llmDialogue: { status: "stale" } } : {}),
       llmTranscriptSegments: null,
+      llmDialogueSegments: null,
       updatedAt: clock.now().toISOString()
     };
     await meetingRepository.save(updatedMeeting);
@@ -299,7 +351,9 @@ export function registerMeetingRoutes(router, deps) {
       // Восстановление оригинала инвалидирует LLM-улучшение и устаревший
       // correctedText — протокол соберётся по фактическому (исходному) тексту
       ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
+      ...(meeting.llmDialogue ? { llmDialogue: { status: "stale" } } : {}),
       llmTranscriptSegments: null,
+      llmDialogueSegments: null,
       gptContext: meeting.gptContext
         ? { ...meeting.gptContext, correctedText: original.rawText ?? null }
         : meeting.gptContext,

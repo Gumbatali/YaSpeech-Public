@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ensureDirectory, readJsonFile, writeJsonFile, writeTextFile } from "../shared/fs.js";
@@ -63,6 +63,25 @@ export class LocalArtifactStorage {
   async readText(artifactKey) {
     try {
       return await readFile(this.resolveAbsolutePath(artifactKey), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  /** Сырые байты (для аудио-чанков параллельного ASR — см. audio-splitting.js) */
+  async writeBuffer(artifactKey, buffer) {
+    const targetPath = this.resolveAbsolutePath(artifactKey);
+    await ensureDirectory(path.dirname(targetPath));
+    await writeFile(targetPath, buffer);
+  }
+
+  async readBuffer(artifactKey) {
+    try {
+      return await readFile(this.resolveAbsolutePath(artifactKey));
     } catch (error) {
       if (error.code === "ENOENT") {
         return null;

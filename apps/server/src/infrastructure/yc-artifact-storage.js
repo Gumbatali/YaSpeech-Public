@@ -57,6 +57,26 @@ export class YcArtifactStorage {
     await this._put(key, text, "text/plain; charset=utf-8");
   }
 
+  /** Сырые байты (для аудио-чанков параллельного ASR — см. audio-splitting.js) */
+  async writeBuffer(key, buffer, contentType = "application/octet-stream") {
+    await this._put(key, buffer, contentType);
+  }
+
+  async readBuffer(key) {
+    let res;
+    try {
+      res = await this._get(key);
+    } catch (e) {
+      throw new Error(`S3 GET network error [${key}]: ${e.message}`);
+    }
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`S3 GET failed [${key}]: ${res.status} ${text.slice(0, 200)}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+
   async readText(key) {
     let res;
     try {

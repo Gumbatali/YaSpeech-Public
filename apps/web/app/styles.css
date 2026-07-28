@@ -408,6 +408,11 @@ button { cursor: pointer; }
   gap: 0.5rem;
 }
 
+.transcript-plain {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
 .speaker-unidentified {
   font-size: 0.75rem;
   color: #aaa;
@@ -1057,7 +1062,7 @@ button { cursor: pointer; }
   background: #fff;
 }
 
-/* ── Transcript version toggle (Дословно / LLM восстановил) ── */
+/* ── Transcript version toggle (Дословно / LLM восстановил / Диалог) ── */
 .transcript-version-toggle {
   display: flex;
   gap: 0.25rem;

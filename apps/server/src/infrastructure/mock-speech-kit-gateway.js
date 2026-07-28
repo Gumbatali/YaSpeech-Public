@@ -1,19 +1,22 @@
 export class MockSpeechKitGateway {
   /**
    * Стартует «фиктивное» распознавание. Сразу возвращает mock operationId.
+   * audioKey (параллельный ASR чанков) включается в operationId — иначе все
+   * чанки одной встречи получили бы одинаковый ID и слились бы неотличимо.
    */
-  async startRecognition({ meeting }) {
-    return { operationId: `mock-op-${meeting.id}` };
+  async startRecognition({ meeting, audioKey }) {
+    const suffix = audioKey ? `:${audioKey}` : "";
+    return { operationId: `mock-op-${meeting.id}${suffix}` };
   }
 
   /**
    * Mock-поллинг: всегда возвращает done: true с полным транскриптом.
    * project опционален — передаётся из pipeline для генерации реалистичных спикеров.
    */
-  async pollRecognitionOnce({ meeting, project = null, operationId: _operationId }) {
+  async pollRecognitionOnce({ meeting, project = null, operationId }) {
     const p = project ?? { team: [], name: "mock" };
     const { transcript } = await this.processMeeting({ meeting, project: p });
-    return { done: true, jobId: `job-${meeting.id}`, transcript };
+    return { done: true, jobId: operationId ?? `job-${meeting.id}`, transcript };
   }
 
   async processMeeting({ meeting, project }) {

@@ -5,7 +5,9 @@ import { notFound, sendJson } from "../../shared/http.js";
 import { optionalString, requireArray, requireString } from "../../shared/validate.js";
 import {
   isUploadStalled,
-  markUploadStalled
+  isProcessingStalled,
+  markUploadStalled,
+  markProcessingStalled
 } from "../../../../../packages/core/src/domain/meeting.js";
 
 export function registerProjectRoutes(router, deps) {
@@ -52,18 +54,24 @@ export function registerProjectRoutes(router, deps) {
   router.add("GET", "/api/projects/:id/meetings", async ({ response, params }) => {
     const meetings = await meetingRepository.listByProject(params.id);
 
-    // Брошенные загрузки лечим прямо на чтении списка: иначе встреча вечно
-    // висит «Загружаем файл…», хотя браузер давно перестал слать heartbeat.
+    // Зависания лечим прямо на чтении списка: иначе встреча вечно висит
+    // «Загружаем файл…» (брошенная загрузка) или «Готовим текст…» (мёртвая
+    // очередь / упавший worker), хотя обновлений давно нет.
+    const isStalled = (m, nowIso) => isUploadStalled(m, nowIso) || isProcessingStalled(m, nowIso);
+    const markStalled = (m, nowIso) =>
+      isUploadStalled(m, nowIso) ? markUploadStalled(m, nowIso) : markProcessingStalled(m, nowIso);
+
     const healed = await Promise.all(
       meetings.map(async (entry) => {
-        if (!isUploadStalled(entry, clock.now().toISOString())) {
+        const nowIso = clock.now().toISOString();
+        if (!isStalled(entry, nowIso)) {
           return entry;
         }
         const full = await meetingRepository.getById(entry.id);
-        if (!full || !isUploadStalled(full, clock.now().toISOString())) {
+        if (!full || !isStalled(full, nowIso)) {
           return entry;
         }
-        const stalled = markUploadStalled(full, clock.now().toISOString());
+        const stalled = markStalled(full, nowIso);
         await meetingRepository.save(stalled);
         return { ...entry, status: stalled.status, updatedAt: stalled.updatedAt };
       })
