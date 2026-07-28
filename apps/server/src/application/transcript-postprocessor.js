@@ -1,13 +1,17 @@
 /**
  * Постпроцессинг сырого транскрипта от SpeechKit:
- *   1. Удаление мусорных коротких сегментов (<2 слов, скорее всего шум)
- *   2. Склейка подряд идущих реплик одного спикера
- *   3. Коррекция типичных ASR ошибок
- *   4. Реномирование спикеров по talk time (главный говорящий = speaker-1)
- *   5. Подсчёт статистики по каждому спикеру
+ *   1. Восстановление пунктуации по паузам между словами (без LLM)
+ *   2. Коррекция ASR-галлюцинаций, удаление слов-паразитов, схлопывание
+ *      повторов ("да, да, да" → "да") — тоже без LLM
+ *   3. Удаление мусорных коротких сегментов (<2 слов, скорее всего шум)
+ *   4. Склейка подряд идущих реплик одного спикера
+ *   5. Реномирование спикеров по talk time (главный говорящий = speaker-1)
+ *   6. Подсчёт статистики по каждому спикеру
  */
 
 import { logger } from "../shared/logger.js";
+import { removeFillerWords, collapseRepeatedWords } from "./filler-words.js";
+import { punctuateByPauses } from "./punctuation-by-pauses.js";
 
 // Типичные ошибки распознавания → корректные слова.
 // Только высокоуверенные замены, лучше пропустить чем испортить.
@@ -28,13 +32,20 @@ const NOISE_MARKERS = new Set([
 ]);
 
 /**
- * Удаляет ASR-галлюцинации и слова-паразиты в одиночных сегментах.
+ * Удаляет ASR-галлюцинации в одиночных сегментах.
+ *
+ * ВАЖНО: \b в JS regex построен на \w, а \w НЕ включает кириллицу — "\bалиса\b"
+ * никогда не совпадёт с русским словом (граница слова вокруг кириллических
+ * букв просто не возникает). Раньше это тихо ломало все замены здесь.
+ * Используем lookaround на "не-букву" вместо \b (см. также filler-words.js,
+ * где та же проблема встречалась и была исправлена так же).
  */
 function cleanText(text) {
   if (!text) return "";
   let result = text;
   for (const [bad, good] of ASR_CORRECTIONS) {
-    const pattern = new RegExp("\\b" + bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "gi");
+    const escaped = bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`(?<=^|[^a-zа-яё])${escaped}(?=[^a-zа-яё]|$)`, "gi");
     result = result.replace(pattern, good);
   }
   return result.replace(/\s+/g, " ").trim();
@@ -141,28 +152,39 @@ export function postprocessTranscript(transcript, options = {}) {
 
   const before = transcript.phrases?.length ?? 0;
 
-  // 1. Чистим текст и фильтруем мусор
-  let phrases = (transcript.phrases ?? [])
-    .map((p) => ({ ...p, text: cleanText(p.text) }))
+  // 1. Пунктуация по паузам между словами — ДО чистки текста и склейки фраз:
+  // word-level тайминги известны только внутри одной ещё не склеенной фразы
+  // (после mergeConsecutive текст разных фраз/пауз между ними уже неотличим
+  // от пауз внутри одной фразы). Если слов с таймингами нет (fallback, старый
+  // SpeechKit v2 без per-word timestamps) — punctuateByPauses вернёт "" и
+  // используем исходный текст без пунктуации как раньше.
+  let phrases = (transcript.phrases ?? []).map((p) => {
+    const punctuated = punctuateByPauses(p.words);
+    return { ...p, text: punctuated || p.text };
+  });
+
+  // 2. Чистим текст: ASR-галлюцинации → слова-паразиты/междометия → повторы
+  phrases = phrases
+    .map((p) => ({ ...p, text: collapseRepeatedWords(removeFillerWords(cleanText(p.text))) }))
     .filter((p) => p.text && p.text.length > 0)
     .filter((p) => keepNoiseMarkers || !isNoiseSegment(p.text))
     .filter((p) => p.text.split(/\s+/).filter(Boolean).length >= minWordsPerSegment);
 
-  // 2. Склеиваем подряд идущие реплики одного спикера
+  // 3. Склеиваем подряд идущие реплики одного спикера
   phrases = mergeConsecutive(phrases);
 
-  // 3. Переименовываем спикеров по talk time
+  // 4. Переименовываем спикеров по talk time
   phrases = relabelByTalkTime(phrases);
 
-  // 4. Снова склеиваем — после relabel могут появиться новые consecutive
+  // 5. Снова склеиваем — после relabel могут появиться новые consecutive
   phrases = mergeConsecutive(phrases);
 
-  // 5. Пересобираем rawText
+  // 6. Пересобираем rawText
   const rawText = phrases
     .map((p) => `${p.speakerLabel}: ${p.text}`)
     .join("\n");
 
-  // 6. Статистика
+  // 7. Статистика
   const speakerStats = computeSpeakerStats(phrases);
 
   logger.info("Transcript postprocessing", {

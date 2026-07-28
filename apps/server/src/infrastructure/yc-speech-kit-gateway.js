@@ -380,13 +380,24 @@ export class YcSpeechKitGateway {
       const startMs = words.length ? (parseInt(words[0].startTimeMs ?? 0) || 0) : null;
       const endMs   = words.length ? (parseInt(words.at(-1).endTimeMs ?? 0) || 0) : null;
 
+      // Word-level тайминги сохраняем отдельно от текста — используются
+      // постпроцессором для восстановления пунктуации по длине пауз между
+      // словами (см. punctuation-by-pauses.js). Раньше эти данные считались
+      // только для startMs/endMs всей фразы и выбрасывались.
+      const normalizedWords = words.map((w) => ({
+        text: w.text ?? "",
+        startTimeMs: parseInt(w.startTimeMs ?? 0) || 0,
+        endTimeMs: parseInt(w.endTimeMs ?? 0) || 0
+      }));
+
       const last = grouped.at(-1);
       if (last && last.speakerTag === speakerTag && startMs !== null && last.endMs !== null
           && startMs - last.endMs < 2000) {
         last.text += " " + text;
         last.endMs = endMs;
+        last.words.push(...normalizedWords);
       } else {
-        grouped.push({ speakerTag, text, startMs, endMs });
+        grouped.push({ speakerTag, text, startMs, endMs, words: normalizedWords });
       }
     }
 
@@ -401,7 +412,8 @@ export class YcSpeechKitGateway {
         detectedName: null,
         startTimeMs: seg.startMs ?? 0,
         endTimeMs: seg.endMs ?? 0,
-        text: seg.text
+        text: seg.text,
+        words: seg.words
       };
     });
 
