@@ -271,7 +271,7 @@ deploy_api() {
   $YC serverless function version create \
     --folder-id "$FOLDER_ID" \
     --function-name "$FUNCTION_API_NAME" \
-    --runtime nodejs18 \
+    --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/api-handler.index" \
     --memory 256m \
     --execution-timeout 30s \
@@ -299,7 +299,7 @@ deploy_worker() {
   $YC serverless function version create \
     --folder-id "$FOLDER_ID" \
     --function-name "$FUNCTION_WORKER_NAME" \
-    --runtime nodejs18 \
+    --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
     --execution-timeout 300s \
