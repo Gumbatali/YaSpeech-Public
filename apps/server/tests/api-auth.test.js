@@ -10,13 +10,34 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createTestServer } from "../src/test-server.js";
+import { createUser } from "../../../packages/core/src/domain/user.js";
+import { hashPassword } from "../src/shared/password.js";
+import { resetRateLimits } from "../src/shared/rate-limit.js";
 
 const SESSION_SECRET = "test-secret-for-auth-tests";
 const ADMIN_LOGIN = "boss";
 
+// Продовый admin создаётся через scripts/seed-admin.js напрямую в хранилище,
+// а не через POST /api/auth/register (тот путь зарезервированный логин
+// отклоняет — см. register-user-use-case.js). Тесты воспроизводят тот же
+// прямой путь через userRepository, а не публичный API.
+async function seedAdmin(server, login, password) {
+  const user = createUser({
+    id: crypto.randomUUID(),
+    login: login.toLowerCase().trim(),
+    passwordHash: await hashPassword(password),
+    role: "admin",
+    createdAt: new Date().toISOString()
+  });
+  await server.repositories.userRepository.save(user);
+  return user;
+}
+
 async function withAuthServer(run) {
+  resetRateLimits();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "yaspeech-auth-"));
   const server = await createTestServer({
     dataDir,
@@ -69,13 +90,12 @@ function login(server, loginName, password) {
   });
 }
 
-test("register: админ-логин получает role=admin, обычный — member, дубль — 400", async () => {
+test("register: админ-логин зарезервирован (400), обычный — member, дубль — 400", async () => {
   await withAuthServer(async (server) => {
-    const admin = await register(server, ADMIN_LOGIN, "secret123");
-    assert.equal(admin.response.status, 201);
-    assert.equal(admin.body.user.role, "admin");
-    assert.equal(admin.body.user.passwordHash, undefined, "hash не утекает");
-    assert.ok(admin.cookie?.startsWith("session="), "cookie выставлена");
+    // ADMIN_LOGIN создаётся только через seed-admin.js, не через публичную
+    // регистрацию — иначе пропуск сида отдаёт роль admin первому встречному.
+    const reservedAttempt = await register(server, ADMIN_LOGIN, "secret123");
+    assert.equal(reservedAttempt.response.status, 400);
 
     const member = await register(server, "worker", "secret123");
     assert.equal(member.response.status, 201);
@@ -94,7 +114,7 @@ test("register: админ-логин получает role=admin, обычны�
 
 test("login: верный пароль 200 + cookie, неверный 401, бан 403", async () => {
   await withAuthServer(async (server) => {
-    await register(server, ADMIN_LOGIN, "secret123");
+    await seedAdmin(server, ADMIN_LOGIN, "secret123");
     await register(server, "victim", "secret123");
 
     const ok = await login(server, "victim", "secret123");
@@ -150,7 +170,8 @@ test("me + session middleware: без cookie 401, с cookie 200, logout очищ
 
 test("admin: member получает 403, ban/unban/role/quota работают, последний админ защищён", async () => {
   await withAuthServer(async (server) => {
-    const admin = await register(server, ADMIN_LOGIN, "secret123");
+    await seedAdmin(server, ADMIN_LOGIN, "secret123");
+    const admin = await login(server, ADMIN_LOGIN, "secret123");
     const member = await register(server, "pleb", "secret123");
 
     // member не админ

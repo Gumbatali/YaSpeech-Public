@@ -108,7 +108,15 @@ test("project CRUD, draft confirmation, processing history, and protocol downloa
     );
 
     assert.equal(markUploaded.body.meeting.status, "uploaded");
-    assert.equal(markUploadedAgain.body.meeting.status, "uploaded");
+    // Дубль-вызов гоняется с фоновым (мок) пайплайном, который уже поставлен
+    // в очередь первым вызовом: к моменту повторного execute() встреча могла
+    // уйти в speechkit_processing. markMeetingUploaded не откатывает статус
+    // назад в уже устаревшем случае — так и должно быть, важна лишь
+    // идемпотентность (повторный вызов не падает и не дублирует обработку).
+    assert.ok(
+      ["uploaded", "speechkit_processing"].includes(markUploadedAgain.body.meeting.status),
+      `неожиданный статус: ${markUploadedAgain.body.meeting.status}`
+    );
 
     await server.waitForIdle();
 

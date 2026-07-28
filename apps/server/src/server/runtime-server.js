@@ -124,7 +124,8 @@ export async function createRuntimeServer({
     },
     repositories: {
       projectRepository,
-      meetingRepository
+      meetingRepository,
+      userRepository
     },
     services: {
       pipelineService

@@ -14,6 +14,7 @@ import {
   touchUploadHeartbeat
 } from "../../../../../packages/core/src/domain/meeting.js";
 import { badRequest, notFound, sendJson, sendText } from "../../shared/http.js";
+import { canAccessProject } from "../../shared/authorize.js";
 import {
   optionalIsoDate,
   optionalString,
@@ -33,6 +34,7 @@ const MAX_FILE_NAME_LEN = 255;
 export function registerMeetingRoutes(router, deps) {
   const {
     meetingRepository,
+    projectRepository,
     userRepository,
     artifactStorage,
     pipelineService,
@@ -42,10 +44,37 @@ export function registerMeetingRoutes(router, deps) {
     readBody
   } = deps;
 
-  router.add("POST", "/api/meetings", async ({ request, response }) => {
+  // Загружает встречу и проверяет, что currentUser владеет её проектом
+  // (или проект общий/легаси без owner, или пользователь — админ).
+  // Возвращает null и уже отправляет 404 при отсутствии доступа —
+  // 404, а не 403, чтобы не подтверждать существование чужой встречи.
+  //
+  // project === null считаем доступным (не запрещаем), а не отказом:
+  // старые проекты (до появления team.json/ownerId) не имеют манифеста
+  // вовсе, но их встречи должны продолжать открываться, как раньше.
+  async function getAuthorizedMeeting(meetingId, currentUser, response) {
+    const meeting = await meetingRepository.getById(meetingId);
+    if (!meeting) {
+      notFound(response);
+      return null;
+    }
+    const project = await projectRepository.getById(meeting.projectId);
+    if (project && !canAccessProject(project, currentUser)) {
+      notFound(response);
+      return null;
+    }
+    return meeting;
+  }
+
+  router.add("POST", "/api/meetings", async ({ request, response, currentUser }) => {
     const payload = await readBody(request);
 
     requireId(payload.projectId, "Некорректный ID проекта.");
+    const project = await projectRepository.getById(payload.projectId);
+    if (!canAccessProject(project, currentUser)) {
+      notFound(response);
+      return;
+    }
     const date = optionalIsoDate(payload.date, "date");
     const participantIds = requireArray(payload.participantIds ?? [], "participantIds", { max: 200 });
     const guests = requireArray(payload.guests ?? [], "guests", { max: 200 });
@@ -77,6 +106,8 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   router.add("POST", "/api/meetings/:id/upload-complete", async ({ request, response, params, currentUser }) => {
+    if (!(await getAuthorizedMeeting(params.id, currentUser, response))) return;
+
     const payload = await readBody(request);
     const durationSeconds = payload.durationSeconds ?? null;
 
@@ -106,7 +137,9 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting });
   });
 
-  router.add("POST", "/api/meetings/:id/confirm-draft", async ({ request, response, params }) => {
+  router.add("POST", "/api/meetings/:id/confirm-draft", async ({ request, response, params, currentUser }) => {
+    if (!(await getAuthorizedMeeting(params.id, currentUser, response))) return;
+
     const payload = await readBody(request);
     const titleDraft = optionalString(payload.titleDraft, "titleDraft", { max: 300 });
     const speakerDrafts = requireArray(payload.speakerDrafts ?? [], "speakerDrafts", { max: 100 });
@@ -140,23 +173,17 @@ export function registerMeetingRoutes(router, deps) {
     return healed;
   }
 
-  router.add("GET", "/api/meetings/:id", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) {
-      notFound(response);
-      return;
-    }
+  router.add("GET", "/api/meetings/:id", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
     sendJson(response, 200, { meeting: await healIfStalled(meeting) });
   });
 
   // POST /api/meetings/:id/upload-heartbeat — браузер пингует во время загрузки
   // файла, чтобы сервер отличал живую медленную загрузку от брошенной.
-  router.add("POST", "/api/meetings/:id/upload-heartbeat", async ({ request, response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) {
-      notFound(response);
-      return;
-    }
+  router.add("POST", "/api/meetings/:id/upload-heartbeat", async ({ request, response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
     if (meeting.status !== "uploading") {
       sendJson(response, 409, { error: "Встреча не в состоянии загрузки.", meeting });
       return;
@@ -170,12 +197,9 @@ export function registerMeetingRoutes(router, deps) {
 
   // POST /api/meetings/:id/reupload — новый upload-URL для повторной загрузки
   // после обрыва (UPLOAD_STALLED), без пересоздания встречи.
-  router.add("POST", "/api/meetings/:id/reupload", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) {
-      notFound(response);
-      return;
-    }
+  router.add("POST", "/api/meetings/:id/reupload", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const isStalledFailure = meeting.status === "failed" && meeting.error?.code === "UPLOAD_STALLED";
     if (meeting.status !== "uploading" && !isStalledFailure) {
@@ -190,16 +214,18 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting: saved, upload });
   });
 
-  router.add("POST", "/api/meetings/:id/retry", async ({ response, params }) => {
+  router.add("POST", "/api/meetings/:id/retry", async ({ response, params, currentUser }) => {
+    if (!(await getAuthorizedMeeting(params.id, currentUser, response))) return;
+
     const meeting = await pipelineService.retry(params.id);
     sendJson(response, 200, { meeting });
   });
 
   // POST /api/meetings/:id/transcript/refine — LLM-улучшение расшифровки.
   // ЕДИНСТВЕННАЯ точка запуска LLM-коррекции (автоматических вызовов нет).
-  router.add("POST", "/api/meetings/:id/transcript/refine", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("POST", "/api/meetings/:id/transcript/refine", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     if (!["draft_ready", "done", "failed"].includes(meeting.status)) {
       badRequest(response, "Улучшение доступно после готовности расшифровки.");
@@ -225,9 +251,9 @@ export function registerMeetingRoutes(router, deps) {
   // POST /api/meetings/:id/transcript/dialogue — литературная запись диалога.
   // Строится поверх уже завершённого refine (требование), поэтому доступна
   // только после llmRefine.status==="done".
-  router.add("POST", "/api/meetings/:id/transcript/dialogue", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("POST", "/api/meetings/:id/transcript/dialogue", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     if (!["draft_ready", "done", "failed"].includes(meeting.status)) {
       badRequest(response, "Диалог доступен после готовности расшифровки.");
@@ -255,9 +281,9 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   // PATCH /api/meetings/:id/transcript — сохранить отредактированный текст расшифровки
-  router.add("PATCH", "/api/meetings/:id/transcript", async ({ request, response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("PATCH", "/api/meetings/:id/transcript", async ({ request, response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const { rawText } = await readBody(request);
     if (typeof rawText !== "string" || !rawText.trim()) {
@@ -318,9 +344,9 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   // POST /api/meetings/:id/transcript/restore — вернуть исходную расшифровку из .raw.json
-  router.add("POST", "/api/meetings/:id/transcript/restore", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("POST", "/api/meetings/:id/transcript/restore", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
     const original = await artifactStorage.readJson(rawKey);
@@ -364,9 +390,9 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   // PATCH /api/meetings/:id/protocol — сохранить отредактированный протокол
-  router.add("PATCH", "/api/meetings/:id/protocol", async ({ request, response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("PATCH", "/api/meetings/:id/protocol", async ({ request, response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const { protocol } = await readBody(request);
     if (!protocol || typeof protocol !== "object" || Array.isArray(protocol)) {
@@ -382,9 +408,9 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   // POST /api/meetings/:id/regenerate-protocol — пересобрать протокол из сохранённой расшифровки
-  router.add("POST", "/api/meetings/:id/regenerate-protocol", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) { notFound(response); return; }
+  router.add("POST", "/api/meetings/:id/regenerate-protocol", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     if (!["done", "failed"].includes(meeting.status)) {
       badRequest(response, "Пересборка доступна только для завершённых или упавших встреч.");
@@ -403,12 +429,9 @@ export function registerMeetingRoutes(router, deps) {
     sendJson(response, 200, { meeting: updated });
   });
 
-  router.add("GET", "/api/meetings/:id/protocol.txt", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) {
-      notFound(response);
-      return;
-    }
+  router.add("GET", "/api/meetings/:id/protocol.txt", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const protocol = await artifactStorage.readText(meeting.artifacts.protocolTextKey);
     if (!protocol) {
@@ -418,12 +441,9 @@ export function registerMeetingRoutes(router, deps) {
     sendText(response, 200, protocol);
   });
 
-  router.add("GET", "/api/meetings/:id/transcript.txt", async ({ response, params }) => {
-    const meeting = await meetingRepository.getById(params.id);
-    if (!meeting) {
-      notFound(response);
-      return;
-    }
+  router.add("GET", "/api/meetings/:id/transcript.txt", async ({ response, params, currentUser }) => {
+    const meeting = await getAuthorizedMeeting(params.id, currentUser, response);
+    if (!meeting) return;
 
     const transcript = await artifactStorage.readJson(meeting.artifacts.transcriptKey);
     if (!transcript) {
@@ -441,7 +461,9 @@ export function registerMeetingRoutes(router, deps) {
     sendText(response, 200, text);
   });
 
-  router.add("DELETE", "/api/meetings/:id", async ({ response, params }) => {
+  router.add("DELETE", "/api/meetings/:id", async ({ response, params, currentUser }) => {
+    if (!(await getAuthorizedMeeting(params.id, currentUser, response))) return;
+
     await meetingRepository.delete(params.id);
     sendJson(response, 200, { ok: true });
   });

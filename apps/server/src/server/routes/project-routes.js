@@ -3,6 +3,7 @@
  */
 import { notFound, sendJson } from "../../shared/http.js";
 import { optionalString, requireArray, requireString } from "../../shared/validate.js";
+import { assertProjectAccess } from "../../shared/authorize.js";
 import {
   isUploadStalled,
   isProcessingStalled,
@@ -35,23 +36,32 @@ export function registerProjectRoutes(router, deps) {
     sendJson(response, 201, { project });
   });
 
-  router.add("GET", "/api/projects/:id/team", async ({ response, params }) => {
+  router.add("GET", "/api/projects/:id/team", async ({ response, params, currentUser }) => {
+    const project = await projectRepository.getById(params.id);
+    if (!assertProjectAccess(project, currentUser, response, notFound)) return;
+
     const members = await projectRepository.getTeam(params.id);
     sendJson(response, 200, { projectId: params.id, members });
   });
 
-  router.add("PUT", "/api/projects/:id/team", async ({ request, response, params }) => {
+  router.add("PUT", "/api/projects/:id/team", async ({ request, response, params, currentUser }) => {
+    const project = await projectRepository.getById(params.id);
+    if (!assertProjectAccess(project, currentUser, response, notFound)) return;
+
     const payload = await readBody(request);
     const members = requireArray(payload.members ?? [], "members", { max: 100 });
 
-    const project = await useCases.updateProjectTeam.execute({
+    const updated = await useCases.updateProjectTeam.execute({
       projectId: params.id,
       members
     });
-    sendJson(response, 200, { project });
+    sendJson(response, 200, { project: updated });
   });
 
-  router.add("GET", "/api/projects/:id/meetings", async ({ response, params }) => {
+  router.add("GET", "/api/projects/:id/meetings", async ({ response, params, currentUser }) => {
+    const project = await projectRepository.getById(params.id);
+    if (!assertProjectAccess(project, currentUser, response, notFound)) return;
+
     const meetings = await meetingRepository.listByProject(params.id);
 
     // Зависания лечим прямо на чтении списка: иначе встреча вечно висит
@@ -80,12 +90,9 @@ export function registerProjectRoutes(router, deps) {
     sendJson(response, 200, { meetings: healed });
   });
 
-  router.add("PATCH", "/api/projects/:id", async ({ request, response, params }) => {
+  router.add("PATCH", "/api/projects/:id", async ({ request, response, params, currentUser }) => {
     const project = await projectRepository.getById(params.id);
-    if (!project) {
-      notFound(response);
-      return;
-    }
+    if (!assertProjectAccess(project, currentUser, response, notFound)) return;
 
     const payload = await readBody(request);
     const name = optionalString(payload.name, "name", { max: 200 });
@@ -98,7 +105,10 @@ export function registerProjectRoutes(router, deps) {
     sendJson(response, 200, { project: updated });
   });
 
-  router.add("DELETE", "/api/projects/:id", async ({ response, params }) => {
+  router.add("DELETE", "/api/projects/:id", async ({ response, params, currentUser }) => {
+    const project = await projectRepository.getById(params.id);
+    if (!assertProjectAccess(project, currentUser, response, notFound)) return;
+
     await projectRepository.delete(params.id);
     sendJson(response, 200, { ok: true });
   });

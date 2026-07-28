@@ -5,16 +5,30 @@
 import { publicUser } from "../../../../../packages/core/src/index.js";
 import { badRequest, sendJson } from "../../shared/http.js";
 import { requireString } from "../../shared/validate.js";
+import { tryConsumeRateLimit, requestIp } from "../../shared/rate-limit.js";
 import {
   createSessionToken,
   setSessionCookie,
   clearSessionCookie
 } from "../../shared/session.js";
 
+// Ограничения подобраны так, чтобы не мешать реальному пользователю,
+// который пару раз ошибся в пароле, но резать brute-force/спам-регистрацию.
+const REGISTER_MAX_ATTEMPTS = 5;
+const REGISTER_WINDOW_MS = 60 * 60 * 1000; // 1 час
+const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 минут
+
 export function registerAuthRoutes(router, deps) {
   const { useCases, sessionSecret, readBody, resolveCurrentUser } = deps;
 
   router.add("POST", "/api/auth/register", async ({ request, response }) => {
+    const ip = requestIp(request);
+    if (!tryConsumeRateLimit(`register:${ip}`, REGISTER_MAX_ATTEMPTS, REGISTER_WINDOW_MS)) {
+      sendJson(response, 429, { error: "Слишком много попыток регистрации. Попробуйте позже." });
+      return;
+    }
+
     const payload = await readBody(request);
     const login = requireString(payload.login ?? "", "login", { max: 128, allowEmpty: true });
     const password = requireString(payload.password ?? "", "password", { max: 1024, allowEmpty: true });
@@ -37,6 +51,14 @@ export function registerAuthRoutes(router, deps) {
     const login = requireString(payload.login ?? "", "login", { max: 128, allowEmpty: true });
     const password = requireString(payload.password ?? "", "password", { max: 1024, allowEmpty: true });
     const totpCode = requireString(payload.totpCode ?? "", "totpCode", { max: 32, allowEmpty: true });
+
+    // Ключ по IP+логину: не блокирует всех пользователей за одного
+    // атакующего с одного IP, но режет brute-force по конкретному аккаунту.
+    const ip = requestIp(request);
+    if (!tryConsumeRateLimit(`login:${ip}:${login.toLowerCase()}`, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS)) {
+      sendJson(response, 429, { error: "Слишком много попыток входа. Попробуйте позже." });
+      return;
+    }
 
     let user;
     try {

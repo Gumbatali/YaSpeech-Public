@@ -33,17 +33,20 @@ export class RegisterUserUseCase {
       throw new Error("Пользователь с таким логином уже зарегистрирован.");
     }
 
+    // Админ создаётся только через seed-admin.js. Публичная регистрация не
+    // должна уметь выдать роль admin — иначе пропуск/сбой seed-скрипта
+    // означает, что первый зарегистрировавшийся с этим логином станет админом.
+    if (this.adminLogin && normalizedLogin === this.adminLogin.toLowerCase().trim()) {
+      throw new Error("Этот логин зарезервирован.");
+    }
+
     const passwordHash = await this.passwordHasher.hash(password);
-    const role = this.adminLogin &&
-      normalizedLogin === this.adminLogin.toLowerCase().trim()
-      ? "admin"
-      : "member";
 
     const user = createUser({
       id: this.idGenerator.next(),
       login: normalizedLogin,
       passwordHash,
-      role,
+      role: "member",
       createdAt: this.clock.now().toISOString()
     });
 
