@@ -5,7 +5,7 @@ created_at: 2026-07-27
 last_reviewed: 2026-07-27
 tags: [ai-studio, speechkit, yandexgpt, object-storage, asr, diarization, meeting-protocol]
 status: draft
-responsible_engineer: PLACEHOLDER_CONTACT_EMAIL
+responsible_engineer: gnguseinov@edu.hse.ru
 related_docs:
   - navigation.md
   - system_prompts.md
