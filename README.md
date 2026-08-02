@@ -1,6 +1,6 @@
 # YaSpeech — протоколы встреч без ручной расшифровки
 
-[![CI](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml/badge.svg)](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml)
+[![CI](https://github.com/Gumbatali/YaSpeech-Public/actions/workflows/ci.yml/badge.svg)](https://github.com/Gumbatali/YaSpeech-Public/actions/workflows/ci.yml)
 
 YaSpeech превращает аудиозапись совещания в готовый протокол: кто что сказал,
 о чём договорились, какие задачи и сроки. Загрузили запись — за минуту получили
@@ -171,4 +171,4 @@ bash scripts/deploy.sh gateway   # только API Gateway
 ## Обратная связь
 
 Нашли баг, есть идея или вопрос по проекту?
-Пожалуйста, [создайте Issue](https://github.com/Gumbatali/YaSpeech/issues) в этом репозитории. Будем рады любым предложениям по улучшению!
+Пожалуйста, [создайте Issue](https://github.com/Gumbatali/YaSpeech-Public/issues) в этом репозитории. Будем рады любым предложениям по улучшению!
