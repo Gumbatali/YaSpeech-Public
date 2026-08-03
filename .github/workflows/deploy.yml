@@ -80,6 +80,15 @@ jobs:
           FOLDER_ID: ${{ secrets.FOLDER_ID }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           ADMIN_LOGIN: ${{ secrets.ADMIN_LOGIN }}
+          # Ниже — необязательные: если секрет не задан, сюда попадёт пустая
+          # строка, и deploy.sh развернёт конфигурацию по умолчанию
+          # (SpeechKit со встроенной диаризацией), как и до появления этих полей.
+          ASR_PROVIDER: ${{ secrets.ASR_PROVIDER }}
+          DIARIZER: ${{ secrets.DIARIZER }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DIARIZER_URL: ${{ secrets.DIARIZER_URL }}
+          DIARIZER_TOKEN: ${{ secrets.DIARIZER_TOKEN }}
         run: bash scripts/deploy.sh "${{ github.event.inputs.target || 'all' }}"
 
       - name: Убрать ключ

@@ -10,7 +10,8 @@
  */
 
 import { GroqWhisperGateway } from "./groq-whisper-gateway.js";
-import { PyannoteDiarization, alignTranscriptWithDiarization } from "./pyannote-diarization.js";
+import { alignTranscriptWithDiarization } from "./pyannote-diarization.js";
+import { makeDiarizer } from "./diarization/make-diarizer.js";
 import { YcSpeechKitGateway } from "./yc-speech-kit-gateway.js";
 import { logger } from "../shared/logger.js";
 
@@ -18,12 +19,13 @@ export class SmartAsrGateway {
   /**
    * @param {{
    *   groqApiKey?: string,
-   *   hfToken?: string,
    *   speechKitBucket: string,
-   *   artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage
+   *   artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage,
+   *   env?: Record<string, string|undefined>,
+   *   diarizer?: object
    * }}
    */
-  constructor({ groqApiKey, hfToken, speechKitBucket, artifactStorage }) {
+  constructor({ groqApiKey, speechKitBucket, artifactStorage, env = process.env, diarizer }) {
     this.artifactStorage = artifactStorage;
     this.speechKitBucket = speechKitBucket; // нужен для fallback при ошибке Groq
 
@@ -36,13 +38,12 @@ export class SmartAsrGateway {
       logger.info("SmartASR: using SpeechKit (no GROQ_API_KEY)");
     }
 
-    // Диаризация
-    this.diarizer = new PyannoteDiarization({ hfToken, artifactStorage });
-    if (hfToken) {
-      logger.info("SmartASR: pyannote diarization enabled");
-    } else {
-      logger.info("SmartASR: pyannote disabled (no HF_TOKEN), will use LLM diarization");
-    }
+    // Диаризация — бэкенд выбирается переменной DIARIZER (или внедряется в тестах).
+    this.diarizer = diarizer ?? makeDiarizer({ env, artifactStorage });
+    logger.info("SmartASR: diarizer configured", {
+      backend: this.diarizer.backend,
+      available: this.diarizer.available,
+    });
   }
 
   /**
@@ -89,13 +90,15 @@ export class SmartAsrGateway {
   }
 
   async applyDiarization(transcript, meeting) {
-    logger.info("SmartASR: running pyannote diarization");
+    logger.info("SmartASR: running diarization", { backend: this.diarizer.backend });
 
     const audioKey = meeting.artifacts.audioOriginalKey;
     const diarizationSegments = await this.diarizer.diarize(audioKey);
 
     if (!diarizationSegments?.length) {
-      logger.warn("SmartASR: pyannote returned no segments, falling back to single-speaker");
+      logger.warn("SmartASR: diarizer returned no segments, falling back to single-speaker", {
+        backend: this.diarizer.backend,
+      });
       // Назначаем всем фразам Спикер 1
       return transcript.phrases.map((p) => ({
         ...p,
