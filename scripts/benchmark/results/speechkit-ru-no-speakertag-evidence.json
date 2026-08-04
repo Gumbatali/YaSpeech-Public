@@ -1,0 +1,131 @@
+{
+ "note": "Сырой ответ SpeechKit STT v3 на русском аудио при speakerLabeling=ENABLED",
+ "final_events": 39,
+ "speakerTag_present": false,
+ "channelTag_values": [
+  "0",
+  "1"
+ ],
+ "channel_coverage": {
+  "1": [
+   21.9,
+   181.0
+  ],
+  "0": [
+   2.2,
+   175.1
+  ]
+ },
+ "sample_events": [
+  {
+   "sessionUuid": {
+    "uuid": "4f869550-b7e2acad-793480c-f4cb36ae",
+    "userRequestId": "undefined"
+   },
+   "audioCursors": {
+    "receivedDataMs": "181600",
+    "resetTimeMs": "0",
+    "partialTimeMs": "2210",
+    "finalTimeMs": "2210",
+    "finalIndex": "0",
+    "eouTimeMs": "0"
+   },
+   "responseWallTimeMs": "4308",
+   "final": {
+    "alternatives": [
+     {
+      "words": [
+       {
+        "text": "джой",
+        "startTimeMs": "780",
+        "endTimeMs": "1050"
+       },
+       {
+        "text": "отстань",
+        "startTimeMs": "1480",
+        "endTimeMs": "1860"
+       },
+       {
+        "text": "от",
+        "startTimeMs": "1880",
+        "endTimeMs": "1939"
+       },
+       {
+        "text": "меня",
+        "startTimeMs": "1979",
+        "endTimeMs": "2210"
+       }
+      ],
+      "text": "джой отстань от меня",
+      "startTimeMs": "0",
+      "endTimeMs": "2210",
+      "confidence": 0,
+      "languages": []
+     }
+    ],
+    "channelTag": "0"
+   },
+   "channelTag": "0"
+  },
+  {
+   "sessionUuid": {
+    "uuid": "4f869550-b7e2acad-793480c-f4cb36ae",
+    "userRequestId": "undefined"
+   },
+   "audioCursors": {
+    "receivedDataMs": "181600",
+    "resetTimeMs": "0",
+    "partialTimeMs": "7660",
+    "finalTimeMs": "7660",
+    "finalIndex": "1",
+    "eouTimeMs": "2210"
+   },
+   "responseWallTimeMs": "4310",
+   "final": {
+    "alternatives": [
+     {
+      "words": [
+       {
+        "text": "включи",
+        "startTimeMs": "4819",
+        "endTimeMs": "5299"
+       },
+       {
+        "text": "канал",
+        "startTimeMs": "5359",
+        "endTimeMs": "5720"
+       },
+       {
+        "text": "шант",
+        "startTimeMs": "5839",
+        "endTimeMs": "6220"
+       },
+       {
+        "text": "сериал",
+        "startTimeMs": "6399",
+        "endTimeMs": "6759"
+       },
+       {
+        "text": "на",
+        "startTimeMs": "6799",
+        "endTimeMs": "6879"
+       },
+       {
+        "text": "телевизоре",
+        "startTimeMs": "6940",
+        "endTimeMs": "7660"
+       }
+      ],
+      "text": "включи канал шант сериал на телевизоре",
+      "startTimeMs": "2210",
+      "endTimeMs": "7660",
+      "confidence": 0,
+      "languages": []
+     }
+    ],
+    "channelTag": "0"
+   },
+   "channelTag": "0"
+  }
+ ]
+}
