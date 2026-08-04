@@ -15,10 +15,27 @@ pyannote Community-1 — self-hosted.
   4. Аудио не покидает наш периметр. Для записей совещаний заказчика это
      скорее требование, чем удобство.
 
+РЕЗУЛЬТАТ ЗАМЕРА (VoxConverse dev, 8 записей, 2026-08-04): DER 13.4%.
+
+Главное — не общий DER, а распределение ошибки: pyannote угадал число
+спикеров на 8 записях из 8 (100%), включая все с 5-6 участниками. Sortformer
+на тех же записях выдавал ровно 4 и попадал в 50% случаев.
+
+    записи <=4 спикеров:  DER 13.9%   (Sortformer: 2.7%)
+    записи  >4 спикеров:  DER 12.9%   (Sortformer: 9.5%)
+
+То есть качество pyannote почти не зависит от числа участников, тогда как
+Sortformer резко деградирует за пределами своих четырёх слотов. На простых
+записях Sortformer заметно точнее и в 13 раз быстрее (RTF 0.04x против 0.52x).
+
+Практический вывод: pyannote берут не за среднюю точность, а за способность
+вообще увидеть пятого и шестого участника.
+
 Ограничение подхода: pyannote кластеризует эмбеддинги, а не предсказывает
 multi-label маску. Сильно перекрывающуюся речь он размечает хуже, чем
 Sortformer, — там, где двое говорят одновременно, кластеризация вынуждена
-выбрать одного. Ради этого в наборе и остаётся NeMo.
+выбрать одного. Это видно в замере: speaker-error 9.2% против 2.6%
+у streaming-Sortformer.
 """
 
 from __future__ import annotations
@@ -55,7 +72,14 @@ class PyannoteBackend(Backend):
                 "Прими условия модели на huggingface.co и задай токен."
             )
 
-        self.pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=hf_token)
+        # В pyannote.audio 4.x параметр переименован из use_auth_token в token.
+        # Пробуем новый, откатываемся на старый — сервис должен работать
+        # с обеими ветками библиотеки.
+        try:
+            self.pipeline = Pipeline.from_pretrained(MODEL_ID, token=hf_token)
+        except TypeError:
+            self.pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=hf_token)
+
         if self.pipeline is None:
             raise RuntimeError(
                 f"Pipeline.from_pretrained({MODEL_ID}) вернул None — "
@@ -83,7 +107,16 @@ class PyannoteBackend(Backend):
             if max_speakers:
                 kwargs["max_speakers"] = int(max_speakers)
 
-        annotation = self.pipeline(audio_path, **kwargs)
+        result = self.pipeline(audio_path, **kwargs)
+
+        # pyannote 4.x возвращает DiarizeOutput — контейнер, внутри которого
+        # лежит Annotation в поле speaker_diarization (плюс отдельная
+        # exclusive-версия без перекрытий и эмбеддинги). В 3.x пайплайн
+        # отдавал Annotation напрямую. Поддерживаем оба варианта.
+        #
+        # Берём именно speaker_diarization, а не exclusive_*: перекрывающаяся
+        # речь — валидные данные по нашему контракту, схлопывать её нельзя.
+        annotation = getattr(result, "speaker_diarization", result)
 
         return [
             Segment(speaker=str(label), start=float(turn.start), stop=float(turn.end))

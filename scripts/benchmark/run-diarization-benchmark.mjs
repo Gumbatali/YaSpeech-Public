@@ -186,7 +186,10 @@ console.log(`\n📄 Подробный отчёт: ${reportPath}`);
 
 async function checkHealth(backend) {
   try {
-    const res = await fetch(`${backend.url}/health`, { signal: AbortSignal.timeout(10_000) });
+    // 60с, а не 10: uvicorn с одним воркером не отвечает на /health, пока
+    // занят инференсом. На CPU одна запись обрабатывается минутами, и
+    // короткий таймаут ошибочно помечал живой сервис как недоступный.
+    const res = await fetch(`${backend.url}/health`, { signal: AbortSignal.timeout(60_000) });
     const body = await res.json().catch(() => ({}));
     if (res.ok && body.model_loaded) {
       return { ok: true, detail: `${body.model ?? "?"} на ${body.device ?? "?"}` };

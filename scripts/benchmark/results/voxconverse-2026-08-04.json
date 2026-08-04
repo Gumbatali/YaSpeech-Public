@@ -1,6 +1,7 @@
 {
-  "generatedAt": "2026-08-04T01:29:56.238Z",
-  "manifest": "/home/yc-user/corpus/wav/manifest.jsonl",
+  "generatedAt": "2026-08-04T17:11:10.172Z",
+  "corpus": "VoxConverse dev, 8 записей, 3-6 спикеров, перекрытия 18-33%",
+  "hardware": "Yandex Cloud CPU 16 vCPU / 64 GB, без GPU",
   "options": {
     "collar": 0.25,
     "skipOverlap": false
@@ -25,6 +26,16 @@
       "speakerError": 0.06351418926707622,
       "speakerCountAcc": 0.5,
       "rtf": 0.05973049433778683
+    },
+    {
+      "backend": "pyannote-community-1",
+      "files": "8/8",
+      "der": 0.13400105421725383,
+      "miss": 0.03281450041990467,
+      "falseAlarm": 0.008724454757853231,
+      "speakerError": 0.09246209903949594,
+      "speakerCountAcc": 1,
+      "rtf": 0.5234392632572795
     }
   ],
   "details": [
@@ -229,6 +240,108 @@
           "speakerCountCorrect": false,
           "elapsedSec": 5.423,
           "rtf": 0.02288185654008439
+        }
+      ]
+    },
+    {
+      "backend": "pyannote-community-1",
+      "url": "http://localhost:8001",
+      "files": [
+        {
+          "id": "cmfyw",
+          "der": 0.059937684486716956,
+          "miss": 0.02308133814365366,
+          "falseAlarm": 0.023224827812397507,
+          "speakerError": 0.013631518530665791,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 252.451,
+          "rtf": 0.5217654596560847
+        },
+        {
+          "id": "ezsgk",
+          "der": 0.1986633610003234,
+          "miss": 0.02042686213215479,
+          "falseAlarm": 0.005605260321224534,
+          "speakerError": 0.17263123854694407,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 105.261,
+          "rtf": 0.5069398959738008
+        },
+        {
+          "id": "jnivh",
+          "der": 0.01389470744309454,
+          "miss": 0.007052087697248988,
+          "falseAlarm": 0.0015360983102918587,
+          "speakerError": 0.005306521435553694,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 69.478,
+          "rtf": 0.5004177470469605
+        },
+        {
+          "id": "mesob",
+          "der": 0.1736297198538368,
+          "miss": 0.023142509135200974,
+          "falseAlarm": 0.01686967113276492,
+          "speakerError": 0.1336175395858709,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 79.886,
+          "rtf": 0.5063767748478701
+        },
+        {
+          "id": "migzj",
+          "der": 0.16782221121703603,
+          "miss": 0.042899591432462546,
+          "falseAlarm": 0.011885601089513434,
+          "speakerError": 0.11303701869506004,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 88.854,
+          "rtf": 0.5060022779043281
+        },
+        {
+          "id": "nnqfq",
+          "der": 0.05447070914696814,
+          "miss": 0.03964175598296873,
+          "falseAlarm": 0.0002202319776831596,
+          "speakerError": 0.014608721186316254,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 73.034,
+          "rtf": 0.6178849407783419
+        },
+        {
+          "id": "vbjlx",
+          "der": 0.1956610366919045,
+          "miss": 0.05841584158415842,
+          "falseAlarm": 0.007716948165404776,
+          "speakerError": 0.1295282469423413,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 166.948,
+          "rtf": 0.5157810182896688
+        },
+        {
+          "id": "wnfoi",
+          "der": 0.20792900389815044,
+          "miss": 0.047856017251389237,
+          "falseAlarm": 0.002736999253545658,
+          "speakerError": 0.15733598739321555,
+          "refSpeakers": 6,
+          "hypSpeakers": 6,
+          "speakerCountCorrect": true,
+          "elapsedSec": 121.426,
+          "rtf": 0.5123459915611814
         }
       ]
     }
