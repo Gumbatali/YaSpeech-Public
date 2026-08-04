@@ -1,0 +1,61 @@
+# NeMo Sortformer — CPU-вариант для замеров без GPU.
+#
+# Отличие от основного Dockerfile: база не nvcr.io/nvidia/nemo (~20 ГБ с CUDA),
+# а обычный python:3.10 + torch CPU. Образ на порядок меньше и собирается
+# минуты вместо десятков минут.
+#
+# Python 3.10 обязателен: NeMo использует синтаксис `str | Path` (PEP 604),
+# который на 3.8 падает с TypeError при импорте токенизатора. На Ubuntu 20.04
+# системный python — 3.8, и deadsnakes больше не собирает 3.10 под focal,
+# поэтому нужная версия приходит именно из образа.
+#
+# Использовать для инференса на CPU; в проде с GPU — основной Dockerfile.
+FROM python:3.10-slim
+
+WORKDIR /app
+
+ENV HF_HOME=/models \
+    TORCH_HOME=/models \
+    PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=16
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libsndfile1 ffmpeg git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cython отдельным слоем ДО NeMo: зависимость texterrors собирает метаданные
+# через setup.py, которому Cython нужен уже на этапе разбора. В одной команде
+# pip его ещё не установил — сборка падает с ModuleNotFoundError.
+RUN pip install --no-cache-dir Cython wheel setuptools
+
+# NeMo 2.x: Sortformer появился только здесь, в 1.23 класса
+# SortformerEncLabelModel ещё нет.
+RUN pip install --no-cache-dir \
+    "nemo_toolkit[asr]==2.7.3" \
+    fastapi==0.115.0 \
+    "uvicorn[standard]==0.30.6" \
+    python-multipart==0.0.9 \
+    soundfile==0.12.1 \
+    librosa==0.10.2
+
+# torch/torchaudio ставим ПОСЛЕ NeMo и строго одной парой версий.
+# NeMo тянет свежий torch как зависимость; если поставить torchaudio раньше,
+# версии расходятся (torch 2.13 против torchaudio 2.4) и libtorchaudio.so
+# не грузится — C++-ABI между релизами несовместим.
+#
+# Версия 2.6, а не 2.4: NeMo 2.7.3 использует nn.Buffer, появившийся в
+# torch 2.6. Более старый torch падает с AttributeError при импорте модели.
+#
+# --no-deps обязателен: без него --force-reinstall тянет зависимости torch и
+# откатывает typing_extensions до версии без Sentinel, который импортирует
+# pydantic_core. Нам нужно заменить ровно два пакета, не трогая остальное.
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+      torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir "numpy<2"
+
+COPY common/ /app/common/
+COPY nemo-sortformer/app.py /app/app.py
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
