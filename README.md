@@ -1,174 +1,88 @@
-# YaSpeech — протоколы встреч без ручной расшифровки
+# YaSpeech Cookbook — автопротоколирование деловых встреч на Yandex Cloud
 
-[![CI](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml/badge.svg)](https://github.com/Gumbatali/YaSpeech/actions/workflows/ci.yml)
+Кукбук по сборке пайплайна **«запись встречи → готовый протокол»** на трёх сервисах
+Yandex Cloud: SpeechKit (ASR с диаризацией), YandexGPT (многоходовый LLM-анализ)
+и Object Storage (хранение артефактов).
 
-YaSpeech превращает аудиозапись совещания в готовый протокол: кто что сказал,
-о чём договорились, какие задачи и сроки. Загрузили запись — за минуту получили
-дословную расшифровку, по кнопке улучшили её с помощью ИИ, собрали протокол.
-Сделано для строительной компании СТРОЙТЕХЭКСПЕРТ, работает в Яндекс Облаке.
+Основан на архитектуре реального продакшн-сервиса **YaSpeech**, который компания
+«Стройтехэксперт» использует для фиксации решений и задач по строительным
+проектам. Здесь — упрощённая, но рабочая Python-версия того же пайплайна,
+которую можно прогнать в Colab или Jupyter.
 
-**Прод:** https://d5dk1on1i3j14e4gemus.z2ka767n.apigw.yandexcloud.net
-
-> 🧭 **Куда смотреть:** [что это и зачем](./docs/КАК-ЭТО-РАБОТАЕТ.md) ·
-> [как участвовать в разработке](./CONTRIBUTING.md) ·
-> [Project Handbook](./docs/project-handbook/README.md) (вся документация)
-
----
-
-## Оглавление
-
-- [Что умеет](#что-умеет)
-- [Скриншоты интерфейса](#скриншоты-интерфейса)
-- [Как использовать](#как-использовать)
-- [Архитектура](#архитектура)
-- [Запуск локально](#запуск-локально)
-- [Деплой в Яндекс Облако](#деплой-в-яндекс-облако)
-- [Документация](#документация)
-- [Обратная связь](#обратная-связь)
+> Код продакшн-сервиса (Node.js, Cloud Functions + API Gateway + YMQ) лежит
+> в ветке [`main`](https://github.com/Gumbatali/YaSpeech-Public/tree/main).
 
 ---
 
-## Скриншоты интерфейса
+## Что в этой ветке
 
-> 💡 **Как добавить свои скриншоты:**
-> Положи свои картинки (включая гифки) в папку `docs/assets/` под именами `screenshot-main.png` и `demo.gif`, и они автоматически появятся здесь.
-
-![Главный экран со списком встреч](./docs/assets/screenshot-main.png)
-<br>_Главный экран управления проектами_
-
-![Редактирование протокола и ИИ-помощник](./docs/assets/demo.gif)
-<br>_Процесс генерации и редактирования протокола_
-
----
-
-## Что умеет
-
-| Возможность | Что это даёт |
-|-------------|--------------|
-| Загрузка аудио | MP3, M4A, WAV, OGG, FLAC, голосовые из мессенджеров |
-| Автоматическая расшифровка | Текст встречи без ручного труда |
-| Разделение по спикерам | Кто что сказал, у каждого свой цвет |
-| Идентификация имён и ролей | Прораб, заказчик — или описание роли, если имя неизвестно |
-| Таймкоды | Каждая реплика с временем от начала записи |
-| Две версии текста | Дословно (ASR) и с исправлениями (LLM) |
-| Редактирование расшифровки | Поправить любой фрагмент вручную |
-| Готовый протокол | Обзор, участники, решения, задачи с ответственными и сроками |
-| Редактирование итогов | Любой пункт протокола изменить прямо в браузере |
-| Вход и личные кабинеты | Логин/пароль, у каждого свои проекты |
-| Администрирование | Управление пользователями, банами, квотами |
+| Файл | Назначение |
+|---|---|
+| [`cookbook_yaspeech.ipynb`](./cookbook_yaspeech.ipynb) | Основной ноутбук: весь пайплайн от загрузки аудио до протокола |
+| [`system_prompts.md`](./system_prompts.md) | Полные тексты промптов с пояснениями + отличия прод-версии |
+| [`navigation.md`](./navigation.md) | Оглавление кукбука и best practices |
+| [`requirements.txt`](./requirements.txt) | Зависимости Python |
+| [`.env.example`](./.env.example) | Шаблон переменных окружения для локального запуска |
+| [`architecture.png`](./architecture.png) | Схема пайплайна |
 
 ---
 
-## Как использовать
+## Что демонстрирует кукбук
 
-1. Войти по логину и паролю
-2. Создать проект (например, конкретный строительный объект)
-3. Добавить команду проекта (необязательно — помогает точнее определять спикеров)
-4. Загрузить запись встречи
-5. Подождать обработку — статус меняется автоматически
-6. Проверить черновик — поправить имена и название встречи
-7. Получить протокол — скопировать, скачать или отредактировать
-
----
-
-## Архитектура (C4 Container Model)
-
-Ключевой принцип архитектуры: **ноль автоматических LLM-вызовов**. После распознавания речи (ASR) черновик создается мгновенно и бесплатно. Дорогие LLM-операции (улучшение текста, сборка протокола) запускаются строго по кнопке пользователя.
-
-![Схема архитектуры](./docs/assets/architecture.png)
-
-> 🧑‍💻 **Исходный код C4-схемы:** [architecture.c4.mmd](./docs/assets/architecture.c4.mmd)
-### Технический стек
-
-- **Runtime:** Node.js 18 на Yandex Cloud Functions (serverless)
-- **Хранилище:** Yandex Object Storage (S3-совместимое)
-- **Очередь:** Yandex Message Queue
-- **Шлюз:** Yandex API Gateway
-- **ASR:** Yandex SpeechKit (опционально Groq Whisper)
-- **LLM:** YandexGPT (`yandexgpt-lite`) — по кнопке: улучшение расшифровки + сборка протокола
-- **Auth:** HMAC-SHA256 сессии + scrypt — только встроенные модули Node, **ноль npm в продакшне**
-
-### Что и где искать (Структура папок)
-
-Проект построен по принципам монорепозитория, где бизнес-логика жестко отделена от облачной инфраструктуры:
-
-* `packages/core/` — **Сердце системы (Domain & Use Cases).** Здесь лежит чистая бизнес-логика (сущности встреч, проектов). **Важно:** Этот пакет не имеет ни одной зависимости от Yandex Cloud.
-* `apps/server/` — **Бэкенд и Инфраструктура.**
-  * `src/server/` — HTTP-слой, роутер, адаптеры к Yandex API Gateway.
-  * `src/infrastructure/` — Все интеграции: адаптеры к YandexGPT, SpeechKit, S3, YMQ. 
-  * `src/application/` — Оркестрация процесса транскрипции (`meeting-pipeline-service.js`).
-* `apps/web/` — **Фронтенд (SPA).** Написан на React + htm без сборщиков (Webpack/Vite). Загружается напрямую в браузер.
-  * `app/screens/` — Экраны (логин, проект, встреча).
-  * `app/api.js` — Клиент для общения с бэкендом.
-* `docs/` — **Вся техническая документация.**
-* `scripts/` — **Скрипты развертывания и эксплуатации.** (Например, `deploy.sh` для деплоя в облако).
-
-> 📖 **Глубокое погружение:** Детальная структура HTTP-слоя и логика работы фронтенда описана в [Карте кодовой базы](./docs/project-handbook/06-development/codebase-map.md).
+- **Многоходовый LLM-анализ** вместо одного большого промпта: контекст → диаризация
+  → коррекция → идентификация спикеров → протокол. Каждый проход решает одну узкую
+  задачу, ошибка одного не портит остальные.
+- **Line-ID протокол** для коррекции ASR-ошибок — приём против того, что модель
+  тихо теряет реплики: каждая реплика нумеруется `[N]`, пропажа номера
+  детектируется программно и вызывает retry.
+- **Детерминированный валидатор чисел** — правка, изменившая число или дату,
+  отклоняется кодом, а не «честностью» модели.
+- **Диаризация по составу участников проекта** — вместо абстрактных «Спикер 1/2»
+  модель получает реальный список команды (имена и роли) и сопоставляет реплики
+  с конкретными людьми.
 
 ---
 
-## Запуск локально
+## Быстрый старт
+
+### Google Colab
+
+Откройте `cookbook_yaspeech.ipynb` в Colab и заполните Colab Secrets —
+`FOLDER_ID`, `YC_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+(первая ячейка ноутбука читает именно их).
+
+### Локально
 
 ```bash
-npm test                    # 54 теста
-npm run dev                 # http://127.0.0.1:8787
-
-# С аутентификацией
-SESSION_SECRET=dev ADMIN_LOGIN=admin node apps/server/src/dev-server.js
+pip install -r requirements.txt
+cp .env.example .env    # заполните реальными значениями
+jupyter notebook cookbook_yaspeech.ipynb
 ```
 
-Локально работают mock-адаптеры — без реальных облачных вызовов и платных API.
-Зависимостей npm нет — `npm install` не нужен.
+Что понадобится в Yandex Cloud:
 
-Подробнее: [локальная разработка](./docs/project-handbook/06-development/local-setup.md) ·
-[как участвовать](./CONTRIBUTING.md).
+| Переменная | Где взять |
+|---|---|
+| `FOLDER_ID` | [идентификатор каталога](https://yandex.cloud/ru/docs/resource-manager/operations/folder/get-id) |
+| `YC_API_KEY` | [API-ключ сервисного аккаунта](https://yandex.cloud/ru/docs/iam/operations/api-key/create) (SpeechKit + YandexGPT) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | [статические ключи для Object Storage](https://yandex.cloud/ru/docs/storage/operations/access-keys/create) |
+
+Ноутбук делает реальные платные вызовы (SpeechKit + YandexGPT) и создаёт бакет
+Object Storage. В разделе 8 есть ячейка очистки ресурсов — вызов закомментирован,
+раскомментируйте, когда закончите.
 
 ---
 
-## Деплой в Яндекс Облако
+## Полезные ссылки
 
-**Основной путь — автоматический:** мерж в `main` → GitHub Actions гоняет тесты
-и деплоит в прод. Можно и вручную: Actions → **Deploy** → Run workflow.
-Настройка секретов и deployer-аккаунта: [CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md).
-
-**Ручной деплой с машины** (секреты в `scripts/.env.deploy`, в `.gitignore`):
-
-```bash
-bash scripts/deploy.sh all       # обе функции + фронтенд + шлюз
-bash scripts/deploy.sh api       # api-функция + фронтенд + шлюз
-bash scripts/deploy.sh worker    # только worker-функция
-bash scripts/deploy.sh frontend  # только фронтенд
-bash scripts/deploy.sh gateway   # только API Gateway
-```
-
-`deploy.sh` обходит `apps/server/src/` рекурсивно — новые файлы попадают в zip автоматически,
-без ручного сопровождения списка файлов. Секреты берёт из `.env.deploy` (локально)
-или из переменных окружения (в CI).
-
-Подробности: [облачное развёртывание](./docs/project-handbook/05-delivery-and-operations/cloud-deployment.md)
-
----
-
-## Документация
-
-**Для всех:**
-- **[Как это работает (для нетехнических)](./docs/КАК-ЭТО-РАБОТАЕТ.md)** — без жаргона
-- **[Project Handbook](./docs/project-handbook/README.md)** — вся документация, по ролям
-
-**Разработчику:**
-- **[Как участвовать (CONTRIBUTING)](./CONTRIBUTING.md)** — старт за 5 минут
-- **[Локальная разработка](./docs/project-handbook/06-development/local-setup.md)**
-- **[Карта кодовой базы](./docs/project-handbook/06-development/codebase-map.md)**
-- **[Обзор архитектуры](./docs/project-handbook/03-solution-architecture/architecture-overview.md)**
-
-**Эксплуатация:**
-- **[CI/CD](./docs/project-handbook/05-delivery-and-operations/ci-cd.md)** — автотесты и деплой
-- **[Мониторинг и логи](./docs/project-handbook/05-delivery-and-operations/monitoring-and-logging.md)**
-- **[Runbook](./docs/project-handbook/05-delivery-and-operations/runbook.md)** — что делать, когда сломалось
+- [SpeechKit STT v3](https://yandex.cloud/ru/docs/speechkit/stt-v3/) — асинхронное распознавание
+- [Диаризация (speaker labeling)](https://yandex.cloud/ru/docs/speechkit/stt/speaker-labeling)
+- [YandexGPT в Model Gallery (раздел AI Studio)](https://yandex.cloud/ru/docs/ai-studio/quickstart/yandexgpt)
+- [OpenAI-совместимое API](https://yandex.cloud/ru/docs/foundation-models/concepts/openai-compatibility)
+- [Object Storage (S3-совместимое API)](https://yandex.cloud/ru/docs/storage/s3/)
 
 ---
 
 ## Обратная связь
 
-Нашли баг, есть идея или вопрос по проекту?
-Пожалуйста, [создайте Issue](https://github.com/Gumbatali/YaSpeech/issues) в этом репозитории. Будем рады любым предложениям по улучшению!
+Нашли ошибку или есть предложение — [создайте Issue](https://github.com/Gumbatali/YaSpeech-Public/issues).

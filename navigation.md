@@ -92,7 +92,7 @@
 
 * 🔗 **SpeechKit STT v3**: https://yandex.cloud/ru/docs/speechkit/stt-v3/
 * 🔗 **Диаризация (speaker labeling)**: https://yandex.cloud/ru/docs/speechkit/stt/speaker-labeling
-* 🔗 **YandexGPT / Foundation Models**: https://yandex.cloud/ru/docs/ai-studio/quickstart/yandexgpt
+* 🔗 **YandexGPT в Model Gallery (раздел AI Studio)**: https://yandex.cloud/ru/docs/ai-studio/quickstart/yandexgpt
 * 🔗 **OpenAI-совместимое API**: https://yandex.cloud/ru/docs/foundation-models/concepts/openai-compatibility
 * 🔗 **Object Storage (S3-совместимое API)**: https://yandex.cloud/ru/docs/storage/s3/
 * 🔗 **Примеры кода Yandex AI Studio**: https://github.com/yandex-ai-studio/yandex-ai-studio-api-examples
