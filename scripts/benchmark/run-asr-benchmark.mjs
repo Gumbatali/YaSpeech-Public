@@ -13,8 +13,14 @@
  * что реплики уходят не тем людям.
  *
  * Схемы (--mode):
- *   speechkit         — Яндекс SpeechKit со встроенной диаризацией (как в проде)
- *   whisper+diarizer  — Groq Whisper для текста + внешний диаризатор
+ *   speechkit           — Яндекс SpeechKit как есть (как в проде сейчас)
+ *   speechkit+diarizer  — текст от SpeechKit + разметка внешним диаризатором
+ *   whisper+diarizer    — Groq Whisper для текста + внешний диаризатор
+ *
+ * Режим speechkit+diarizer существует потому, что SpeechKit не возвращает
+ * speakerTag (замер 2026-08-05), и его собственной диаризации фактически нет.
+ * Он показывает, сколько даёт замена ТОЛЬКО диаризации, без смены ASR —
+ * то есть самый дешёвый в внедрении вариант.
  *
  * Запуск:
  *   YC_IAM_TOKEN=$(yc iam create-token) YC_BUCKET=my-bucket \
@@ -81,10 +87,15 @@ for (const record of records) {
   const started = Date.now();
 
   try {
-    const utterances =
-      args.mode === "speechkit"
-        ? await transcribeSpeechKit(audioPath, record, language)
-        : await transcribeWhisperPlusDiarizer(audioPath, record, language);
+    let utterances;
+    if (args.mode === "speechkit") {
+      utterances = await transcribeSpeechKit(audioPath, record, language);
+    } else if (args.mode === "speechkit+diarizer") {
+      const asr = await transcribeSpeechKit(audioPath, record, language);
+      utterances = await rediarize(asr, audioPath, record);
+    } else {
+      utterances = await transcribeWhisperPlusDiarizer(audioPath, record, language);
+    }
 
     const elapsedSec = (Date.now() - started) / 1000;
 
@@ -288,6 +299,78 @@ async function uploadToStorage(audioPath, bucket, key, iamToken) {
   }
 }
 
+// ── Переразметка готового текста внешним диаризатором ───────────────────────
+
+/**
+ * Берёт реплики от любого ASR и переприсваивает им спикеров по разметке
+ * внешнего диаризатора.
+ *
+ * Это ровно то, что делает SmartAsrGateway в проде после правки: раз
+ * speakerTag от SpeechKit не приходит, разметку даёт отдельная модель,
+ * а текст остаётся от ASR.
+ */
+async function rediarize(utterances, audioPath, record) {
+  if (!args.diarizer) throw new Error("нужен --diarizer <url>");
+  if (utterances.length === 0) return utterances;
+
+  const audio = await readFile(audioPath);
+
+  const form = new FormData();
+  form.append("audio", new Blob([audio]), basename(audioPath));
+  if (record.num_speakers) form.append("num_speakers", String(record.num_speakers));
+
+  const res = await fetch(`${args.diarizer.replace(/\/+$/, "")}/diarize`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30 * 60 * 1000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`diarizer ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+
+  const diarization = (await res.json()).segments ?? [];
+  if (diarization.length === 0) return utterances;
+
+  // Длительность реплики ASR не всегда известна — оцениваем по следующей.
+  const withEnd = utterances.map((u, i) => ({
+    ...u,
+    end: u.end ?? utterances[i + 1]?.start ?? u.start + 3,
+  }));
+
+  return withEnd.map((u) => {
+    const overlap = {};
+    for (const d of diarization) {
+      const lo = Math.max(u.start, d.start);
+      const hi = Math.min(u.end, d.stop);
+      if (hi > lo) overlap[d.speaker] = (overlap[d.speaker] ?? 0) + (hi - lo);
+    }
+
+    const best = Object.entries(overlap).sort((a, b) => b[1] - a[1])[0];
+    if (best) return { speaker: best[0], start: u.start, text: u.text };
+
+    // Реплика не пересеклась ни с одним сегментом (пауза в разметке,
+    // расхождение таймкодов ASR и диаризатора). Оставлять исходный ярлык
+    // нельзя: у SpeechKit это channelTag 0/1, который спикером не является,
+    // и он подмешивался к меткам диаризатора — в отчёте появлялось 6
+    // «спикеров» там, где модель вернула 4. Берём ближайший по времени
+    // сегмент: это хуже настоящего перекрытия, но не выдумывает участников.
+    let nearest = null;
+    let bestDistance = Infinity;
+    const middle = (u.start + u.end) / 2;
+
+    for (const d of diarization) {
+      const distance = middle < d.start ? d.start - middle : middle > d.stop ? middle - d.stop : 0;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        nearest = d.speaker;
+      }
+    }
+
+    return { speaker: nearest ?? "SPEAKER_00", start: u.start, text: u.text };
+  });
+}
+
 // ── Whisper + внешний диаризатор ────────────────────────────────────────────
 
 async function transcribeWhisperPlusDiarizer(audioPath, record, language) {
@@ -356,11 +439,25 @@ function alignSegments(whisperSegments, diarizationSegments) {
       }
 
       const best = Object.entries(overlap).sort((a, b) => b[1] - a[1])[0];
-      return {
-        speaker: best ? best[0] : "SPEAKER_00",
-        start: seg.start,
-        text: seg.text ?? "",
-      };
+      if (best) return { speaker: best[0], start: seg.start, text: seg.text ?? "" };
+
+      // Как и в rediarize: без перекрытия берём ближайший сегмент, а не
+      // фиксированный SPEAKER_00 — иначе все «ничейные» реплики Whisper
+      // сваливаются в одного спикера и портят атрибуцию.
+      let nearest = null;
+      let bestDistance = Infinity;
+      const middle = (seg.start + seg.end) / 2;
+
+      for (const d of diarizationSegments) {
+        const distance =
+          middle < d.start ? d.start - middle : middle > d.stop ? middle - d.stop : 0;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          nearest = d.speaker;
+        }
+      }
+
+      return { speaker: nearest ?? "SPEAKER_00", start: seg.start, text: seg.text ?? "" };
     })
     .filter((u) => u.text.trim());
 }

@@ -66,13 +66,20 @@ export class SmartAsrGateway {
 
     const { jobId, transcript } = transcriptResult;
 
-    // ── Шаг 2: Диаризация (только если использовали Groq) ───────────────────
-    // SpeechKit уже возвращает speakerTag — не перетираем его
-    if (
-      this.diarizer.available &&
-      this.transcriber instanceof GroqWhisperGateway &&
-      transcript.phrases.some((p) => p._whisperSegment)
-    ) {
+    // ── Шаг 2: Диаризация ───────────────────────────────────────────────────
+    //
+    // Раньше здесь стояло условие «только если транскрибировали Groq»: считалось,
+    // что SpeechKit сам вернёт speakerTag и перетирать его не нужно.
+    //
+    // Замер 2026-08-05 это опроверг: при speakerLabeling=ENABLED поле speakerTag
+    // в ответе SpeechKit STT v3 не приходит вообще — ни на русском, ни на
+    // английском. Есть только channelTag 0/1, и оба канала покрывают запись
+    // целиком, то есть это потоки распознавания, а не говорящие. Все фразы
+    // сваливались в одного-двух «спикеров».
+    //
+    // Поэтому внешний диаризатор нужен при ЛЮБОМ ASR. Если он настроен —
+    // применяем его и к SpeechKit тоже.
+    if (this.diarizer.available && transcript.phrases.length > 0) {
       transcript.phrases = await this.applyDiarization(transcript, meeting);
     }
 

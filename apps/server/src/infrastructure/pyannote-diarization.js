@@ -257,9 +257,31 @@ function findDominantSpeaker(start, end, segments) {
     }
   }
 
-  if (!Object.keys(overlap).length) return "SPEAKER_00";
+  if (Object.keys(overlap).length) {
+    return Object.entries(overlap).sort((a, b) => b[1] - a[1])[0][0];
+  }
 
-  return Object.entries(overlap).sort((a, b) => b[1] - a[1])[0][0];
+  // Перекрытия нет: сегмент ASR попал в паузу разметки либо таймкоды двух
+  // моделей разошлись. Раньше здесь возвращался жёсткий "SPEAKER_00", и все
+  // такие реплики сваливались на первого спикера — в протоколе он получал
+  // чужие слова, причём тем чаще, чем хуже совпадали границы.
+  //
+  // Ближайший по времени сегмент — не идеал, но он хотя бы отражает, кто
+  // говорил рядом, и не смещает атрибуцию систематически в одну сторону.
+  let nearest = null;
+  let bestDistance = Infinity;
+  const middle = (start + end) / 2;
+
+  for (const seg of segments) {
+    const distance =
+      middle < seg.start ? seg.start - middle : middle > seg.stop ? middle - seg.stop : 0;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      nearest = seg.speaker;
+    }
+  }
+
+  return nearest ?? "SPEAKER_00";
 }
 
 // ────────────────────────────────────────────────────────────────────────────

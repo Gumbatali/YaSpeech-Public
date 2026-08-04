@@ -225,3 +225,44 @@ test("stitchChunkedSegments handles empty input", () => {
   assert.deepEqual(stitchChunkedSegments([]), []);
   assert.deepEqual(stitchChunkedSegments(null), []);
 });
+
+// ── alignTranscriptWithDiarization ──────────────────────────────────────────
+
+test("alignment assigns the nearest speaker when there is no overlap", async () => {
+  const { alignTranscriptWithDiarization } = await import(
+    "../src/infrastructure/pyannote-diarization.js"
+  );
+
+  // Реплика в 10.5-11.5с попадает в паузу разметки. Раньше такие реплики
+  // жёстко уходили к SPEAKER_00 и первый спикер собирал чужие слова.
+  const whisper = [
+    { start: 0, end: 5, text: "первая" },
+    { start: 10.5, end: 11.5, text: "в паузе" },
+    { start: 20, end: 25, text: "третья" },
+  ];
+  const diarization = [
+    { speaker: "SPEAKER_00", start: 0, stop: 5 },
+    { speaker: "SPEAKER_01", start: 19, stop: 26 },
+  ];
+
+  const aligned = alignTranscriptWithDiarization(whisper, diarization);
+
+  // Середина «в паузе» — 11.0с: до SPEAKER_00 шесть секунд, до SPEAKER_01 восемь.
+  assert.equal(aligned[1].speakerId, aligned[0].speakerId, "ближе к первому спикеру");
+  assert.notEqual(aligned[2].speakerId, aligned[0].speakerId, "третья реплика — второй спикер");
+});
+
+test("alignment picks the later speaker when the gap is closer to them", async () => {
+  const { alignTranscriptWithDiarization } = await import(
+    "../src/infrastructure/pyannote-diarization.js"
+  );
+
+  const whisper = [{ start: 17, end: 18, text: "в паузе" }];
+  const diarization = [
+    { speaker: "SPEAKER_00", start: 0, stop: 5 },
+    { speaker: "SPEAKER_01", start: 19, stop: 26 },
+  ];
+
+  const aligned = alignTranscriptWithDiarization(whisper, diarization);
+  assert.equal(aligned[0].speakerLabel, "Спикер 2");
+});
