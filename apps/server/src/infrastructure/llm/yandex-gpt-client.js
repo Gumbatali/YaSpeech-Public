@@ -127,8 +127,11 @@ export class YandexGptClient {
 
   /**
    * Выполняет несколько completion запросов с ограничением параллелизма.
-   * Используется для обработки чанков транскрипта.
-   * Лимит 3 одновременных запроса — предотвращает 429 при длинных встречах.
+   * Лимит одновременных запросов предотвращает 429 при больших батчах.
+   *
+   * При ошибке любого запроса остальные воркеры не разбирают новые задачи,
+   * а метод ждёт завершения уже начатых и бросает первую ошибку. Так после
+   * reject не остаётся запросов, продолжающих идти в API «в фоне».
    *
    * @param {Array<{system: string, user: string, options?: object}>} requests
    * @param {number} concurrency — макс. параллельных запросов (default: 3)
@@ -137,20 +140,28 @@ export class YandexGptClient {
   async completeBatch(requests, concurrency = 3) {
     const results = new Array(requests.length);
     let index = 0;
+    let failure = null;
 
-    async function worker(self) {
-      while (index < requests.length) {
+    const worker = async () => {
+      while (index < requests.length && !failure) {
         const i = index++;
         const { system, user, options } = requests[i];
-        results[i] = await self.complete(system, user, options);
+        try {
+          results[i] = await this.complete(system, user, options);
+        } catch (e) {
+          // Первая ошибка останавливает разбор очереди остальными воркерами
+          failure ??= e;
+        }
       }
-    }
+    };
 
     const workers = Array.from(
       { length: Math.min(concurrency, requests.length) },
-      () => worker(this)
+      () => worker()
     );
     await Promise.all(workers);
+
+    if (failure) throw failure;
     return results;
   }
 

@@ -85,7 +85,7 @@ YaSpeech превращает аудиозапись совещания в го�
 - **Очередь:** Yandex Message Queue
 - **Шлюз:** Yandex API Gateway
 - **ASR:** Yandex SpeechKit (опционально Groq Whisper)
-- **LLM:** YandexGPT (`yandexgpt-lite`) — по кнопке: улучшение расшифровки + сборка протокола
+- **LLM:** YandexGPT — по кнопке: улучшение расшифровки (`yandexgpt` Pro) + сборка протокола и остальные стадии (`yandexgpt-lite`)
 - **Auth:** HMAC-SHA256 сессии + scrypt — только встроенные модули Node, **ноль npm в продакшне**
 
 ### Что и где искать (Структура папок)

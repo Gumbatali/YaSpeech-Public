@@ -50,7 +50,8 @@
 | `YC_FOLDER_ID` | каталог в YC |
 | `SESSION_SECRET` | соль для подписи сессионных cookie |
 | `ADMIN_LOGIN` | логин первого администратора |
-| `GPT_MODEL` | модель YandexGPT (по умолчанию `yandexgpt-lite/latest`) |
+| `GPT_MODEL` | модель YandexGPT для основных стадий (по умолчанию `yandexgpt-lite`) |
+| `GPT_MODEL_REFINE` | модель для «Улучшить расшифровку» (по умолчанию `yandexgpt` — Pro) |
 
 ## Секреты
 

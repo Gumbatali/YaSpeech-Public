@@ -1,5 +1,6 @@
 /**
- * YandexGPT Gateway — LLM-вызовы поверх Lite-модели.
+ * YandexGPT Gateway — LLM-вызовы поверх Lite-модели, кроме коррекции
+ * реплик (refineLines), которая идёт через Pro.
  *
  * ВСЕ вызовы инициируются действиями пользователя (решение 2026-06-10):
  *   Кнопка «Улучшить с помощью ИИ» → analyzeContext, diarizeTranscript,
@@ -28,13 +29,30 @@ import { logger } from "../shared/logger.js";
 const MAX_TRANSCRIPT_CHARS = 22_000;
 
 export class YcYandexGptGateway {
-  constructor({ folderId, model = process.env.GPT_MODEL ?? "yandexgpt-lite" }) {
+  /**
+   * Модели разведены по бенчмарку (scripts/experiments/llm-refine-bench/REPORT.md):
+   *   refineLines → Pro: числа и суммы восстанавливаются вдвое точнее,
+   *     фактических подмен нет; цена приемлема, т.к. вызов идёт по явной
+   *     кнопке пользователя, а не на каждой загрузке.
+   *   остальные стадии → Lite: дешевле в 6 раз, качества достаточно.
+   */
+  constructor({
+    folderId,
+    model = process.env.GPT_MODEL ?? "yandexgpt-lite",
+    refineModel = process.env.GPT_MODEL_REFINE ?? "yandexgpt"
+  } = {}) {
     this.folderId = folderId;
-    // Lite выбран по бенчмарку (scripts/experiments/llm-refine-bench):
-    // WER-восстановление 63% при цене в 6 раз ниже Pro
     this.modelUri = `gpt://${folderId}/${model}/latest`;
+    this.refineModelUri = `gpt://${folderId}/${refineModel}/latest`;
     this.client = new YandexGptClient({ modelUri: this.modelUri });
-    logger.info("YandexGPT: initialized", { folderId, modelUri: this.modelUri });
+    this.refineClient = this.refineModelUri === this.modelUri
+      ? this.client
+      : new YandexGptClient({ modelUri: this.refineModelUri });
+    logger.info("YandexGPT: initialized", {
+      folderId,
+      modelUri: this.modelUri,
+      refineModelUri: this.refineModelUri
+    });
   }
 
   // ============================================================
@@ -170,6 +188,8 @@ export class YcYandexGptGateway {
    * Исправляет один чанк реплик. Возвращает map id→текст и список
    * ID, на которые модель не ответила (обрыв вывода и т.п.).
    *
+   * Идёт через Pro-модель (см. комментарий к constructor).
+   *
    * @param {{ lines: string[], ids: number[], contextLines: string[], domain: string, glossary: object|null }} params
    * @returns {Promise<{ byId: Map<number, string>, missingIds: number[] }>}
    */
@@ -180,7 +200,7 @@ export class YcYandexGptGateway {
       domain,
       glossary
     });
-    const raw = await this.client.complete(system, user, options);
+    const raw = await this.refineClient.complete(system, user, options);
     return parseRefinedLines(raw, ids);
   }
 
