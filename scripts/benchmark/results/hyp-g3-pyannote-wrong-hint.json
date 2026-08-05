@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-08-05T23:27:06.983Z",
+  "manifest": "/home/yc-user/lab/corpus/wav/manifest_wrong.jsonl",
+  "options": {
+    "collar": 0.25,
+    "skipOverlap": false
+  },
+  "summary": [
+    {
+      "backend": "pyannote-wrong",
+      "files": "8/8",
+      "der": 0.30238551058481267,
+      "miss": 0.0327461132756239,
+      "falseAlarm": 0.008809511956669945,
+      "speakerError": 0.26082988535251883,
+      "speakerCountAcc": 0,
+      "rtf": 0.4878132448572358
+    }
+  ],
+  "details": [
+    {
+      "backend": "pyannote-wrong",
+      "url": "http://localhost:8001",
+      "files": [
+        {
+          "id": "cmfyw",
+          "der": 0.23784437520498525,
+          "miss": 0.02308133814365366,
+          "falseAlarm": 0.023265824860610036,
+          "speakerError": 0.19149721220072155,
+          "refSpeakers": 5,
+          "hypSpeakers": 7,
+          "speakerCountCorrect": false,
+          "elapsedSec": 262.545,
+          "rtf": 0.5426277281746033
+        },
+        {
+          "id": "ezsgk",
+          "der": 0.40115339010455964,
+          "miss": 0.020319068664438934,
+          "falseAlarm": 0.0057130537889403905,
+          "speakerError": 0.3751212676511803,
+          "refSpeakers": 3,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": false,
+          "elapsedSec": 98.166,
+          "rtf": 0.47277017915623193
+        },
+        {
+          "id": "jnivh",
+          "der": 0.275590001396453,
+          "miss": 0.006772797095377741,
+          "falseAlarm": 0.0018153889121631057,
+          "speakerError": 0.26700181538891216,
+          "refSpeakers": 3,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": false,
+          "elapsedSec": 64.032,
+          "rtf": 0.4611927398444252
+        },
+        {
+          "id": "mesob",
+          "der": 0.46266747868453106,
+          "miss": 0.023142509135200974,
+          "falseAlarm": 0.01705237515225335,
+          "speakerError": 0.42247259439707674,
+          "refSpeakers": 4,
+          "hypSpeakers": 6,
+          "speakerCountCorrect": false,
+          "elapsedSec": 72.974,
+          "rtf": 0.46256338742393516
+        },
+        {
+          "id": "migzj",
+          "der": 0.23950724278816393,
+          "miss": 0.042837687260121333,
+          "falseAlarm": 0.011885601089513434,
+          "speakerError": 0.18478395443852916,
+          "refSpeakers": 4,
+          "hypSpeakers": 6,
+          "speakerCountCorrect": false,
+          "elapsedSec": 81.229,
+          "rtf": 0.46257972665148067
+        },
+        {
+          "id": "nnqfq",
+          "der": 0.1725884598443694,
+          "miss": 0.039568345323741004,
+          "falseAlarm": 0.0002202319776831596,
+          "speakerError": 0.13279988254294522,
+          "refSpeakers": 5,
+          "hypSpeakers": 7,
+          "speakerCountCorrect": false,
+          "elapsedSec": 66.529,
+          "rtf": 0.5628510998307952
+        },
+        {
+          "id": "vbjlx",
+          "der": 0.36295864880605705,
+          "miss": 0.05847408270238789,
+          "falseAlarm": 0.0074548631333721605,
+          "speakerError": 0.297029702970297,
+          "refSpeakers": 5,
+          "hypSpeakers": 7,
+          "speakerCountCorrect": false,
+          "elapsedSec": 152.537,
+          "rtf": 0.47125865051903115
+        },
+        {
+          "id": "wnfoi",
+          "der": 0.2667744878493821,
+          "miss": 0.04777307788006967,
+          "falseAlarm": 0.0030687567388239198,
+          "speakerError": 0.21593265323048852,
+          "refSpeakers": 6,
+          "hypSpeakers": 8,
+          "speakerCountCorrect": false,
+          "elapsedSec": 110.599,
+          "rtf": 0.466662447257384
+        }
+      ]
+    }
+  ]
+}

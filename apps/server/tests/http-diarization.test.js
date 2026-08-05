@@ -263,15 +263,51 @@ test("makeDiarizer omits speaker hints for fixed-slot backends", () => {
   assert.equal(diarizer.maxSpeakers, null);
 });
 
-test("makeDiarizer passes speaker hints to flexible backends", () => {
+test("makeDiarizer ignores speaker hints by default, even for flexible backends", () => {
+  // Замер 2026-08-06: подсказка о числе спикеров ухудшает pyannote даже
+  // когда она ВЕРНАЯ (13.4% против 8.9% без неё), а неверная даёт 30.2%.
+  // Поэтому по умолчанию подсказки не передаются, даже если заданы.
   const diarizer = makeDiarizer({
     env: {
       DIARIZER: "pyannote-selfhosted",
       DIARIZER_URL: "http://x:8000",
       DIARIZER_MAX_SPEAKERS: "8",
+      DIARIZER_NUM_SPEAKERS: "4",
+    },
+    artifactStorage: fakeStorage,
+  });
+
+  assert.equal(diarizer.maxSpeakers, null);
+  assert.equal(diarizer.numSpeakers, null);
+});
+
+test("makeDiarizer passes speaker hints only with an explicit override", () => {
+  // Аварийный ручной режим для отладки — в проде включать не следует.
+  const diarizer = makeDiarizer({
+    env: {
+      DIARIZER: "pyannote-selfhosted",
+      DIARIZER_URL: "http://x:8000",
+      DIARIZER_MAX_SPEAKERS: "8",
+      DIARIZER_FORCE_HINTS: "true",
     },
     artifactStorage: fakeStorage,
   });
 
   assert.equal(diarizer.maxSpeakers, 8);
+});
+
+test("makeDiarizer never sends hints to fixed-slot backends, even with the override", () => {
+  // У Sortformer 4 слота зашиты в архитектуру: подсказка не просто
+  // бесполезна, она создаёт иллюзию управляемости.
+  const diarizer = makeDiarizer({
+    env: {
+      DIARIZER: "streaming-sortformer",
+      DIARIZER_URL: "http://x:8000",
+      DIARIZER_NUM_SPEAKERS: "6",
+      DIARIZER_FORCE_HINTS: "true",
+    },
+    artifactStorage: fakeStorage,
+  });
+
+  assert.equal(diarizer.numSpeakers, null);
 });

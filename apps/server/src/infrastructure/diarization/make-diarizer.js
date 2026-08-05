@@ -65,13 +65,36 @@ export function makeDiarizer({ env = process.env, artifactStorage }) {
     return nullDiarizer(backend);
   }
 
-  const speakerHints = FIXED_SLOT_BACKENDS.has(backend)
-    ? {} // модель сама фиксирует число слотов, подсказки игнорируются
-    : {
-        numSpeakers: intOrNull(env.DIARIZER_NUM_SPEAKERS),
-        minSpeakers: intOrNull(env.DIARIZER_MIN_SPEAKERS),
-        maxSpeakers: intOrNull(env.DIARIZER_MAX_SPEAKERS),
-      };
+  // Подсказки о числе спикеров по умолчанию НЕ передаются.
+  //
+  // Замер 2026-08-06 на VoxConverse (8 записей, 3-6 спикеров) показал, что
+  // для pyannote подсказка не помогает, а мешает:
+  //
+  //   без подсказки          DER  8.9%
+  //   точное число           DER 13.4%
+  //   завышенное на 2        DER 30.2%
+  //
+  // Даже ТОЧНОЕ число ухудшает результат: pyannote слепо подчиняется и
+  // подгоняет кластеризацию под заданное количество вместо того, чтобы
+  // довериться акустике. А неверное число (в проекте числится 6 человек,
+  // на встречу пришли 4) даёт трёхкратную деградацию — модель дробит
+  // реальных людей на несуществующих.
+  //
+  // Для YaSpeech это решающий довод: состав проекта (project.team) почти
+  // никогда не совпадает с фактическими участниками конкретной встречи.
+  //
+  // DIARIZER_NUM_SPEAKERS оставлен как аварийный ручной оверрайд для
+  // отладки, но включать его в проде не следует.
+  const forceHints = env.DIARIZER_FORCE_HINTS === "true";
+
+  const speakerHints =
+    FIXED_SLOT_BACKENDS.has(backend) || !forceHints
+      ? {} // слоты фиксированы архитектурой либо подсказки осознанно отключены
+      : {
+          numSpeakers: intOrNull(env.DIARIZER_NUM_SPEAKERS),
+          minSpeakers: intOrNull(env.DIARIZER_MIN_SPEAKERS),
+          maxSpeakers: intOrNull(env.DIARIZER_MAX_SPEAKERS),
+        };
 
   logger.info("makeDiarizer: configured", { backend, baseUrl });
 
