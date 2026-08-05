@@ -28,6 +28,9 @@ scripts/benchmark/data/**/diarization-benchmark-report.json
 # Веса моделей диаризации: гигабайты, качаются при первом старте контейнера
 services/diarization/models/
 
+# Реальные записи заказчика и их протоколы — приватные данные, не для репозитория
+scripts/benchmark/results/real-meetings/
+
 # Python-кэш
 __pycache__/
 *.pyc
