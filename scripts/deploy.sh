@@ -39,35 +39,6 @@ fi
 : "${SESSION_SECRET:?Не задана переменная SESSION_SECRET в .env.deploy}"
 : "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
 
-# ── Необязательные переменные: ASR и диаризация ───────────────────────────────
-# Намеренно НЕ в блоке обязательных выше: без них деплой работает как раньше
-# (SpeechKit со встроенной диаризацией). Пустые значения передаются в функцию
-# как пустые строки — makeDeps трактует их как «не задано».
-ASR_PROVIDER="${ASR_PROVIDER:-speechkit}"
-DIARIZER="${DIARIZER:-none}"
-GROQ_API_KEY="${GROQ_API_KEY:-}"
-HF_TOKEN="${HF_TOKEN:-}"
-DIARIZER_URL="${DIARIZER_URL:-}"
-DIARIZER_TOKEN="${DIARIZER_TOKEN:-}"
-
-# Внешняя диаризация — минуты, а не секунды: скачать аудио, дождаться GPU-инференса,
-# при длинной записи прогнать несколько чанков. Прежних 60s на это не хватает,
-# воркер обрывался на середине и встреча уходила в retry по кругу.
-if [[ "$ASR_PROVIDER" == "smart" ]]; then
-  WORKER_TIMEOUT="${WORKER_TIMEOUT:-600s}"
-  echo "🎙  ASR: smart (Whisper + диаризатор «$DIARIZER»), таймаут воркера $WORKER_TIMEOUT"
-  if [[ "$DIARIZER" == "pyannote-hf" && -z "$HF_TOKEN" ]]; then
-    echo "❌  DIARIZER=pyannote-hf требует HF_TOKEN."
-    exit 1
-  fi
-  if [[ "$DIARIZER" != "pyannote-hf" && "$DIARIZER" != "none" && -z "$DIARIZER_URL" ]]; then
-    echo "❌  DIARIZER=$DIARIZER требует DIARIZER_URL (адрес GPU-сервиса)."
-    exit 1
-  fi
-else
-  WORKER_TIMEOUT="${WORKER_TIMEOUT:-60s}"
-fi
-
 # ── Версия для cache-busting ──────────────────────────────────────────────────
 # git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
 # (которые кэшируют ассеты как immutable) гарантированно тянут свежий URL.
@@ -122,19 +93,13 @@ deploy_worker() {
     --runtime nodejs18 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
-    --execution-timeout "$WORKER_TIMEOUT" \
+    --execution-timeout 60s \
     --source-path /tmp/worker.zip \
     --environment YC_STORAGE_BUCKET="$BUCKET" \
     --environment YC_QUEUE_URL="$QUEUE_URL" \
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
-    --environment ASR_PROVIDER="$ASR_PROVIDER" \
-    --environment DIARIZER="$DIARIZER" \
-    --environment "GROQ_API_KEY=$GROQ_API_KEY" \
-    --environment "HF_TOKEN=$HF_TOKEN" \
-    --environment DIARIZER_URL="$DIARIZER_URL" \
-    --environment "DIARIZER_TOKEN=$DIARIZER_TOKEN" \
     --service-account-id "$SA_ID" \
     2>&1 | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ worker deployed"

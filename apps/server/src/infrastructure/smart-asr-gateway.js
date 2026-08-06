@@ -10,8 +10,7 @@
  */
 
 import { GroqWhisperGateway } from "./groq-whisper-gateway.js";
-import { alignTranscriptWithDiarization } from "./pyannote-diarization.js";
-import { makeDiarizer } from "./diarization/make-diarizer.js";
+import { PyannoteDiarization, alignTranscriptWithDiarization } from "./pyannote-diarization.js";
 import { YcSpeechKitGateway } from "./yc-speech-kit-gateway.js";
 import { logger } from "../shared/logger.js";
 
@@ -19,13 +18,12 @@ export class SmartAsrGateway {
   /**
    * @param {{
    *   groqApiKey?: string,
+   *   hfToken?: string,
    *   speechKitBucket: string,
-   *   artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage,
-   *   env?: Record<string, string|undefined>,
-   *   diarizer?: object
+   *   artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage
    * }}
    */
-  constructor({ groqApiKey, speechKitBucket, artifactStorage, env = process.env, diarizer }) {
+  constructor({ groqApiKey, hfToken, speechKitBucket, artifactStorage }) {
     this.artifactStorage = artifactStorage;
     this.speechKitBucket = speechKitBucket; // нужен для fallback при ошибке Groq
 
@@ -38,12 +36,13 @@ export class SmartAsrGateway {
       logger.info("SmartASR: using SpeechKit (no GROQ_API_KEY)");
     }
 
-    // Диаризация — бэкенд выбирается переменной DIARIZER (или внедряется в тестах).
-    this.diarizer = diarizer ?? makeDiarizer({ env, artifactStorage });
-    logger.info("SmartASR: diarizer configured", {
-      backend: this.diarizer.backend,
-      available: this.diarizer.available,
-    });
+    // Диаризация
+    this.diarizer = new PyannoteDiarization({ hfToken, artifactStorage });
+    if (hfToken) {
+      logger.info("SmartASR: pyannote diarization enabled");
+    } else {
+      logger.info("SmartASR: pyannote disabled (no HF_TOKEN), will use LLM diarization");
+    }
   }
 
   /**
@@ -66,20 +65,13 @@ export class SmartAsrGateway {
 
     const { jobId, transcript } = transcriptResult;
 
-    // ── Шаг 2: Диаризация ───────────────────────────────────────────────────
-    //
-    // Раньше здесь стояло условие «только если транскрибировали Groq»: считалось,
-    // что SpeechKit сам вернёт speakerTag и перетирать его не нужно.
-    //
-    // Замер 2026-08-05 это опроверг: при speakerLabeling=ENABLED поле speakerTag
-    // в ответе SpeechKit STT v3 не приходит вообще — ни на русском, ни на
-    // английском. Есть только channelTag 0/1, и оба канала покрывают запись
-    // целиком, то есть это потоки распознавания, а не говорящие. Все фразы
-    // сваливались в одного-двух «спикеров».
-    //
-    // Поэтому внешний диаризатор нужен при ЛЮБОМ ASR. Если он настроен —
-    // применяем его и к SpeechKit тоже.
-    if (this.diarizer.available && transcript.phrases.length > 0) {
+    // ── Шаг 2: Диаризация (только если использовали Groq) ───────────────────
+    // SpeechKit уже возвращает speakerTag — не перетираем его
+    if (
+      this.diarizer.available &&
+      this.transcriber instanceof GroqWhisperGateway &&
+      transcript.phrases.some((p) => p._whisperSegment)
+    ) {
       transcript.phrases = await this.applyDiarization(transcript, meeting);
     }
 
@@ -97,15 +89,13 @@ export class SmartAsrGateway {
   }
 
   async applyDiarization(transcript, meeting) {
-    logger.info("SmartASR: running diarization", { backend: this.diarizer.backend });
+    logger.info("SmartASR: running pyannote diarization");
 
     const audioKey = meeting.artifacts.audioOriginalKey;
     const diarizationSegments = await this.diarizer.diarize(audioKey);
 
     if (!diarizationSegments?.length) {
-      logger.warn("SmartASR: diarizer returned no segments, falling back to single-speaker", {
-        backend: this.diarizer.backend,
-      });
+      logger.warn("SmartASR: pyannote returned no segments, falling back to single-speaker");
       // Назначаем всем фразам Спикер 1
       return transcript.phrases.map((p) => ({
         ...p,
