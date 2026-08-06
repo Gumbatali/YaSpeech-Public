@@ -1,16 +1,15 @@
 # YaSpeech Cookbook — автопротоколирование деловых встреч на Yandex Cloud
 
-Кукбук по сборке пайплайна **«запись встречи → готовый протокол»** на трёх сервисах
-Yandex Cloud: SpeechKit (ASR с диаризацией), YandexGPT (многоходовый LLM-анализ)
-и Object Storage (хранение артефактов).
+Учебный пример пайплайна **«запись встречи → готовый протокол»** на трёх сервисах
+Yandex Cloud: SpeechKit (распознавание речи), YandexGPT (разметка спикеров и
+протокол) и Object Storage (промежуточное хранение аудио).
 
-Основан на архитектуре реального продакшн-сервиса **YaSpeech**, который компания
-«Стройтехэксперт» использует для фиксации решений и задач по строительным
-проектам. Здесь — упрощённая, но рабочая Python-версия того же пайплайна,
-которую можно прогнать в Colab или Jupyter.
+Идея — из внутреннего сервиса **YaSpeech** (компания «Стройтехэксперт», фиксация
+решений по строительным планёркам), но код здесь самостоятельный и учебный, не
+портированный прод.
 
-> Код продакшн-сервиса (Node.js, Cloud Functions + API Gateway + YMQ) лежит
-> в ветке [`main`](https://github.com/Gumbatali/YaSpeech-Public/tree/main).
+> Прод-сервис (Node.js, Cloud Functions + API Gateway + YMQ) — в ветке
+> [`main`](https://github.com/Gumbatali/YaSpeech-Public/tree/main).
 
 ---
 
@@ -18,28 +17,19 @@ Yandex Cloud: SpeechKit (ASR с диаризацией), YandexGPT (многох
 
 | Файл | Назначение |
 |---|---|
-| [`cookbook_yaspeech.ipynb`](./cookbook_yaspeech.ipynb) | Основной ноутбук: весь пайплайн от загрузки аудио до протокола |
-| [`system_prompts.md`](./system_prompts.md) | Полные тексты промптов с пояснениями + отличия прод-версии |
-| [`navigation.md`](./navigation.md) | Оглавление кукбука и best practices |
+| [`cookbook_yaspeech.ipynb`](./cookbook_yaspeech.ipynb) | Ноутбук: аудио → распознавание → протокол |
+| [`system_prompts.md`](./system_prompts.md) | Текст промпта с пояснениями |
+| [`navigation.md`](./navigation.md) | Оглавление и best practices |
 | [`requirements.txt`](./requirements.txt) | Зависимости Python |
 | [`.env.example`](./.env.example) | Шаблон переменных окружения для локального запуска |
-| [`architecture.png`](./architecture.png) | Схема пайплайна |
 
 ---
 
-## Что демонстрирует кукбук
+## Что показывает кукбук
 
-- **Многоходовый LLM-анализ** вместо одного большого промпта: контекст → диаризация
-  → коррекция → идентификация спикеров → протокол. Каждый проход решает одну узкую
-  задачу, ошибка одного не портит остальные.
-- **Line-ID протокол** для коррекции ASR-ошибок — приём против того, что модель
-  тихо теряет реплики: каждая реплика нумеруется `[N]`, пропажа номера
-  детектируется программно и вызывает retry.
-- **Детерминированный валидатор чисел** — правка, изменившая число или дату,
-  отклоняется кодом, а не «честностью» модели.
-- **Диаризация по составу участников проекта** — вместо абстрактных «Спикер 1/2»
-  модель получает реальный список команды (имена и роли) и сопоставляет реплики
-  с конкретными людьми.
+- **Диаризация по составу участников** вместо абстрактных «Спикер 1/2» — модель получает список команды проекта (имена и роли) внутри одного запроса вместе с транскриптом и сама сопоставляет реплики с людьми.
+- **Один структурированный вызов** вместо цепочки промптов — для учебного примера этого достаточно; как разбить на этапы для длинных встреч — см. раздел 9 ноутбука.
+- **Pydantic-валидация ответа** — модель просят вернуть JSON по схеме, а не диктуют формат через непроверенные API-параметры; результат сразу проверяется на соответствие типам.
 
 ---
 
@@ -47,9 +37,10 @@ Yandex Cloud: SpeechKit (ASR с диаризацией), YandexGPT (многох
 
 ### Google Colab
 
-Откройте `cookbook_yaspeech.ipynb` в Colab и заполните Colab Secrets —
-`FOLDER_ID`, `YC_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-(первая ячейка ноутбука читает именно их).
+Откройте `cookbook_yaspeech.ipynb` в Colab и задайте переменные окружения
+(`FOLDER_ID`, `YC_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) через
+Colab Secrets или прямо в ячейке — `dotenv` в Colab, если `.env` нет, просто не
+найдёт файл и не помешает.
 
 ### Локально
 
@@ -64,21 +55,20 @@ jupyter notebook cookbook_yaspeech.ipynb
 | Переменная | Где взять |
 |---|---|
 | `FOLDER_ID` | [идентификатор каталога](https://yandex.cloud/ru/docs/resource-manager/operations/folder/get-id) |
-| `YC_API_KEY` | [API-ключ сервисного аккаунта](https://yandex.cloud/ru/docs/iam/operations/api-key/create) (SpeechKit + YandexGPT) |
+| `YC_API_KEY` | [API-ключ сервисного аккаунта](https://yandex.cloud/ru/docs/iam/operations/api-key/create) (роли `ai.speechkit-stt.user`, `ai.languageModels.user`, `storage.uploader`) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | [статические ключи для Object Storage](https://yandex.cloud/ru/docs/storage/operations/access-keys/create) |
 
 Ноутбук делает реальные платные вызовы (SpeechKit + YandexGPT) и создаёт бакет
-Object Storage. В разделе 8 есть ячейка очистки ресурсов — вызов закомментирован,
-раскомментируйте, когда закончите.
+Object Storage.
 
 ---
 
 ## Полезные ссылки
 
-- [SpeechKit STT v3](https://yandex.cloud/ru/docs/speechkit/stt-v3/) — асинхронное распознавание
-- [Диаризация (speaker labeling)](https://yandex.cloud/ru/docs/speechkit/stt/speaker-labeling)
-- [YandexGPT в Model Gallery (раздел AI Studio)](https://yandex.cloud/ru/docs/ai-studio/quickstart/yandexgpt)
-- [OpenAI-совместимое API](https://yandex.cloud/ru/docs/foundation-models/concepts/openai-compatibility)
+- [SpeechKit STT v3](https://aistudio.yandex.ru/docs/ru/speechkit/stt/api/transcribation-api-v3) — асинхронное распознавание
+- [Определение дикторов (speaker labeling)](https://aistudio.yandex.ru/docs/ru/speechkit/stt/speaker-labeling)
+- [Доступные модели YandexGPT](https://aistudio.yandex.ru/docs/ru/ai-studio/concepts/generation/models)
+- [OpenAI-совместимое API](https://yandex.cloud/en/docs/ai-studio/concepts/openai-compatibility)
 - [Object Storage (S3-совместимое API)](https://yandex.cloud/ru/docs/storage/s3/)
 
 ---
