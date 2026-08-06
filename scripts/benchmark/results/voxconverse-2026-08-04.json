@@ -1,0 +1,349 @@
+{
+  "generatedAt": "2026-08-04T17:11:10.172Z",
+  "corpus": "VoxConverse dev, 8 записей, 3-6 спикеров, перекрытия 18-33%",
+  "hardware": "Yandex Cloud CPU 16 vCPU / 64 GB, без GPU",
+  "options": {
+    "collar": 0.25,
+    "skipOverlap": false
+  },
+  "summary": [
+    {
+      "backend": "streaming-sortformer",
+      "files": "8/8",
+      "der": 0.06114707027208115,
+      "miss": 0.024870941465631045,
+      "falseAlarm": 0.010298276342964279,
+      "speakerError": 0.025977852463485822,
+      "speakerCountAcc": 0.5,
+      "rtf": 0.023676950256182317
+    },
+    {
+      "backend": "nemo-sortformer",
+      "files": "8/8",
+      "der": 0.11870411720239324,
+      "miss": 0.04345610223354022,
+      "falseAlarm": 0.011733825701776794,
+      "speakerError": 0.06351418926707622,
+      "speakerCountAcc": 0.5,
+      "rtf": 0.05973049433778683
+    },
+    {
+      "backend": "pyannote-community-1",
+      "files": "8/8",
+      "der": 0.13400105421725383,
+      "miss": 0.03281450041990467,
+      "falseAlarm": 0.008724454757853231,
+      "speakerError": 0.09246209903949594,
+      "speakerCountAcc": 1,
+      "rtf": 0.5234392632572795
+    }
+  ],
+  "details": [
+    {
+      "backend": "nemo-sortformer",
+      "url": "http://localhost:8002",
+      "files": [
+        {
+          "id": "cmfyw",
+          "der": 0.11530419809773697,
+          "miss": 0.030378812725483765,
+          "falseAlarm": 0.02437274516234831,
+          "speakerError": 0.06055264020990489,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 55.592,
+          "rtf": 0.11489748677248678
+        },
+        {
+          "id": "ezsgk",
+          "der": 0.013366389996766197,
+          "miss": 0.007060472135388595,
+          "falseAlarm": 0.006305917861377601,
+          "speakerError": 0,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 11.588,
+          "rtf": 0.05580812945482566
+        },
+        {
+          "id": "jnivh",
+          "der": 0.021156263091746962,
+          "miss": 0.02066750453847228,
+          "falseAlarm": 0.0004887585532746823,
+          "speakerError": 0,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 5.068,
+          "rtf": 0.03650244886199942
+        },
+        {
+          "id": "mesob",
+          "der": 0.0748477466504263,
+          "miss": 0.03556638246041413,
+          "falseAlarm": 0.015651644336175396,
+          "speakerError": 0.023629719853836783,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 6.26,
+          "rtf": 0.039680527383367144
+        },
+        {
+          "id": "migzj",
+          "der": 0.1234369196483843,
+          "miss": 0.03225207378977343,
+          "falseAlarm": 0.032128265445091,
+          "speakerError": 0.05905658041351987,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 7.385,
+          "rtf": 0.04205580865603645
+        },
+        {
+          "id": "nnqfq",
+          "der": 0.13147849067684628,
+          "miss": 0.025400088092791075,
+          "falseAlarm": 0.006533548671267068,
+          "speakerError": 0.09954485391278814,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 5.443,
+          "rtf": 0.046049069373942465
+        },
+        {
+          "id": "vbjlx",
+          "der": 0.12256843331391963,
+          "miss": 0.09269073966220151,
+          "falseAlarm": 0.004076878276062901,
+          "speakerError": 0.025800815375655213,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 25.902,
+          "rtf": 0.08002347998022738
+        },
+        {
+          "id": "wnfoi",
+          "der": 0.3474744961433192,
+          "miss": 0.10363274446379696,
+          "falseAlarm": 0.004312847308617401,
+          "speakerError": 0.23952890437090488,
+          "refSpeakers": 6,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 14.89,
+          "rtf": 0.06282700421940929
+        }
+      ]
+    },
+    {
+      "backend": "streaming-sortformer",
+      "url": "http://localhost:8003",
+      "files": [
+        {
+          "id": "cmfyw",
+          "der": 0.1020006559527714,
+          "miss": 0.03011233191210233,
+          "falseAlarm": 0.020334535913414234,
+          "speakerError": 0.051553788127254835,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 11.375,
+          "rtf": 0.023509837962962965
+        },
+        {
+          "id": "ezsgk",
+          "der": 0.010941036973159426,
+          "miss": 0.005281879918076965,
+          "falseAlarm": 0.005659157055082462,
+          "speakerError": 0,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 4.733,
+          "rtf": 0.02279425929493354
+        },
+        {
+          "id": "jnivh",
+          "der": 0.013056835637480798,
+          "miss": 0.011101801424382069,
+          "falseAlarm": 0.0019550342130987292,
+          "speakerError": 0,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 3.261,
+          "rtf": 0.023487467588591184
+        },
+        {
+          "id": "mesob",
+          "der": 0.033191230207064555,
+          "miss": 0.02174177831912302,
+          "falseAlarm": 0.009317904993909866,
+          "speakerError": 0.002131546894031669,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 3.632,
+          "rtf": 0.023022312373225155
+        },
+        {
+          "id": "migzj",
+          "der": 0.050761421319796954,
+          "miss": 0.02445214807478024,
+          "falseAlarm": 0.025814039866286987,
+          "speakerError": 0.0004952333787297264,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 4.009,
+          "rtf": 0.022830296127562644
+        },
+        {
+          "id": "nnqfq",
+          "der": 0.12700044046395537,
+          "miss": 0.021215680516811043,
+          "falseAlarm": 0.004331228894435472,
+          "speakerError": 0.10145353105270885,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 3.284,
+          "rtf": 0.027783417935702198
+        },
+        {
+          "id": "vbjlx",
+          "der": 0.06779266161910309,
+          "miss": 0.04056493884682586,
+          "falseAlarm": 0.00908561444379732,
+          "speakerError": 0.018142108328479907,
+          "refSpeakers": 5,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 7.479,
+          "rtf": 0.02310615422639644
+        },
+        {
+          "id": "wnfoi",
+          "der": 0.08443228000331758,
+          "miss": 0.044496972712946836,
+          "falseAlarm": 0.005888695363689143,
+          "speakerError": 0.0340466119266816,
+          "refSpeakers": 6,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": false,
+          "elapsedSec": 5.423,
+          "rtf": 0.02288185654008439
+        }
+      ]
+    },
+    {
+      "backend": "pyannote-community-1",
+      "url": "http://localhost:8001",
+      "files": [
+        {
+          "id": "cmfyw",
+          "der": 0.059937684486716956,
+          "miss": 0.02308133814365366,
+          "falseAlarm": 0.023224827812397507,
+          "speakerError": 0.013631518530665791,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 252.451,
+          "rtf": 0.5217654596560847
+        },
+        {
+          "id": "ezsgk",
+          "der": 0.1986633610003234,
+          "miss": 0.02042686213215479,
+          "falseAlarm": 0.005605260321224534,
+          "speakerError": 0.17263123854694407,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 105.261,
+          "rtf": 0.5069398959738008
+        },
+        {
+          "id": "jnivh",
+          "der": 0.01389470744309454,
+          "miss": 0.007052087697248988,
+          "falseAlarm": 0.0015360983102918587,
+          "speakerError": 0.005306521435553694,
+          "refSpeakers": 3,
+          "hypSpeakers": 3,
+          "speakerCountCorrect": true,
+          "elapsedSec": 69.478,
+          "rtf": 0.5004177470469605
+        },
+        {
+          "id": "mesob",
+          "der": 0.1736297198538368,
+          "miss": 0.023142509135200974,
+          "falseAlarm": 0.01686967113276492,
+          "speakerError": 0.1336175395858709,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 79.886,
+          "rtf": 0.5063767748478701
+        },
+        {
+          "id": "migzj",
+          "der": 0.16782221121703603,
+          "miss": 0.042899591432462546,
+          "falseAlarm": 0.011885601089513434,
+          "speakerError": 0.11303701869506004,
+          "refSpeakers": 4,
+          "hypSpeakers": 4,
+          "speakerCountCorrect": true,
+          "elapsedSec": 88.854,
+          "rtf": 0.5060022779043281
+        },
+        {
+          "id": "nnqfq",
+          "der": 0.05447070914696814,
+          "miss": 0.03964175598296873,
+          "falseAlarm": 0.0002202319776831596,
+          "speakerError": 0.014608721186316254,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 73.034,
+          "rtf": 0.6178849407783419
+        },
+        {
+          "id": "vbjlx",
+          "der": 0.1956610366919045,
+          "miss": 0.05841584158415842,
+          "falseAlarm": 0.007716948165404776,
+          "speakerError": 0.1295282469423413,
+          "refSpeakers": 5,
+          "hypSpeakers": 5,
+          "speakerCountCorrect": true,
+          "elapsedSec": 166.948,
+          "rtf": 0.5157810182896688
+        },
+        {
+          "id": "wnfoi",
+          "der": 0.20792900389815044,
+          "miss": 0.047856017251389237,
+          "falseAlarm": 0.002736999253545658,
+          "speakerError": 0.15733598739321555,
+          "refSpeakers": 6,
+          "hypSpeakers": 6,
+          "speakerCountCorrect": true,
+          "elapsedSec": 121.426,
+          "rtf": 0.5123459915611814
+        }
+      ]
+    }
+  ]
+}

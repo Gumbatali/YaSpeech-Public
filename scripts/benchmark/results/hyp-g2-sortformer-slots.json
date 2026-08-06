@@ -1,0 +1,96 @@
+[
+ {
+  "id": "cmfyw",
+  "real": 5,
+  "slots": 4,
+  "min_share": 16.0,
+  "shares": [
+   16.0,
+   20.5,
+   29.7,
+   47.0
+  ]
+ },
+ {
+  "id": "ezsgk",
+  "real": 3,
+  "slots": 3,
+  "min_share": 11.9,
+  "shares": [
+   11.9,
+   46.2,
+   61.1
+  ]
+ },
+ {
+  "id": "jnivh",
+  "real": 3,
+  "slots": 3,
+  "min_share": 29.1,
+  "shares": [
+   29.1,
+   29.4,
+   60.5
+  ]
+ },
+ {
+  "id": "mesob",
+  "real": 4,
+  "slots": 4,
+  "min_share": 4.9,
+  "shares": [
+   4.9,
+   5.0,
+   38.8,
+   78.9
+  ]
+ },
+ {
+  "id": "migzj",
+  "real": 4,
+  "slots": 4,
+  "min_share": 31.6,
+  "shares": [
+   31.6,
+   32.9,
+   34.3,
+   42.8
+  ]
+ },
+ {
+  "id": "nnqfq",
+  "real": 5,
+  "slots": 4,
+  "min_share": 12.3,
+  "shares": [
+   12.3,
+   23.0,
+   39.8,
+   40.7
+  ]
+ },
+ {
+  "id": "vbjlx",
+  "real": 5,
+  "slots": 4,
+  "min_share": 16.8,
+  "shares": [
+   16.8,
+   25.7,
+   29.7,
+   62.6
+  ]
+ },
+ {
+  "id": "wnfoi",
+  "real": 6,
+  "slots": 4,
+  "min_share": 17.8,
+  "shares": [
+   17.8,
+   24.7,
+   36.8,
+   37.2
+  ]
+ }
+]

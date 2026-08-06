@@ -2,8 +2,12 @@
  * Создаёт зависимости для Cloud Functions из переменных окружения.
  *
  * ASR_PROVIDER:
- *   "speechkit" (default) — Яндекс SpeechKit
+ *   "speechkit" (default) — Яндекс SpeechKit (диаризация уже внутри ASR)
  *   "groq"                — Groq Whisper large-v3 (требует GROQ_API_KEY)
+ *   "smart"               — Groq Whisper + отдельный диаризатор (см. DIARIZER)
+ *
+ * DIARIZER (учитывается только при ASR_PROVIDER=smart):
+ *   см. infrastructure/diarization/make-diarizer.js
  */
 import { YcArtifactStorage } from "../infrastructure/yc-artifact-storage.js";
 import { YcProjectRepository } from "../infrastructure/yc-project-repository.js";
@@ -14,6 +18,7 @@ import { MockSpeechKitGateway } from "../infrastructure/mock-speech-kit-gateway.
 import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.js";
 import { YcSpeechKitGateway } from "../infrastructure/yc-speech-kit-gateway.js";
 import { GroqWhisperGateway } from "../infrastructure/groq-whisper-gateway.js";
+import { SmartAsrGateway } from "../infrastructure/smart-asr-gateway.js";
 import { YcYandexGptGateway } from "../infrastructure/yc-yandex-gpt-gateway.js";
 import { MeetingPipelineService } from "../application/meeting-pipeline-service.js";
 import { hashPassword, verifyPassword } from "../shared/password.js";
@@ -55,6 +60,15 @@ export function makeDeps() {
     const groqApiKey = process.env.GROQ_API_KEY;
     if (!groqApiKey) throw new Error("GROQ_API_KEY required when ASR_PROVIDER=groq");
     speechKitGateway = new GroqWhisperGateway({ apiKey: groqApiKey, artifactStorage });
+  } else if (asrProvider === "smart") {
+    // Whisper для текста + отдельный диаризатор для спикеров.
+    // Конкретный бэкенд выбирается переменной DIARIZER.
+    speechKitGateway = new SmartAsrGateway({
+      groqApiKey: process.env.GROQ_API_KEY,
+      speechKitBucket: bucket,
+      artifactStorage,
+      env: process.env,
+    });
   } else {
     speechKitGateway = new YcSpeechKitGateway({ bucket });
   }

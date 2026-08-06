@@ -20,11 +20,16 @@
  */
 
 import { logger } from "../shared/logger.js";
+import { chunkWav, parseWavHeader, stitchChunkedSegments } from "./diarization/wav-chunker.js";
 
-const HF_API_URL = "https://api-inference.huggingface.co/models/pyannote/speaker-diarization-3.1";
-const MAX_BYTES = 24 * 1024 * 1024; // 24 MB
+const DEFAULT_MODEL = "pyannote/speaker-diarization-community-1";
+const MAX_BYTES = 24 * 1024 * 1024; // предел HF Inference API
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5000; // HF может грузить модель — ждём
+
+// 10 минут WAV PCM 16 kHz mono ≈ 19 МБ — с запасом влезает в лимит HF.
+const CHUNK_SEC = 600;
+const CHUNK_OVERLAP_SEC = 10;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -34,9 +39,12 @@ export class PyannoteDiarization {
   /**
    * @param {{ hfToken: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
    */
-  constructor({ hfToken, artifactStorage }) {
+  constructor({ hfToken, artifactStorage, model = DEFAULT_MODEL }) {
     this.hfToken = hfToken;
     this.artifactStorage = artifactStorage;
+    this.model = model;
+    this.apiUrl = `https://api-inference.huggingface.co/models/${model}`;
+    this.backend = "pyannote-hf";
   }
 
   get available() {
@@ -60,15 +68,19 @@ export class PyannoteDiarization {
     logger.info("Pyannote: downloading audio for diarization", { audioKey });
 
     const audioStream = await this.artifactStorage.readStream(audioKey);
-    let audioBuffer = await streamToBuffer(audioStream);
+    const audioBuffer = await streamToBuffer(audioStream);
 
+    // Длинная запись не влезает в лимит HF. Раньше её резали по сырым байтам —
+    // хвост встречи молча терял спикеров. Теперь режем по времени и сшиваем.
     if (audioBuffer.length > MAX_BYTES) {
-      logger.warn("Pyannote: audio too large, truncating to 24 MB", {
-        originalMb: (audioBuffer.length / 1024 / 1024).toFixed(1)
-      });
-      audioBuffer = audioBuffer.slice(0, MAX_BYTES);
+      return this._diarizeChunked(audioBuffer);
     }
 
+    return this._diarizeWhole(audioBuffer);
+  }
+
+  /** Диаризация записи, целиком помещающейся в лимит API. */
+  async _diarizeWhole(audioBuffer) {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = await this._callApi(audioBuffer);
@@ -95,10 +107,72 @@ export class PyannoteDiarization {
     return null;
   }
 
+  /**
+   * Диаризация длинной записи по частям.
+   *
+   * Работает только для WAV PCM — именно его отдаёт браузерный preprocessor.
+   * Для любого другого формата честно отказываемся: обрезать «как раньше»
+   * значит тихо испортить данные, а это хуже явного отсутствия диаризации.
+   */
+  async _diarizeChunked(audioBuffer) {
+    const info = parseWavHeader(audioBuffer);
+
+    if (!info) {
+      logger.error("Pyannote: audio exceeds HF limit and is not WAV PCM — cannot chunk safely", {
+        sizeMb: (audioBuffer.length / 1024 / 1024).toFixed(1),
+      });
+      return null;
+    }
+
+    const chunks = chunkWav(audioBuffer, {
+      maxChunkSec: CHUNK_SEC,
+      overlapSec: CHUNK_OVERLAP_SEC,
+    });
+
+    logger.info("Pyannote: audio exceeds HF limit, processing in chunks", {
+      durationSec: Math.round(info.durationSec),
+      chunks: chunks.length,
+    });
+
+    const results = [];
+
+    for (const chunk of chunks) {
+      const segments = await this._diarizeWhole(chunk.buffer);
+
+      if (!segments) {
+        // Один провалившийся чанк не должен обнулять остальные: лучше
+        // разметить 50 минут из 60, чем не разметить ничего.
+        logger.warn("Pyannote: chunk failed, continuing without it", {
+          index: chunk.index,
+          startSec: Math.round(chunk.startSec),
+        });
+        continue;
+      }
+
+      results.push({ startSec: chunk.startSec, segments });
+    }
+
+    if (results.length === 0) {
+      logger.error("Pyannote: every chunk failed");
+      return null;
+    }
+
+    const stitched = stitchChunkedSegments(results, { overlapSec: CHUNK_OVERLAP_SEC });
+
+    logger.info("Pyannote: chunks stitched", {
+      chunksOk: results.length,
+      chunksTotal: chunks.length,
+      segments: stitched.length,
+      speakers: new Set(stitched.map((s) => s.speaker)).size,
+    });
+
+    return stitched;
+  }
+
   async _callApi(audioBuffer) {
     const startMs = Date.now();
 
-    const res = await fetch(HF_API_URL, {
+    const res = await fetch(this.apiUrl, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.hfToken}`,
@@ -145,10 +219,9 @@ export class PyannoteDiarization {
  *
  * @param {Array<{ start, end, text }>} whisperSegments
  * @param {Array<{ speaker, start, stop }>} diarizationSegments
- * @param {number} totalSpeakers - ожидаемое количество спикеров (для нумерации)
  * @returns {Array<{ speakerId, speakerLabel, text, startTimeMs, endTimeMs }>}
  */
-export function alignTranscriptWithDiarization(whisperSegments, diarizationSegments, totalSpeakers) {
+export function alignTranscriptWithDiarization(whisperSegments, diarizationSegments) {
   // Строим карту нормализованных имён спикеров (SPEAKER_00 → speaker-1 и т.д.)
   const speakerIds = [...new Set(diarizationSegments.map((s) => s.speaker))].sort();
   const speakerMap = new Map(
@@ -184,9 +257,31 @@ function findDominantSpeaker(start, end, segments) {
     }
   }
 
-  if (!Object.keys(overlap).length) return "SPEAKER_00";
+  if (Object.keys(overlap).length) {
+    return Object.entries(overlap).sort((a, b) => b[1] - a[1])[0][0];
+  }
 
-  return Object.entries(overlap).sort((a, b) => b[1] - a[1])[0][0];
+  // Перекрытия нет: сегмент ASR попал в паузу разметки либо таймкоды двух
+  // моделей разошлись. Раньше здесь возвращался жёсткий "SPEAKER_00", и все
+  // такие реплики сваливались на первого спикера — в протоколе он получал
+  // чужие слова, причём тем чаще, чем хуже совпадали границы.
+  //
+  // Ближайший по времени сегмент — не идеал, но он хотя бы отражает, кто
+  // говорил рядом, и не смещает атрибуцию систематически в одну сторону.
+  let nearest = null;
+  let bestDistance = Infinity;
+  const middle = (start + end) / 2;
+
+  for (const seg of segments) {
+    const distance =
+      middle < seg.start ? seg.start - middle : middle > seg.stop ? middle - seg.stop : 0;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      nearest = seg.speaker;
+    }
+  }
+
+  return nearest ?? "SPEAKER_00";
 }
 
 // ────────────────────────────────────────────────────────────────────────────
