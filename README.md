@@ -3,10 +3,6 @@
 
 ![Архитектура пайплайна YaSpeech](./images/architecture.png)
 
-Идея — из внутреннего сервиса **YaSpeech** (компания «Стройтехэксперт», фиксация решений по строительным планёркам), но код здесь самостоятельный и учебный, не портированный прод.
-
-> Прод-сервис (Node.js, Cloud Functions + API Gateway + YMQ) — в ветке [`main`](https://github.com/Gumbatali/YaSpeech-Public/tree/main).
-
 ---
 
 ## Содержание
