@@ -56,7 +56,7 @@ jupyter notebook cookbook_yaspeech.ipynb
 | Переменная | Где взять |
 |---|---|
 | `FOLDER_ID` | [идентификатор каталога](https://yandex.cloud/ru/docs/resource-manager/operations/folder/get-id) |
-| `YC_API_KEY` | [API-ключ сервисного аккаунта](https://yandex.cloud/ru/docs/iam/operations/api-key/create) (роли `ai.speechkit-stt.user`, `ai.languageModels.user`, `storage.uploader` — см. раздел 2 ноутбука) |
+| `YC_API_KEY` | [API-ключ сервисного аккаунта](https://yandex.cloud/ru/docs/iam/operations/api-key/create) (роли `ai.speechkit-stt.user`, `ai.languageModels.user`, `storage.editor` — см. раздел 2 ноутбука) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | [статические ключи для Object Storage](https://yandex.cloud/ru/docs/storage/operations/access-keys/create) |
 
 Ноутбук делает реальные платные вызовы (SpeechKit + YandexGPT) и создаёт бакет Object Storage.
