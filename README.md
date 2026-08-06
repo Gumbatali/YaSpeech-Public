@@ -1,5 +1,5 @@
 # Навигация: YaSpeech — автопротоколирование деловых встреч на Yandex Cloud
-**Учебный пример** сервиса «запись встречи → готовый протокол»: *SpeechKit* (распознавание речи) + *YandexGPT* через OpenAI-совместимое Responses API (диаризация по составу команды, коррекция ошибок ASR, протокол в одном структурированном вызове) + *Object Storage* (промежуточное хранение аудио).
+**Учебный пример** сервиса «запись встречи → готовый протокол»: *SpeechKit* (распознавание речи) + *YandexGPT* (диаризация по составу команды, коррекция ошибок ASR, протокол в одном структурированном вызове) + *Object Storage* (промежуточное хранение аудио).
 
 ![Архитектура пайплайна YaSpeech](./images/architecture.png)
 
@@ -94,10 +94,8 @@ jupyter notebook cookbook_yaspeech.ipynb
 ## Дополнительные ресурсы
 
 * 🔗 **SpeechKit STT v3**: https://aistudio.yandex.ru/docs/ru/speechkit/stt/api/transcribation-api-v3
-* 🔗 **Определение дикторов**: https://aistudio.yandex.ru/docs/ru/speechkit/stt/speaker-labeling
 * 🔗 **Поддерживаемые форматы аудио**: https://aistudio.yandex.ru/docs/ru/speechkit/formats
 * 🔗 **Доступные модели**: https://aistudio.yandex.ru/docs/ru/ai-studio/concepts/generation/models
-* 🔗 **OpenAI-совместимое API**: https://yandex.cloud/en/docs/ai-studio/concepts/openai-compatibility
 * 🔗 **Object Storage**: https://yandex.cloud/ru/docs/storage/s3/
 * 🔗 **Примеры кода Yandex AI Studio**: https://github.com/yandex-ai-studio/yandex-ai-studio-cookbook
 
