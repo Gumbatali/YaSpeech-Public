@@ -222,6 +222,14 @@ export class MeetingPipelineService {
   /**
    * Фаза 1 — запускаем ASR и немедленно выходим.
    * Время работы: секунды (только HTTP-запрос к SpeechKit).
+   *
+   * Работает с двумя видами ASR-гейтвеев:
+   *   • двухфазный (SpeechKit) — startRecognition() отдаёт operationId, дальше
+   *     воркер выходит и опрашивает операцию отдельными инвокациями (poll-asr),
+   *     потому что распознавание идёт дольше таймаута функции;
+   *   • синхронный (Smart/Groq) — processMeeting() возвращает готовый транскрипт
+   *     за одну инвокацию, поэтому фаза poll-asr не нужна и не планируется.
+   *     Под этот режим deploy.sh поднимает WORKER_TIMEOUT до 600s.
    */
   async startAsrPhase(meeting, project) {
     await this.meetingRepository.save({
@@ -230,6 +238,15 @@ export class MeetingPipelineService {
       currentStage: "speechkit_processing",
       updatedAt: this.clock.now().toISOString()
     });
+
+    if (typeof this.speechKitGateway.startRecognition !== "function") {
+      const { jobId, transcript } = await this.speechKitGateway.processMeeting({ meeting, project });
+      logger.info("startAsrPhase: синхронный ASR завершён, переходим к черновику", {
+        meetingId: meeting.id, phrases: transcript?.phrases?.length ?? 0
+      });
+      await this.prepareDraftFromTranscript(meeting, project, jobId, transcript);
+      return;
+    }
 
     const { operationId } = await this.speechKitGateway.startRecognition({ meeting, project });
 

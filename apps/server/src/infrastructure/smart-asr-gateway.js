@@ -6,7 +6,12 @@
  *   2. Диаризация: pyannote via HF (если HF_TOKEN) → LLM B2-pass (fallback, уже есть)
  *   3. Выравнивание: Whisper сегменты + pyannote временные метки → speaker-labeled phrases
  *
- * Интерфейс идентичен YcSpeechKitGateway → drop-in замена.
+ * Контракт — синхронный: processMeeting() возвращает готовый транскрипт за один
+ * вызов. Это НЕ полная замена YcSpeechKitGateway: у того есть ещё двухфазная
+ * пара startRecognition() + pollRecognitionOnce() для случая, когда распознавание
+ * длиннее таймаута функции. Pipeline различает оба вида по наличию
+ * startRecognition (см. startAsrPhase), поэтому синхронный гейтвей обязан
+ * укладываться в WORKER_TIMEOUT — deploy.sh поднимает его до 600s для smart.
  */
 
 import { GroqWhisperGateway } from "./groq-whisper-gateway.js";
