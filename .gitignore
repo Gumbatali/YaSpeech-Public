@@ -11,6 +11,7 @@ npm-debug.log*
 
 # Секреты деплоя — никогда не коммитить
 scripts/.env.deploy
+scripts/.env.deploy.staging
 
 # Локальные настройки Claude Code (сессионные данные, план-файлы)
 .claude/
