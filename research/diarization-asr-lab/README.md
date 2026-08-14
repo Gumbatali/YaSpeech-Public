@@ -47,11 +47,14 @@ docker run --rm -e HF_TOKEN="$HF_TOKEN" \
   -v "$(pwd)/research/diarization-asr-lab/results/diarization:/data/out" \
   diar-lab/pyannote --corpus-dir /data/corpus --out /data/out
 
-# 4. Распознавание речи (faster-whisper, CPU)
+# 4. Распознавание речи (faster-whisper, CPU). --vad-filter и
+#    --no-condition-on-previous-text — рекомендованные по находкам ниже,
+#    снижают WER на реальной речи; --model large-v3 точнее medium, но медленнее
 docker run --rm \
   -v "$(pwd)/research/diarization-asr-lab/results/corpus:/data/corpus" \
   -v "$(pwd)/research/diarization-asr-lab/results/asr:/data/out" \
-  diar-lab/whisper --corpus-dir /data/corpus --out /data/out --model medium
+  diar-lab/whisper --corpus-dir /data/corpus --out /data/out --model medium \
+  --vad-filter --no-condition-on-previous-text
 
 # 5. Скоринг
 node research/diarization-asr-lab/score/score-wer.mjs \
@@ -99,7 +102,8 @@ node research/diarization-asr-lab/corpus/ami-to-session.mjs \
 ```
 research/diarization-asr-lab/
 ├── docker/          # Dockerfile на каждый бэкенд (pyannote/whisper/sortformer/diart)
-├── corpus/          # сборка корпуса: Golos/FLEURS → синтетика, AMI → настоящая сессия, обрезка
+├── corpus/          # сборка корпуса: Golos/FLEURS → синтетика, AMI → настоящая/одноголосая
+│                     # сессия, обрезка/вырезание окна, сопоставление Headset-N участнику
 ├── run/             # инференс: diarize*.py/mjs, transcribe.py, merge-clusters.py
 ├── score/           # WER/cpWER
 └── results/         # gitignored — артефакты прогонов
