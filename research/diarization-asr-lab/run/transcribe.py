@@ -23,6 +23,10 @@ def main():
     parser.add_argument("--model", default="medium",
                          help="faster-whisper model size (tiny/base/small/medium/large-v3)")
     parser.add_argument("--language", default="ru")
+    parser.add_argument("--vad-filter", action="store_true",
+                         help="фильтровать не-речевые участки через Silero VAD перед распознаванием")
+    parser.add_argument("--no-condition-on-previous-text", action="store_true",
+                         help="не обуславливать текущий сегмент предыдущим распознанным текстом")
     args = parser.parse_args()
 
     from faster_whisper import WhisperModel
@@ -44,7 +48,12 @@ def main():
         audio_path = corpus_dir / session["audio"]
 
         t0 = time.time()
-        segments_iter, info = model.transcribe(str(audio_path), language=args.language)
+        segments_iter, info = model.transcribe(
+            str(audio_path),
+            language=args.language,
+            vad_filter=args.vad_filter,
+            condition_on_previous_text=not args.no_condition_on_previous_text,
+        )
         segments = [
             {"start": s.start, "end": s.end, "text": s.text.strip()}
             for s in segments_iter
