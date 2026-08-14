@@ -1,5 +1,10 @@
 # Зависимости только для download_golos.py (скачивание датасета).
 # run-benchmark.mjs работает на голом Node 18+ без зависимостей.
-datasets>=2.18.0
+#
+# datasets зафиксирован до <3.0: начиная с более новых версий декодирование
+# Audio-фичи требует torchcodec (и системный ffmpeg) вместо soundfile/librosa
+# — проверено 2026-08-10, с datasets>=3.x download_golos.py падает с
+# "ImportError: To support decoding audio data, please install 'torchcodec'".
+datasets>=2.18.0,<3.0
 soundfile>=0.12.1
 librosa>=0.10.0

@@ -45,7 +45,7 @@ def main() -> int:
         from datasets import load_dataset
     except ImportError:
         print(
-            "❌ Нужны зависимости: pip install -r scripts/benchmark/requirements.txt",
+            "Нужны зависимости: pip install -r scripts/benchmark/requirements.txt",
             file=sys.stderr,
         )
         return 1
@@ -54,11 +54,18 @@ def main() -> int:
     os.makedirs(out_dir, exist_ok=True)
     manifest_path = os.path.join(out_dir, "manifest.jsonl")
 
-    print(f"⬇️  Golos / {args.domain} / test — стримим первые ~{args.count} образцов…")
-    # streaming=True не качает весь корпус (десятки ГБ), берём только нужное.
-    dataset = load_dataset(
-        "SberDevices/Golos", args.domain, split="test", streaming=True
-    )
+    # "SberDevices/Golos" опустел (проверено 2026-08-10 — в репозитории
+    # остались только .gitattributes и README.md, ни одного файла с данными).
+    # Используем зеркало bond005, у него те же данные в Parquet, по одному
+    # репозиторию на домен (без параметра config).
+    dataset_repo = {
+        "crowd": "bond005/sberdevices_golos_10h_crowd",
+        "farfield": "bond005/sberdevices_golos_100h_farfield",
+    }[args.domain]
+
+    print(f"Golos / {args.domain} / test — стримим первые ~{args.count} образцов ({dataset_repo})…")
+    # streaming=True не качает весь корпус, берём только нужное.
+    dataset = load_dataset(dataset_repo, split="test", streaming=True)
 
     written = 0
     with open(manifest_path, "w", encoding="utf-8") as manifest:
@@ -80,7 +87,9 @@ def main() -> int:
                 json.dumps(
                     {
                         "id": sample_id,
-                        "audio": os.path.join(os.path.basename(out_dir), wav_name),
+                        # относительно manifest.jsonl (он пишется в тот же out_dir,
+                        # что и WAV) — таков контракт run-benchmark.mjs/build-corpus.mjs
+                        "audio": wav_name,
                         "ref": ref,
                         "tags": ["golos", args.domain],
                     },
@@ -89,13 +98,13 @@ def main() -> int:
                 + "\n"
             )
             written += 1
-            print(f"  ✓ {sample_id}  «{ref[:60]}{'…' if len(ref) > 60 else ''}»")
+            print(f"  {sample_id}  «{ref[:60]}{'…' if len(ref) > 60 else ''}»")
 
     if written == 0:
-        print("⚠️  Ничего не записано — проверь название колонки/домена.", file=sys.stderr)
+        print("Ничего не записано — проверь название колонки/домена.", file=sys.stderr)
         return 1
 
-    print(f"\n✅ {written} образцов → {manifest_path}")
+    print(f"\n{written} образцов → {manifest_path}")
     print("   Дальше: BENCH_BASE_URL=… BENCH_LOGIN=… BENCH_PASSWORD=… \\")
     print(f"           node scripts/benchmark/run-benchmark.mjs {manifest_path}")
     return 0

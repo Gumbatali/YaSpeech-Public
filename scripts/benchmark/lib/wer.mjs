@@ -39,7 +39,10 @@ export function tokenize(text) {
 
 /**
  * Расстояние Левенштейна на уровне токенов с подсчётом S/D/I.
- * O(n*m) память по строке — достаточно для расшифровок до десятков тысяч слов.
+ * O(n*m) память по строке, но плоские Int32Array вместо (n+1)x(m+1) массивов
+ * JS-объектов: на полной 36-минутной встрече (n≈8000, m≈6000) объектное
+ * представление уходит в OOM на 4 ГБ heap до завершения — проверено вживую
+ * 2026-08-11. Типизированные массивы держат тот же расчёт в сотнях МБ.
  *
  * @param {string[]} ref эталонные токены
  * @param {string[]} hyp распознанные токены
@@ -48,52 +51,63 @@ export function tokenize(text) {
 export function alignTokens(ref, hyp) {
   const n = ref.length;
   const m = hyp.length;
+  const width = m + 1;
+  const cells = (n + 1) * width;
 
-  // dp[i][j] = (расстояние, S, D, I) для ref[0..i) vs hyp[0..j)
-  const dist = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
-  const ops = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(null));
+  // dp[i*width+j] = (расстояние, S, D, I) для ref[0..i) vs hyp[0..j)
+  const dist = new Int32Array(cells);
+  const subs = new Int32Array(cells);
+  const dels = new Int32Array(cells);
+  const inss = new Int32Array(cells);
 
   for (let i = 0; i <= n; i += 1) {
-    dist[i][0] = i;
-    ops[i][0] = { s: 0, d: i, ins: 0 };
+    dist[i * width] = i;
+    dels[i * width] = i;
   }
   for (let j = 0; j <= m; j += 1) {
-    dist[0][j] = j;
-    ops[0][j] = { s: 0, d: 0, ins: j };
+    dist[j] = j;
+    inss[j] = j;
   }
 
   for (let i = 1; i <= n; i += 1) {
+    const row = i * width;
+    const prevRow = (i - 1) * width;
     for (let j = 1; j <= m; j += 1) {
       if (ref[i - 1] === hyp[j - 1]) {
-        dist[i][j] = dist[i - 1][j - 1];
-        ops[i][j] = ops[i - 1][j - 1];
+        dist[row + j] = dist[prevRow + j - 1];
+        subs[row + j] = subs[prevRow + j - 1];
+        dels[row + j] = dels[prevRow + j - 1];
+        inss[row + j] = inss[prevRow + j - 1];
         continue;
       }
-      const sub = dist[i - 1][j - 1];
-      const del = dist[i - 1][j];
-      const ins = dist[i][j - 1];
+      const sub = dist[prevRow + j - 1];
+      const del = dist[prevRow + j];
+      const ins = dist[row + j - 1];
       const min = Math.min(sub, del, ins);
-      dist[i][j] = min + 1;
+      dist[row + j] = min + 1;
 
       if (min === sub) {
-        const p = ops[i - 1][j - 1];
-        ops[i][j] = { s: p.s + 1, d: p.d, ins: p.ins };
+        subs[row + j] = subs[prevRow + j - 1] + 1;
+        dels[row + j] = dels[prevRow + j - 1];
+        inss[row + j] = inss[prevRow + j - 1];
       } else if (min === del) {
-        const p = ops[i - 1][j];
-        ops[i][j] = { s: p.s, d: p.d + 1, ins: p.ins };
+        subs[row + j] = subs[prevRow + j];
+        dels[row + j] = dels[prevRow + j] + 1;
+        inss[row + j] = inss[prevRow + j];
       } else {
-        const p = ops[i][j - 1];
-        ops[i][j] = { s: p.s, d: p.d, ins: p.ins + 1 };
+        subs[row + j] = subs[row + j - 1];
+        dels[row + j] = dels[row + j - 1];
+        inss[row + j] = inss[row + j - 1] + 1;
       }
     }
   }
 
-  const final = ops[n][m];
+  const last = n * width + m;
   return {
-    substitutions: final.s,
-    deletions: final.d,
-    insertions: final.ins,
-    distance: dist[n][m]
+    substitutions: subs[last],
+    deletions: dels[last],
+    insertions: inss[last],
+    distance: dist[last]
   };
 }
 
