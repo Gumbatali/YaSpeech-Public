@@ -703,9 +703,113 @@ export class YcYandexGptGateway {
     return result;
   }
 
+  // Голосование большинством по N независимых вызовов B2 — перенесено из
+  // research/diarization-asr-lab/score/preview-protocol.mjs (--b2-votes),
+  // где найдено и провалидировано на реальных встречах: один вызов B2
+  // нестабилен на неоднозначных встречах (три независимых прогона с 3
+  // голосами дали три разных распределения имён, включая галлюцинацию
+  // "Слава" — упомянутое, но не говорившее лицо принято за спикера). С 7
+  // голосами консенсус стабилизировался. См. FINDINGS.md раздел 10.
+  //
+  // GPT_B2_VOTES=1 (или отсутствие переменной с явным "1") откатывает к
+  // одному вызову — по умолчанию используется 7, тот же дефолт, что
+  // подтверждён в лабе. Это МЕНЯЕТ стоимость (N вызовов вместо одного,
+  // B2 идёт последовательно) — оператор может выставить GPT_B2_VOTES=1
+  // в окружении, если нужно вернуть прежнее поведение/стоимость.
   async identifySpeakers({ correctedText, transcript, project, context }) {
-    logger.info("GPT B2: speaker identification");
+    const votes = Number(process.env.GPT_B2_VOTES ?? 7);
+    if (!(votes > 1)) {
+      return this.identifySpeakersOnce({ correctedText, transcript, project, context });
+    }
 
+    logger.info("GPT B2: speaker identification (ensemble)", { votes });
+    const samples = [];
+    for (let i = 0; i < votes; i++) {
+      samples.push(await this.identifySpeakersOnce({ correctedText, transcript, project, context }));
+    }
+
+    const byLabel = new Map();
+    for (const sample of samples) {
+      for (const s of sample) {
+        if (!byLabel.has(s.label)) byLabel.set(s.label, []);
+        byLabel.get(s.label).push(s);
+      }
+    }
+
+    // Порог 0.7 — та же марж-эвристика, что в лабе: "4/7, а не 7/7" явно
+    // называется слабым консенсусом в живой демонстрации (раздел 10) —
+    // 4/7≈0.57 должен попасть в "low", 7/7 и 6/7 — не должны. Не
+    // гарантирует поимку каждой галлюцинации (если все N голосов
+    // независимо сходятся на одном неверном ответе — не статистически
+    // независимые прогоны, все видят один и тот же вводящий в
+    // заблуждение текст), но ловит объективный разнобой.
+    const CONFIDENCE_MARGIN_THRESHOLD = 0.7;
+    const finalDrafts = [...byLabel.entries()].map(([label, labelVotes]) => {
+      const nameCounts = new Map();
+      for (const v of labelVotes) {
+        const name = v.guessedName || null;
+        if (!name) continue;
+        nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      }
+      const winner = [...nameCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+      const bestVote = labelVotes.find((v) => v.guessedName === winner?.[0]) ?? labelVotes[0];
+      const votesForWinner = winner?.[1] ?? 0;
+      const totalVotes = labelVotes.length;
+      const confidence = !winner || votesForWinner / totalVotes < CONFIDENCE_MARGIN_THRESHOLD ? "low" : "high";
+      return {
+        id: bestVote.id,
+        label,
+        guessedName: winner ? winner[0] : null,
+        guessedRole: bestVote.guessedRole ?? null,
+        dialogueRole: bestVote.dialogueRole ?? null,
+        reasoning: bestVote.reasoning ?? null,
+        votesForWinner,
+        totalVotes,
+        confidence
+      };
+    });
+
+    // Конфликт-резолвер — тоже перенесён из лабы (найдено уже сегодня на
+    // реальных прогонах): одно и то же имя иногда достаётся ДВУМ разным
+    // диаризационным меткам одновременно (одна с сильным консенсусом —
+    // вероятно, реальный человек, другая со слабым — вероятно, другой,
+    // не опознанный человек, которому B2 при неуверенности "одолжил" уже
+    // известное имя из ростера вместо честного null). nameKey() — та же
+    // ё/е-нормализация, что и в дедупе (раздел 20) — иначе "Семён"/
+    // "Семен" не распознаются как коллизия.
+    const byName = new Map();
+    for (const s of finalDrafts) {
+      if (!s.guessedName) continue;
+      const key = nameKey(s.guessedName);
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key).push(s);
+    }
+    for (const claimants of byName.values()) {
+      if (claimants.length < 2) continue;
+      claimants.sort((a, b) => (b.votesForWinner / b.totalVotes) - (a.votesForWinner / a.totalVotes));
+      const [winner, ...losers] = claimants;
+      logger.info("GPT B2: name collision resolved", {
+        name: winner.guessedName,
+        winner: `${winner.label} (${winner.votesForWinner}/${winner.totalVotes})`,
+        losers: losers.map((l) => `${l.label} (${l.votesForWinner}/${l.totalVotes})`)
+      });
+      for (const loser of losers) {
+        loser.guessedName = null;
+        loser.confidence = "low";
+      }
+    }
+
+    logger.info("GPT B2: done (ensemble)", {
+      votes,
+      identified: finalDrafts.filter((s) => s.guessedName).length,
+      total: finalDrafts.length,
+      lowConfidence: finalDrafts.filter((s) => s.confidence === "low" && s.guessedName).length
+    });
+
+    return finalDrafts;
+  }
+
+  async identifySpeakersOnce({ correctedText, transcript, project, context }) {
     const speakerStats = transcript.speakerStats ?? [];
     // transcript.addressedNames считается в postprocessTranscript ДО
     // склейки подряд идущих реплик — если пересчитывать здесь заново на
