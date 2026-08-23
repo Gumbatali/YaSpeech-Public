@@ -7,6 +7,12 @@ export function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+export function isoDateFromTimestamp(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
 export function formatMeetingDate(value) {
   try {
     return new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(new Date(value));
