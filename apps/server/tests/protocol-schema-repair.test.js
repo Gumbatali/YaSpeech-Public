@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { repairNestedSummarySchema } from "../src/infrastructure/yc-yandex-gpt-gateway.js";
+import { repairNestedSummarySchema, YcYandexGptGateway } from "../src/infrastructure/yc-yandex-gpt-gateway.js";
 
 // Найдено на реальном прогоне protocol-пайплайна (oktyabrskaya-2,
 // research/diarization-asr-lab, --c1-samples 5): C1 иногда вкладывает
@@ -59,4 +59,28 @@ test("repairNestedSummarySchema: без summary-объекта или с summary
   assert.deepEqual(repairNestedSummarySchema(null), null);
   assert.deepEqual(repairNestedSummarySchema({ summary: "просто строка" }), { summary: "просто строка" });
   assert.deepEqual(repairNestedSummarySchema(undefined), undefined);
+});
+
+// Найдено при ревью (не на реальном прогоне): generateProtocol звал
+// qaProtocol без try/catch — сбой D1/D2 (квота/сеть, после исчерпания
+// встроенных ретраев YandexGptClient.complete) ронял весь вызов целиком,
+// теряя уже готовый protocol из extractProtocol/extractProtocolLong. Тот
+// же класс бага уже был исправлен в лабораторном скрипте раньше прода
+// (research/diarization-asr-lab/FINDINGS.md раздел 19).
+test("generateProtocol: сбой qaProtocol не теряет уже извлечённый протокол", async () => {
+  const gateway = new YcYandexGptGateway({ folderId: "test-folder" });
+  const extractedProtocol = {
+    summary: { title: "Тест", overview: "Обзор" },
+    topics: [], participants: ["Данил"], decisions: [], actionItems: [],
+    completedFromPrevious: [], carriedForward: [], openQuestions: [], transcriptHighlights: []
+  };
+  gateway.extractProtocol = async () => extractedProtocol;
+  gateway.qaProtocol = async () => { throw new Error("simulated D1/D2 failure"); };
+
+  const meeting = { gptContext: { domain: "тест", correctedText: "текст встречи" }, speakerDrafts: [] };
+  const project = { name: "Проект" };
+  const transcript = { rawText: "текст встречи" };
+
+  const { protocol } = await gateway.generateProtocol({ meeting, project, transcript });
+  assert.deepEqual(protocol, extractedProtocol, "сбой QA не должен отбрасывать уже готовый протокол");
 });

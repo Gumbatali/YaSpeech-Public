@@ -1006,7 +1006,21 @@ export class YcYandexGptGateway {
     // D1+D2: QA (только для fair/poor транскриптов) — раньше пропускался для
     // длинных встреч (map-reduce), хотя именно там пропуски вероятнее всего
     // (каждый кусок видит только часть разговора)
-    protocol = await this.qaProtocol({ protocol, correctedText, context, speakers, meetingDate: meeting.date ?? null });
+    //
+    // Сбой D1/D2 (квота/сеть — YandexGptClient.complete уже ретраит 429/500
+    // и сетевые ошибки несколько раз, но после исчерпания попыток всё равно
+    // бросает) раньше ронял весь generateProtocol целиком, теряя уже готовый
+    // protocol из extractProtocol/extractProtocolLong — который для длинных
+    // встреч мог стоить нескольких map-reduce LLM-вызовов. QA — это
+    // улучшение уже готового протокола, а не обязательное условие для его
+    // существования, поэтому сбой здесь не должен откатывать всю генерацию
+    // (см. research/diarization-asr-lab/FINDINGS.md раздел 19, тот же баг
+    // был исправлен в лабораторном скрипте раньше прода).
+    try {
+      protocol = await this.qaProtocol({ protocol, correctedText, context, speakers, meetingDate: meeting.date ?? null });
+    } catch (e) {
+      logger.warn("GPT D1/D2 (qaProtocol) failed, keeping protocol without QA", { error: e.message });
+    }
 
     const protocolText = buildProtocolText(protocol, meeting, project, context);
     // Возвращаем глоссарий из meeting.gptContext чтобы pipeline мог его накопить
