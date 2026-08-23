@@ -850,7 +850,88 @@ export class YcYandexGptGateway {
   // STAGE C: Protocol Generation
   // ============================================================
 
+  // Ансамбль из N независимых C1-извлечений + слияние с дедупом — перенесено
+  // из research/diarization-asr-lab/score/preview-protocol.mjs (--c1-samples).
+  // GPT_C1_SAMPLES=1 откатывает к одному вызову (прежнее поведение);
+  // по умолчанию 5 — тот же дефолт, что провалидирован в лабе (см.
+  // FINDINGS.md разделы 11, 18-20). Меняет стоимость (N вызовов извлечения
+  // + доп. LLM-проверка спорных пар при дедупе вместо одного вызова) —
+  // оператор может выставить GPT_C1_SAMPLES=1, если нужно вернуть прежнюю
+  // стоимость. Работает и для map-reduce длинных встреч "бесплатно" —
+  // extractProtocolLong уже вызывает именно этот метод на каждый кусок.
   async extractProtocol({ correctedText, meeting, project, context, speakers, previousProtocol }) {
+    const samples = Number(process.env.GPT_C1_SAMPLES ?? 5);
+    if (!(samples > 1)) {
+      return this.extractProtocolOnce({ correctedText, meeting, project, context, speakers, previousProtocol });
+    }
+    return this.extractProtocolEnsemble({ correctedText, meeting, project, context, speakers, previousProtocol, samples });
+  }
+
+  async extractProtocolEnsemble({ correctedText, meeting, project, context, speakers, previousProtocol, samples }) {
+    logger.info("GPT C1: protocol extraction (ensemble)", { samples });
+    const resolveSpeaker = buildSpeakerResolver(speakers);
+
+    const allSamples = [];
+    for (let i = 0; i < samples; i++) {
+      allSamples.push(await this.extractProtocolOnce({ correctedText, meeting, project, context, speakers, previousProtocol }));
+    }
+
+    // topics — связная проза, не факт-список: fuzzy-дедуп под неё не заведён,
+    // поэтому не сливаем темы всех сэмплов (получится каша повторов), а
+    // берём темы того же сэмпла, что выиграл по длине summary.overview —
+    // внутренне consistent пара (порт из лабы, тот же приём).
+    const bestSample = [...allSamples].sort((a, b) => (b.summary?.overview?.length ?? 0) - (a.summary?.overview?.length ?? 0))[0];
+
+    let mergedActionItems = resolveDeadlineYears(
+      dedupeSimilarTasks(sanitizeTaskArray(allSamples.flatMap((s) => s.actionItems ?? [])), NEAR_DUP_THRESHOLD, resolveSpeaker),
+      meeting.date
+    );
+    // Второй проход поверх автодедупа — при N сэмплов разнообразие
+    // формулировок растёт, часть настоящих дублей не ловится порогом
+    // триграмм (см. FINDINGS.md раздел 11 — "Харьковской 9" дважды при
+    // N=9) или относится к разной грануляции (findEntityOverlapPairs —
+    // раздел 19, "пачка объектов" vs гранулярные задачи). Спорные пары
+    // отдаются на прямой вопрос модели — тот же b2c1Client (Qwen), что
+    // делал само извлечение, не общий Lite-клиент.
+    const borderlinePairs = findAllBorderlinePairs(mergedActionItems);
+    if (borderlinePairs.length > 0) {
+      // Fail-safe уже внутри resolveBorderlinePairsWithLLM (сбой
+      // completeBatchFn → items без изменений, не мержим наугад)
+      mergedActionItems = await resolveBorderlinePairsWithLLM(
+        mergedActionItems,
+        borderlinePairs,
+        this.b2c1Client.completeBatch.bind(this.b2c1Client)
+      );
+    }
+
+    let protocol = {
+      summary: bestSample?.summary ?? { title: meeting.titleDraft ?? project.name, overview: "" },
+      topics: bestSample?.topics ?? [],
+      participants: dedupeSimilarStrings([...new Set(allSamples.flatMap((s) => s.participants ?? []))]),
+      decisions: dropDecisionsOverlappingTasks(
+        dedupeSimilarStrings(allSamples.flatMap((s) => s.decisions ?? [])),
+        mergedActionItems
+      ),
+      actionItems: mergedActionItems,
+      completedFromPrevious: allSamples.flatMap((s) => s.completedFromPrevious ?? []),
+      carriedForward: allSamples.flatMap((s) => s.carriedForward ?? []),
+      openQuestions: dedupeSimilarStrings(allSamples.flatMap((s) => s.openQuestions ?? [])),
+      transcriptHighlights: dedupeSimilarHighlights(allSamples.flatMap((s) => s.transcriptHighlights ?? []), NEAR_DUP_THRESHOLD, resolveSpeaker).slice(0, 5)
+    };
+    protocol = reconcileParticipants(protocol, speakers);
+
+    logger.info("GPT C1: done (ensemble)", {
+      samples,
+      title: protocol.summary.title,
+      decisions: protocol.decisions.length,
+      actions: protocol.actionItems.length,
+      openQuestions: protocol.openQuestions.length
+    });
+
+    return protocol;
+  }
+
+  async extractProtocolOnce({ correctedText, meeting, project, context, speakers, previousProtocol }) {
     logger.info("GPT C1: protocol extraction");
 
     const resolveSpeaker = buildSpeakerResolver(speakers);

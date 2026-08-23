@@ -84,3 +84,55 @@ test("generateProtocol: сбой qaProtocol не теряет уже извле�
   const { protocol } = await gateway.generateProtocol({ meeting, project, transcript });
   assert.deepEqual(protocol, extractedProtocol, "сбой QA не должен отбрасывать уже готовый протокол");
 });
+
+// Порт ансамбля C1 из research/diarization-asr-lab/score/preview-protocol.mjs
+// (--c1-samples) — см. FINDINGS.md разделы 11, 18-20. Мокаем extractProtocolOnce,
+// чтобы проверить именно логику слияния N сэмплов, не реальный LLM-вызов.
+test("extractProtocol: ансамбль сливает N сэмплов — берёт summary у самого длинного, дедупит задачи, объединяет participants", async () => {
+  const gateway = new YcYandexGptGateway({ folderId: "test-folder" });
+  const fakeSamples = [
+    {
+      summary: { title: "Планёрка", overview: "Короткий обзор." },
+      topics: [{ title: "Короткая тема", narrative: "..." }],
+      participants: ["Данил", "Настя"],
+      decisions: ["Решение А"],
+      actionItems: [{ owner: "Настя", task: "Подготовить смету по объекту Рыбинск", deadline: null }],
+      completedFromPrevious: [], carriedForward: [],
+      openQuestions: ["Вопрос 1"], transcriptHighlights: []
+    },
+    {
+      summary: { title: "Планёрка", overview: "Гораздо более длинный и подробный обзор встречи со всеми деталями." },
+      topics: [{ title: "Победившая тема", narrative: "должна выиграть по длине overview" }],
+      participants: ["Данил", "Влад"],
+      decisions: ["Решение А (перефразировано почти так же)"],
+      actionItems: [{ owner: "Настя", task: "Накидать смету по объекту в Рыбинске для сравнения", deadline: null }],
+      completedFromPrevious: [], carriedForward: [],
+      openQuestions: ["Вопрос 1, но другими словами"], transcriptHighlights: []
+    }
+  ];
+  let callCount = 0;
+  gateway.extractProtocolOnce = async () => fakeSamples[callCount++];
+  // Задачи-дубли в fakeSamples сформулированы по-разному настолько, что
+  // попадают в "серую зону" триграммного дедупа (раздел 11/19 FINDINGS.md)
+  // — реальный пайплайн отдаёт такие пары на прямой вопрос модели через
+  // b2c1Client.completeBatch. Мокаем его, чтобы тест был герметичным и не
+  // бил по реальной сети.
+  gateway.b2c1Client = { completeBatch: async (requests) => requests.map(() => JSON.stringify({ same: true })) };
+
+  const meeting = { titleDraft: null, date: "2026-08-21" };
+  const project = { name: "Проект" };
+  const speakers = [];
+
+  process.env.GPT_C1_SAMPLES = "2";
+  try {
+    const protocol = await gateway.extractProtocol({
+      correctedText: "текст", meeting, project, context: {}, speakers, previousProtocol: null
+    });
+    assert.equal(protocol.summary.overview, fakeSamples[1].summary.overview, "summary должен быть от сэмпла с более длинным overview");
+    assert.equal(protocol.topics[0].title, "Победившая тема", "topics должны быть от того же сэмпла, что и summary");
+    assert.deepEqual(new Set(protocol.participants), new Set(["Данил", "Настя", "Влад"]), "participants объединяются по всем сэмплам");
+    assert.equal(protocol.actionItems.length, 1, "две формулировки одной и той же задачи должны схлопнуться дедупом");
+  } finally {
+    delete process.env.GPT_C1_SAMPLES;
+  }
+});
