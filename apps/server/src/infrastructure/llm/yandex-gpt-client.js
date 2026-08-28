@@ -12,12 +12,23 @@ import { getIamToken, invalidateIamToken } from "../../shared/iam-token.js";
 import { logger } from "../../shared/logger.js";
 
 const GPT_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
+// Открытые модели (Qwen/DeepSeek/gpt-oss) в Yandex Cloud доступны ТОЛЬКО
+// через OpenAI-совместимый эндпоинт — обычный /foundationModels/v1/completion
+// отвечает 400 "Model is not available via gRPC API" для них.
+const OPENAI_COMPAT_URL = "https://llm.api.cloud.yandex.net/v1/chat/completions";
+const OPENAI_COMPAT_MODEL_RE = /^(qwen|deepseek|gpt-oss)/i;
 
 // Задержки для exponential backoff (ms)
 const RETRY_DELAYS = [1000, 3000, 8000];
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function isOpenAiCompatModel(modelUri) {
+  // modelUri = "gpt://<folderId>/<model>/latest"
+  const modelName = modelUri.split("/")[3] ?? "";
+  return OPENAI_COMPAT_MODEL_RE.test(modelName);
 }
 
 /**
@@ -33,6 +44,10 @@ function stripMarkdown(text) {
 export class YandexGptClient {
   constructor({ modelUri }) {
     this.modelUri = modelUri;
+    this.openAiCompat = isOpenAiCompatModel(modelUri);
+    // modelUri = "gpt://<folderId>/<model>/latest" — folderId нужен
+    // отдельным заголовком x-folder-id для OpenAI-совместимого эндпоинта
+    this.folderId = modelUri.split("/")[2] ?? "";
   }
 
   /**
@@ -47,14 +62,35 @@ export class YandexGptClient {
     const { temperature = 0.3, maxTokens = 4000 } = options;
     const startMs = Date.now();
 
-    const body = JSON.stringify({
-      modelUri: this.modelUri,
-      completionOptions: { stream: false, temperature, maxTokens },
-      messages: [
-        { role: "system", text: systemPrompt },
-        { role: "user", text: userPrompt }
-      ]
-    });
+    const url = this.openAiCompat ? OPENAI_COMPAT_URL : GPT_URL;
+    const body = this.openAiCompat
+      ? JSON.stringify({
+          model: this.modelUri,
+          temperature,
+          max_tokens: maxTokens,
+          // Qwen/DeepSeek — reasoning-модели, по умолчанию тратят maxTokens
+          // на reasoning_content (цепочку рассуждений) ДО настоящего
+          // ответа — на наших промптах (2000-4500 токенов, рассчитано под
+          // обычные, не reasoning, модели) бюджет кончался раньше, чем
+          // модель доходила до content, и он оставался пустым.
+          // reasoning_effort: "none" отключает эту фазу целиком.
+          reasoning_effort: "none",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ]
+        })
+      : JSON.stringify({
+          modelUri: this.modelUri,
+          completionOptions: { stream: false, temperature, maxTokens },
+          messages: [
+            { role: "system", text: systemPrompt },
+            { role: "user", text: userPrompt }
+          ]
+        });
+    const buildHeaders = (iamToken) => this.openAiCompat
+      ? { "Authorization": `Bearer ${iamToken}`, "Content-Type": "application/json", "x-folder-id": this.folderId }
+      : { "Authorization": `Bearer ${iamToken}`, "Content-Type": "application/json" };
 
     let lastError;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
@@ -66,27 +102,13 @@ export class YandexGptClient {
 
       try {
         let iamToken = await getIamToken();
-        let res = await fetch(GPT_URL, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${iamToken}`,
-            "Content-Type": "application/json"
-          },
-          body
-        });
+        let res = await fetch(url, { method: "POST", headers: buildHeaders(iamToken), body });
 
         // IAM токен протух — обновляем и повторяем
         if (res.status === 401) {
           invalidateIamToken();
           iamToken = await getIamToken();
-          res = await fetch(GPT_URL, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${iamToken}`,
-              "Content-Type": "application/json"
-            },
-            body
-          });
+          res = await fetch(url, { method: "POST", headers: buildHeaders(iamToken), body });
         }
 
         // Сервер перегружен → retry
@@ -102,9 +124,15 @@ export class YandexGptClient {
         }
 
         const data = await res.json();
-        const raw = data.result?.alternatives?.[0]?.message?.text ?? "";
-        const inputTokens = data.result?.usage?.inputTextTokens ?? 0;
-        const outputTokens = data.result?.usage?.completionTokens ?? 0;
+        const raw = this.openAiCompat
+          ? (data.choices?.[0]?.message?.content ?? "")
+          : (data.result?.alternatives?.[0]?.message?.text ?? "");
+        const inputTokens = this.openAiCompat
+          ? (data.usage?.prompt_tokens ?? 0)
+          : (data.result?.usage?.inputTextTokens ?? 0);
+        const outputTokens = this.openAiCompat
+          ? (data.usage?.completion_tokens ?? 0)
+          : (data.result?.usage?.completionTokens ?? 0);
 
         logger.info("YandexGPT: complete", {
           latencyMs: Date.now() - startMs,

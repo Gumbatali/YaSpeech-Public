@@ -8,6 +8,7 @@
  */
 
 import { logger } from "../shared/logger.js";
+import { extractAddressedNames } from "./transcription/refiner.js";
 
 // Типичные ошибки распознавания → корректные слова.
 // Только высокоуверенные замены, лучше пропустить чем испортить.
@@ -148,6 +149,14 @@ export function postprocessTranscript(transcript, options = {}) {
     .filter((p) => keepNoiseMarkers || !isNoiseSegment(p.text))
     .filter((p) => p.text.split(/\s+/).filter(Boolean).length >= minWordsPerSegment);
 
+  // 1.5. Имена, к которым обращаются в диалоге — СЧИТАЕМ ДО склейки (шаг 2).
+  // Короткие реплики-обращения ("Наталья" отдельным сегментом) склейка
+  // объединяет с соседней репликой того же спикера ("в первую очередь" +
+  // "Наталья" -> "в первую очередь Наталья"), и признак "имя — целая
+  // реплика" перестаёт совпадать. После склейки этот сигнал для части
+  // реальных обращений уже необратимо потерян.
+  const addressedNames = extractAddressedNames(phrases);
+
   // 2. Склеиваем подряд идущие реплики одного спикера
   phrases = mergeConsecutive(phrases);
 
@@ -177,6 +186,7 @@ export function postprocessTranscript(transcript, options = {}) {
     rawText,
     phrases,
     speakerStats,
+    addressedNames,
     postprocessedAt: new Date().toISOString()
   };
 }

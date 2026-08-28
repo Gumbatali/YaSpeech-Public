@@ -219,6 +219,18 @@ export function SummaryTab({
           : html`<p className="empty-hint">Не определены</p>`}
       </section>
 
+      ${protocol.topics?.length ? html`
+        <section className="result-block">
+          <div className="eyebrow">Темы встречи</div>
+          <div className="topics-list">
+            ${protocol.topics.map((t, i) => html`
+              <div key=${i} className="topic-card">
+                <div className="topic-title">${i + 1}. ${t.title}</div>
+                <p className="topic-narrative">${t.narrative}</p>
+              </div>`)}
+          </div>
+        </section>` : null}
+
       <section className="result-block">
         <div className="eyebrow">Что решили</div>
         ${protocol.decisions?.length
@@ -246,7 +258,7 @@ export function SummaryTab({
           <div className="highlights-list">
             ${protocol.transcriptHighlights.map((h, i) => html`
               <div key=${i} className="highlight-card">
-                <div className="highlight-speaker">${h.speaker}</div>
+                <div className="highlight-speaker">${h.speaker ?? "—"}</div>
                 <blockquote className="highlight-quote">«${h.quote}»</blockquote>
               </div>`)}
           </div>

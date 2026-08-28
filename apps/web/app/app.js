@@ -11,6 +11,7 @@ import { html, useEffect, useState, React } from "./html.js?v=__BUILD__";
 import { ApiClient } from "./api.js?v=__BUILD__";
 import {
   todayIso,
+  isoDateFromTimestamp,
   formatMeetingDate,
   nowHHMM,
   subtractSecondsHHMM,
@@ -455,6 +456,17 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
     }
 
     async function handleFileSelect(file) {
+      // Дата встречи по умолчанию — todayIso() (дата открытия формы), не дата
+      // самой встречи. Для не самой свежей записи это ломает относительные
+      // дедлайны в протоколе ("до завтра" считается от даты загрузки, а не
+      // от даты встречи). lastModified у выбранного файла — не дата записи
+      // звука, а дата последнего изменения файла на диске, но обычно куда
+      // ближе к реальной дате встречи, чем "сегодня" — берём его как лучший
+      // доступный дефолт, только если поле даты ещё не тронуто пользователем.
+      // Важно: берём lastModified ДО preprocessAudio ниже — он пересобирает
+      // file в новый Blob/File, который эту метадату не сохраняет.
+      const originalLastModified = file?.lastModified;
+
       setFileProcessing(true);
       setFileProcessingStage("Анализ записи…");
 
@@ -510,12 +522,18 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       const dur = qualityReport?.durationSeconds ?? await getAudioDuration(file);
       const endTime = dur ? nowHHMM() : null;
       const startTime = dur ? subtractSecondsHHMM(endTime, dur) : null;
+      const fileDate = originalLastModified ? isoDateFromTimestamp(originalLastModified) : null;
+      if (fileDate && fileDate !== todayIso()) {
+        showNotice(`Дата встречи выставлена по дате файла: ${formatMeetingDate(fileDate)}. Поправьте, если неверно.`, 6000);
+      }
       setMeetingForm((current) => ({
         ...current,
         file,
         durationSeconds: dur,
         startTime,
-        endTime
+        endTime,
+        // Не перетираем дату, если пользователь уже сам её поправил.
+        date: fileDate && current.date === todayIso() ? fileDate : current.date
       }));
     }
 

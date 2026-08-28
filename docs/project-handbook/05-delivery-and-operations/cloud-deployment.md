@@ -68,6 +68,8 @@ bash scripts/deploy.sh gateway   # только конфигурация API Gat
 | `ADMIN_LOGIN` | api | Логин первого юзера, получающего роль admin |
 | `USE_MOCKS` | worker | `true` → mock-адаптеры |
 | `ASR_PROVIDER` | worker | `speechkit` \| `groq` \| `mock` |
+| `GPT_B2_VOTES` | worker | Число голосов ансамбля identifySpeakers (B2). По умолчанию `7`; `1` — старое однократное поведение |
+| `GPT_C1_SAMPLES` | worker | Число сэмплов ансамбля extractProtocol (C1). По умолчанию `5`; `1` — старое однократное поведение |
 
 ## API Gateway — маршруты (`infra/api-gateway.yaml`)
 
