@@ -69,7 +69,7 @@ deploy_api() {
   echo "🚀 Deploying yaspeech-api..."
   $YC serverless function version create \
     --function-name yaspeech-api \
-    --runtime nodejs18 \
+    --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/api-handler.index" \
     --memory 256m \
     --execution-timeout 30s \
@@ -90,7 +90,7 @@ deploy_worker() {
   echo "🚀 Deploying yaspeech-worker..."
   $YC serverless function version create \
     --function-name yaspeech-worker \
-    --runtime nodejs18 \
+    --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
     --execution-timeout 60s \
