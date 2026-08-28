@@ -1,6 +1,7 @@
 export const TIMELINE_STEPS = [
   { key: "uploaded", title: "Запись загружена" },
   { key: "speechkit_processing", title: "Готовим текст встречи" },
+  { key: "diarizing", title: "Определяем, кто говорит" },
   { key: "draft_ready", title: "Черновик готов" },
   { key: "protocol_generating", title: "Собираем итоговый протокол" },
   { key: "done", title: "Протокол готов" }
@@ -35,7 +36,7 @@ export function resolveScreen({ selectedProjectId, activeMeeting, requestedScree
   }
 
   if (
-    ["uploading", "uploaded", "speechkit_processing", "protocol_generating", "failed"].includes(
+    ["uploading", "uploaded", "speechkit_processing", "diarizing", "protocol_generating", "failed"].includes(
       activeMeeting.status
     )
   ) {
@@ -91,6 +92,14 @@ export function getStageViewModel(meeting) {
       tone: "working",
       title: "Готовим текст встречи",
       detail: "Система слушает запись и собирает речь участников."
+    };
+  }
+
+  if (meeting.status === "diarizing") {
+    return {
+      tone: "working",
+      title: "Определяем, кто говорит",
+      detail: "Разделяем голоса участников по записи — может занять время, сравнимое с длиной встречи."
     };
   }
 

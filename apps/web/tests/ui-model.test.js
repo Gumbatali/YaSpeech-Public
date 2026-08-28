@@ -36,6 +36,16 @@ test("resolveScreen prefers the project-first upload flow", () => {
     }),
     "meeting-processing"
   );
+  // diarizing — асинхронный шаг диаризации между ASR и черновиком, тоже
+  // экран обработки (баг: раньше проваливался в project-workspace)
+  assert.equal(
+    resolveScreen({
+      selectedProjectId: "project-1",
+      activeMeeting: { status: "diarizing", currentStage: "diarizing" },
+      requestedScreen: ""
+    }),
+    "meeting-processing"
+  );
   assert.equal(
     resolveScreen({
       selectedProjectId: "project-1",
@@ -61,6 +71,15 @@ test("getStageViewModel uses human language for the processing stages", () => {
       tone: "working",
       title: "Готовим текст встречи",
       detail: "Система слушает запись и собирает речь участников."
+    }
+  );
+
+  assert.deepEqual(
+    getStageViewModel({ status: "diarizing", currentStage: "diarizing" }),
+    {
+      tone: "working",
+      title: "Определяем, кто говорит",
+      detail: "Разделяем голоса участников по записи — может занять время, сравнимое с длиной встречи."
     }
   );
 
@@ -103,6 +122,20 @@ test("timeline step state shows draft and final protocol as separate stages", ()
       currentStage: "speechkit_processing"
     }),
     "current"
+  );
+  assert.equal(
+    getTimelineStepState("diarizing", {
+      status: "diarizing",
+      currentStage: "diarizing"
+    }),
+    "current"
+  );
+  assert.equal(
+    getTimelineStepState("speechkit_processing", {
+      status: "diarizing",
+      currentStage: "diarizing"
+    }),
+    "done"
   );
   assert.equal(
     getTimelineStepState("draft_ready", {

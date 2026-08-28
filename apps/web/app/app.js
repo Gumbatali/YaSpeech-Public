@@ -183,7 +183,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       );
       if (
         !activeMeeting ||
-        (!["uploaded", "speechkit_processing", "protocol_generating"].includes(
+        (!["uploaded", "speechkit_processing", "diarizing", "protocol_generating"].includes(
           activeMeeting.status
         ) && !refineActive)
       ) {
