@@ -100,20 +100,20 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
       : html`<div className="refine-done">✨ Расшифровка улучшена ИИ</div>`;
   }
 
-  // idle | stale | failed → кнопка
-  return html`
-    <div className="refine-control">
-      ${status === "failed"
-        ? html`<div className="refine-error">Не удалось улучшить: ${refine?.error ?? "ошибка"}</div>`
-        : null}
-      <button className="ghost-button ghost-button--sm refine-button" onClick=${handleRefine}>
-        ✨ ${status === "failed" ? "Повторить улучшение" : "Улучшить с помощью ИИ"}
-      </button>
-      ${!compact
-        ? html`<span className="refine-hint">Исправит ошибки распознавания, определит спикеров. Займёт около минуты.</span>`
-        : null}
-    </div>
-  `;
+  // failed → только повтор; idle/stale — улучшение уже запущено
+  // автоматически (см. prepareDraftFromTranscript), кнопки не показываем.
+  if (status === "failed") {
+    return html`
+      <div className="refine-control">
+        <div className="refine-error">Не удалось улучшить: ${refine?.error ?? "ошибка"}</div>
+        <button className="ghost-button ghost-button--sm refine-button" onClick=${handleRefine}>
+          ✨ Повторить улучшение
+        </button>
+      </div>
+    `;
+  }
+
+  return null;
 }
 
 export function TranscriptTab({
@@ -259,7 +259,7 @@ export function TranscriptTab({
       </div>
       ${RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
-        ? html`<div className="empty-state">Нажмите «Улучшить с помощью ИИ», чтобы получить исправленную версию.</div>`
+        ? html`<div className="empty-state">Улучшение расшифровки идёт автоматически — версия появится через некоторое время.</div>`
         : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
             showDiff: transcriptVersion === "llm" && showDiff
           })

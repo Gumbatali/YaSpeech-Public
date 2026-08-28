@@ -23,6 +23,7 @@ bash scripts/deploy.sh api       # api-функция + фронтенд + шл�
 bash scripts/deploy.sh worker    # только worker-функция
 bash scripts/deploy.sh frontend  # только фронтенд в Object Storage
 bash scripts/deploy.sh gateway   # только конфигурация API Gateway
+bash scripts/deploy.sh diarization  # только контейнер диаризации (Docker-образ)
 ```
 
 ### Что делает deploy.sh
@@ -42,6 +43,19 @@ bash scripts/deploy.sh gateway   # только конфигурация API Gat
 
 4. **Gateway** (`gateway`-таргет): `yc serverless api-gateway update --spec infra/api-gateway.yaml`
 
+5. **Диаризация** (`diarization`-таргет, `apps/diarization-service/`):
+   - Собирает Docker-образ (pyannote.audio + сервис на FastAPI), пушит в
+     Yandex Container Registry, деплоит как Serverless Container
+     (`yaspeech-diarization`, long-lived, до 1 часа на запрос — диаризация
+     на CPU занимает время, сравнимое с длиной встречи)
+   - Требует Docker и `HF_TOKEN` (HuggingFace-токен с принятыми условиями
+     моделей `pyannote/speaker-diarization-3.1` и
+     `pyannote/wespeaker-voxceleb-resnet34-LM`)
+   - `deploy_api`/`deploy_worker` сами подхватывают его URL
+     (`DIARIZATION_SERVICE_URL`) через `resolve_diarization_url()` — при
+     первом деплое диаризацию нужно раскатить до api/worker (в `all` она
+     идёт первой)
+
 ## Облачные ресурсы
 
 | Ресурс | Имя | Назначение |
@@ -53,6 +67,8 @@ bash scripts/deploy.sh gateway   # только конфигурация API Gat
 | API Gateway | `yaspeech-gateway` | Маршрутизация |
 | Message Queue | `yaspeech-queue` | YMQ — очередь задач |
 | Service Account | `yaspeech-sa` | Роли: storage.editor, ymq.writer, functions.invoker |
+| Container Registry | `yaspeech-diarization` | Образы сервиса диаризации |
+| Serverless Container | `yaspeech-diarization` | pyannote.audio — реальная acoustic-диаризация (CPU, long-lived, до 1ч) |
 
 ## Переменные окружения функций
 
@@ -70,6 +86,9 @@ bash scripts/deploy.sh gateway   # только конфигурация API Gat
 | `ASR_PROVIDER` | worker | `speechkit` \| `groq` \| `mock` |
 | `GPT_B2_VOTES` | worker | Число голосов ансамбля identifySpeakers (B2). По умолчанию `7`; `1` — старое однократное поведение |
 | `GPT_C1_SAMPLES` | worker | Число сэмплов ансамбля extractProtocol (C1). По умолчанию `5`; `1` — старое однократное поведение |
+| `DIARIZATION_SERVICE_URL` | api + worker | URL контейнера `yaspeech-diarization`. Пусто → диаризация пропускается без ошибки (спикеры — как их разделил ASR) |
+| `STORAGE_KEY_ID` / `STORAGE_SECRET` / `STORAGE_BUCKET` | контейнер `yaspeech-diarization` | Доступ к тому же бакету артефактов, что у api/worker |
+| `HF_TOKEN` | контейнер `yaspeech-diarization` | HuggingFace-токен для pyannote (гейтед-модели) |
 
 ## API Gateway — маршруты (`infra/api-gateway.yaml`)
 

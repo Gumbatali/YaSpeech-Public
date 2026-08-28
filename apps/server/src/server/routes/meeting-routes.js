@@ -121,7 +121,10 @@ export function registerMeetingRoutes(router, deps) {
   });
 
   // POST /api/meetings/:id/transcript/refine — LLM-улучшение расшифровки.
-  // ЕДИНСТВЕННАЯ точка запуска LLM-коррекции (автоматических вызовов нет).
+  // Запускается автоматически (см. prepareDraftFromTranscript в
+  // meeting-pipeline-service.js) и после правки текста; этот роут теперь
+  // используется только для ручного повтора после сбоя (llmRefine.status
+  // === "failed" в UI).
   router.add("POST", "/api/meetings/:id/transcript/refine", async ({ response, params }) => {
     const meeting = await meetingRepository.getById(params.id);
     if (!meeting) { notFound(response); return; }
@@ -196,15 +199,17 @@ export function registerMeetingRoutes(router, deps) {
         ...(meeting.gptContext ?? {}),
         correctedText: rawText.trim()
       },
-      // Ручная правка инвалидирует LLM-улучшение: кнопка снова доступна,
-      // протокол собирается по отредактированному тексту
-      ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
       llmTranscriptSegments: null,
       updatedAt: clock.now().toISOString()
     };
     await meetingRepository.save(updatedMeeting);
 
-    sendJson(response, 200, { ok: true, meeting: updatedMeeting });
+    // Пайплайн без ручных шагов: ручная правка инвалидирует прошлое
+    // улучшение, но не оставляет его "зависшим" без кнопки — сразу
+    // перезапускаем refine поверх нового текста.
+    const refreshed = meeting.llmRefine ? await pipelineService.enqueueRefine(params.id) : updatedMeeting;
+
+    sendJson(response, 200, { ok: true, meeting: refreshed });
   });
 
   // POST /api/meetings/:id/transcript/restore — вернуть исходную расшифровку из .raw.json
@@ -238,9 +243,6 @@ export function registerMeetingRoutes(router, deps) {
       ...meeting,
       rawTranscriptSegments: segments,
       transcriptSegments: segments,
-      // Восстановление оригинала инвалидирует LLM-улучшение и устаревший
-      // correctedText — протокол соберётся по фактическому (исходному) тексту
-      ...(meeting.llmRefine ? { llmRefine: { status: "stale" } } : {}),
       llmTranscriptSegments: null,
       gptContext: meeting.gptContext
         ? { ...meeting.gptContext, correctedText: original.rawText ?? null }
@@ -248,6 +250,11 @@ export function registerMeetingRoutes(router, deps) {
       updatedAt: clock.now().toISOString()
     };
     await meetingRepository.save(updated);
+
+    // См. комментарий в PATCH /transcript — авто-перезапуск refine вместо
+    // "зависшего" stale без кнопки.
+    if (meeting.llmRefine) await pipelineService.enqueueRefine(params.id);
+
     sendJson(response, 200, { ok: true });
   });
 

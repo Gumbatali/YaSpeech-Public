@@ -27,7 +27,7 @@ async function requestJson(server, pathname, init) {
   return { response, body };
 }
 
-/** Создаёт проект + встречу, доводит до draft_ready. Возвращает meetingId. */
+/** Создаёт проект + встречу, доводит до draft_ready + авто-refine (done). Возвращает meetingId. */
 async function prepareDraftMeeting(server) {
   const project = await requestJson(server, "/api/projects", {
     method: "POST",
@@ -57,59 +57,42 @@ async function prepareDraftMeeting(server) {
     body: JSON.stringify({ sizeBytes: 10 })
   });
 
+  // Единый пайплайн: draft_ready сразу запускает refine автоматически —
+  // один waitForIdle доводит очередь до конца обоих шагов.
   await server.waitForIdle();
   return created.body.meeting.id;
 }
 
-test("draft готовится БЕЗ LLM: спикеры из ASR, заголовок из проекта и даты", async () => {
+test("черновик собирается без ручного вызова LLM, но refine запускается и завершается автоматически", async () => {
   await withServer({}, async (server) => {
     const meetingId = await prepareDraftMeeting(server);
     const { body } = await requestJson(server, `/api/meetings/${meetingId}`);
 
+    // Черновик — из ASR, без ручных шагов
     assert.equal(body.meeting.status, "draft_ready");
-    // Заголовок без LLM — проект + дата
     assert.match(body.meeting.titleDraft, /Refine Test/);
-    // Спикеры — сырые метки, без LLM-имён
     assert.ok(body.meeting.speakerDrafts.length > 0);
-    // gptContext не создаётся в авто-фазе
-    assert.equal(body.meeting.gptContext, undefined);
-    // llmRefine ещё не запускался
-    assert.equal(body.meeting.llmRefine, undefined);
-  });
-});
 
-test("refine-флоу: кнопка → джоба → llmTranscriptSegments + повторный запуск блокируется", async () => {
-  await withServer({}, async (server) => {
-    const meetingId = await prepareDraftMeeting(server);
-
-    // Запуск улучшения
-    const started = await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
-      method: "POST",
-      body: JSON.stringify({})
-    });
-    assert.equal(started.response.status, 202);
-    assert.equal(started.body.meeting.llmRefine.status, "queued");
-
-    await server.waitForIdle();
-
-    const { body } = await requestJson(server, `/api/meetings/${meetingId}`);
+    // Единый пайплайн: refine уже запустился и завершился сам, без кнопки
     assert.equal(body.meeting.llmRefine.status, "done");
     assert.ok(body.meeting.llmRefine.total >= 1);
     assert.equal(body.meeting.llmRefine.done, body.meeting.llmRefine.total);
 
-    // Сегменты улучшенной версии: mock капитализирует и ставит точку
     const segments = body.meeting.llmTranscriptSegments;
     assert.ok(segments.length > 0);
     const refined = segments.filter((s) => s.refined);
     assert.ok(refined.length > 0, "должны быть исправленные сегменты");
-    assert.ok(refined[0].originalText, "у исправленного сегмента есть оригинал");
     assert.match(refined[0].text, /\.$/);
 
-    // Имена спикеров подтянулись из identifySpeakers
     const named = body.meeting.speakerDrafts.filter((s) => s.guessedName);
     assert.ok(named.length > 0);
+  });
+});
 
-    // Повторный запуск при done → 409
+test("повторный ручной запуск refine при уже done блокируется", async () => {
+  await withServer({}, async (server) => {
+    const meetingId = await prepareDraftMeeting(server);
+
     const again = await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
       method: "POST",
       body: JSON.stringify({})
@@ -118,51 +101,36 @@ test("refine-флоу: кнопка → джоба → llmTranscriptSegments + �
   });
 });
 
-test("ручная правка расшифровки инвалидирует refine и снова открывает кнопку", async () => {
+test("ручная правка расшифровки автоматически перезапускает refine (без кнопки)", async () => {
   await withServer({}, async (server) => {
     const meetingId = await prepareDraftMeeting(server);
 
-    await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
-      method: "POST",
-      body: JSON.stringify({})
-    });
-    await server.waitForIdle();
-
-    // Правим текст руками
+    // Правим текст руками — единый пайплайн сразу переставляет refine в очередь,
+    // не оставляя его "зависшим" в stale без кнопки для повторного запуска.
     const patched = await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
       method: "PATCH",
       body: JSON.stringify({ rawText: "Спикер 1: исправленный вручную текст" })
     });
-    assert.equal(patched.body.meeting.llmRefine.status, "stale");
+    assert.equal(patched.body.meeting.llmRefine.status, "queued");
     assert.equal(patched.body.meeting.llmTranscriptSegments, null);
 
-    // stale → можно запустить заново
-    const reRefine = await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
-      method: "POST",
-      body: JSON.stringify({})
-    });
-    assert.equal(reRefine.response.status, 202);
-
-    // Дожидаемся фоновой джобы — иначе cleanup гоняется с записью артефактов
     await server.waitForIdle();
+
+    const { body } = await requestJson(server, `/api/meetings/${meetingId}`);
+    assert.equal(body.meeting.llmRefine.status, "done");
   });
 });
 
-test("цикл черновика: правка → refine учитывает правку → повторная правка → протокол по ней", async () => {
+test("цикл черновика: правка → авто-refine учитывает правку → повторная правка → протокол по финальной версии", async () => {
   await withServer({}, async (server) => {
     const meetingId = await prepareDraftMeeting(server);
 
-    // 1. Правим расшифровку прямо в черновике
-    await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
+    // 1. Правим расшифровку прямо в черновике — refine перезапускается сам
+    const patched = await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
       method: "PATCH",
       body: JSON.stringify({ rawText: "Спикер 1: обсудили монтаж фасада на объекте" })
     });
-
-    // 2. Улучшение работает по ОТРЕДАКТИРОВАННОМУ тексту
-    await requestJson(server, `/api/meetings/${meetingId}/transcript/refine`, {
-      method: "POST",
-      body: JSON.stringify({})
-    });
+    assert.equal(patched.body.meeting.llmRefine.status, "queued");
     await server.waitForIdle();
 
     let { body } = await requestJson(server, `/api/meetings/${meetingId}`);
@@ -170,15 +138,15 @@ test("цикл черновика: правка → refine учитывает п
     const refinedSeg = body.meeting.llmTranscriptSegments[0];
     assert.match(refinedSeg.text, /монтаж фасада/, "refine должен исходить из правленого текста");
 
-    // 3. Правим ещё раз ПОСЛЕ улучшения — refine инвалидирован
-    await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
+    // 2. Правим ещё раз ПОСЛЕ улучшения — refine снова автоматически перезапускается
+    const patchedAgain = await requestJson(server, `/api/meetings/${meetingId}/transcript`, {
       method: "PATCH",
       body: JSON.stringify({ rawText: "Спикер 1: финальная версия от руки" })
     });
-    ({ body } = await requestJson(server, `/api/meetings/${meetingId}`));
-    assert.equal(body.meeting.llmRefine.status, "stale");
+    assert.equal(patchedAgain.body.meeting.llmRefine.status, "queued");
 
-    // 4. Сборка протокола идёт по последней (ручной) версии
+    // 3. Подтверждаем черновик, НЕ дожидаясь завершения refine вручную —
+    // единый пайплайн должен сам дождаться refine перед сборкой протокола.
     const confirmed = await requestJson(server, `/api/meetings/${meetingId}/confirm-draft`, {
       method: "POST",
       body: JSON.stringify({ titleDraft: "Тест цикла", speakerDrafts: [] })
@@ -189,6 +157,7 @@ test("цикл черновика: правка → refine учитывает п
     ({ body } = await requestJson(server, `/api/meetings/${meetingId}`));
     assert.equal(body.meeting.status, "done");
     assert.ok(body.meeting.protocol, "протокол собран");
+    assert.equal(body.meeting.llmRefine.status, "done", "refine должен был успеть завершиться до сборки протокола");
   });
 });
 

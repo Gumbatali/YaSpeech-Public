@@ -27,7 +27,7 @@ PR открыт ──► CI: тесты ──► зелёный? ──► м�
 ### Ручной запуск
 
 Actions → **Deploy** → **Run workflow** → выбрать цель (`all` / `api` / `worker`
-/ `frontend` / `gateway`). Удобно, когда нужно выкатить только фронтенд без
+/ `frontend` / `gateway` / `diarization`). Удобно, когда нужно выкатить только фронтенд без
 пересборки функций.
 
 ---
@@ -88,6 +88,7 @@ Settings → Secrets and variables → **Actions** → New repository secret.
 | `SECRET` | Статический secret key | пара к `KEY_ID` |
 | `SESSION_SECRET` | Соль для сессий | `openssl rand -hex 32` |
 | `ADMIN_LOGIN` | Логин первого админа | любая строка |
+| `HF_TOKEN` | HuggingFace-токен для сервиса диаризации (pyannote) | huggingface.co/settings/tokens, с принятыми условиями `pyannote/speaker-diarization-3.1` и `pyannote/wespeaker-voxceleb-resnet34-LM` |
 
 > Это те же значения, что лежат в локальном `scripts/.env.deploy`. GitHub
 > Actions подставит их как переменные окружения — `deploy.sh` умеет брать

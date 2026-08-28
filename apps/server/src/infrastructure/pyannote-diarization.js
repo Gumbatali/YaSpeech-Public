@@ -1,171 +1,130 @@
 /**
- * pyannote/speaker-diarization-3.1 via HuggingFace Inference API.
+ * Клиент прод-сервиса диаризации (apps/diarization-service, Yandex Serverless
+ * Container) — pyannote/speaker-diarization-3.1 + слияние кластеров по
+ * эмбеддингу голоса, портировано из research/diarization-asr-lab.
  *
- * pyannote — лучший open-source диаризатор (2024).
- * Работает НА АУДИО ФИЧАХ (не на тексте) → работает для любого языка, включая русский.
- * Особенно хорош для:
- *   - Нескольких спикеров с похожей речью
- *   - Перекрывающейся речи
- *   - Шумных записей
+ * Раньше здесь был вызов HuggingFace Inference API с обрезкой аудио до 24 МБ
+ * и классом SmartAsrGateway, который на самом деле никогда не создавался в
+ * make-deps.js — то есть pyannote в проде не запускался вообще, а разделение
+ * на "Спикер 1/2" было побочным продуктом channelTag у SpeechKit. См.
+ * research/diarization-asr-lab/CLAUDE.md и обсуждение находки в чате.
  *
- * Для использования:
- *   1. Получить HF token: huggingface.co/settings/tokens
- *   2. Принять условия модели: huggingface.co/pyannote/speaker-diarization-3.1
- *   3. Выставить env: HF_TOKEN=hf_...
- *
- * Без HF_TOKEN модуль возвращает null (pipeline продолжает без диаризации).
- *
- * API Response:
- *   [{ "label": "SPEAKER_00", "speaker": "SPEAKER_00", "start": 0.5, "stop": 3.2 }, ...]
+ * Работа асинхронная (диаризация на CPU занимает время, сравнимое с длиной
+ * встречи — RTF ~1x): startJob ставит задачу и возвращает jobId сразу,
+ * getJobStatus поллится из meeting-pipeline-service.js по тому же паттерну,
+ * что и SpeechKit-поллинг (см. pollAsrPhase).
  */
 
 import { logger } from "../shared/logger.js";
-
-const HF_API_URL = "https://api-inference.huggingface.co/models/pyannote/speaker-diarization-3.1";
-const MAX_BYTES = 24 * 1024 * 1024; // 24 MB
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 5000; // HF может грузить модель — ждём
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+import { getIamToken } from "../shared/iam-token.js";
 
 export class PyannoteDiarization {
   /**
-   * @param {{ hfToken: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
+   * @param {{ serviceUrl: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
    */
-  constructor({ hfToken, artifactStorage }) {
-    this.hfToken = hfToken;
+  constructor({ serviceUrl, artifactStorage }) {
+    this.serviceUrl = serviceUrl;
     this.artifactStorage = artifactStorage;
   }
 
   get available() {
-    return Boolean(this.hfToken);
+    return Boolean(this.serviceUrl);
   }
 
   /**
-   * Запускает диаризацию для аудиофайла из S3.
-   *
-   * @param {string} audioKey  - ключ файла в S3
-   * @returns {Promise<DiarizationSegment[] | null>}
-   *
-   * @typedef {{ speaker: string, start: number, stop: number }} DiarizationSegment
+   * Запускает диаризацию для аудиофайла из S3. Не ждёт результата.
+   * @returns {Promise<{ jobId: string }>}
    */
-  async diarize(audioKey) {
-    if (!this.available) {
-      logger.info("Pyannote: skipped (no HF_TOKEN)");
-      return null;
-    }
-
-    logger.info("Pyannote: downloading audio for diarization", { audioKey });
-
-    const audioStream = await this.artifactStorage.readStream(audioKey);
-    let audioBuffer = await streamToBuffer(audioStream);
-
-    if (audioBuffer.length > MAX_BYTES) {
-      logger.warn("Pyannote: audio too large, truncating to 24 MB", {
-        originalMb: (audioBuffer.length / 1024 / 1024).toFixed(1)
-      });
-      audioBuffer = audioBuffer.slice(0, MAX_BYTES);
-    }
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = await this._callApi(audioBuffer);
-        logger.info("Pyannote: diarization done", {
-          segments: result.length,
-          speakers: [...new Set(result.map((s) => s.speaker))].length
-        });
-        return result;
-      } catch (e) {
-        if (e.message.includes("loading") || e.message.includes("503")) {
-          // HF грузит модель в оперативку — нормально, ждём
-          logger.warn(`Pyannote: model loading, retry ${attempt}/${MAX_RETRIES}`, {
-            delay: RETRY_DELAY_MS
-          });
-          await sleep(RETRY_DELAY_MS * attempt);
-          continue;
-        }
-        logger.error("Pyannote: diarization failed", { error: e.message, attempt });
-        return null; // Fallback — не крашим весь pipeline
-      }
-    }
-
-    logger.error("Pyannote: all retries exhausted");
-    return null;
-  }
-
-  async _callApi(audioBuffer) {
-    const startMs = Date.now();
-
-    const res = await fetch(HF_API_URL, {
+  async startJob({ meetingId, audioKey, minSpeakers = null, maxSpeakers = null }) {
+    // Контейнер требует IAM-авторизацию (не открыт публично, invoker-роль
+    // выдана тому же SA, что у api/worker) — тот же getIamToken(), что
+    // используется для других межсервисных вызовов внутри облака.
+    const token = await getIamToken();
+    const res = await fetch(`${this.serviceUrl}/jobs`, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.hfToken}`,
-        "Content-Type": "audio/wav",
-      },
-      body: audioBuffer,
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ meetingId, audioKey, minSpeakers, maxSpeakers })
     });
-
-    if (res.status === 503) {
-      const data = await res.json().catch((err) => {
-        logger.warn("Pyannote: could not parse 503 body", { error: err.message });
-        return {};
-      });
-      throw new Error(`loading: ${data.estimated_time ?? "unknown"} sec`);
-    }
-
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`HF API ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Diarization service ${res.status}: ${text.slice(0, 200)}`);
     }
-
     const data = await res.json();
+    logger.info("Diarization: job started", { meetingId, jobId: data.jobId });
+    return data;
+  }
 
-    logger.info("Pyannote: API response", { latencyMs: Date.now() - startMs });
+  /**
+   * @returns {Promise<{ status: "pending"|"running"|"done"|"failed", rttmKey?: string, speakers?: number, error?: string }>}
+   */
+  async getJobStatus(jobId) {
+    const token = await getIamToken();
+    const res = await fetch(`${this.serviceUrl}/jobs/${jobId}`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Diarization service ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return res.json();
+  }
 
-    // Нормализуем формат ответа
-    const segments = Array.isArray(data) ? data : (data.output ?? []);
-    return segments.map((s) => ({
-      speaker: s.speaker ?? s.label ?? "SPEAKER_00",
-      start: Number(s.start ?? s.timestamp?.[0] ?? 0),
-      stop: Number(s.stop ?? s.end ?? s.timestamp?.[1] ?? 0),
-    })).filter((s) => s.stop > s.start);
+  /**
+   * Загружает готовый RTTM-результат и парсит его в сегменты диаризации.
+   * @returns {Promise<DiarizationSegment[]>}
+   * @typedef {{ speaker: string, start: number, stop: number }} DiarizationSegment
+   */
+  async readRttm(rttmKey) {
+    const text = await this.artifactStorage.readText(rttmKey);
+    return parseRttm(text);
   }
 }
 
+function parseRttm(text) {
+  const segments = [];
+  for (const line of text.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts[0] !== "SPEAKER") continue;
+    const start = Number(parts[3]);
+    const duration = Number(parts[4]);
+    const speaker = parts[7];
+    segments.push({ speaker, start, stop: start + duration });
+  }
+  return segments;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
-// Alignment: combines Whisper segments with pyannote segments
+// Alignment: combines ASR phrases (мс) with pyannote-сегментами (сек)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Выравнивает сегменты Whisper (текст + временные метки) с сегментами pyannote (спикеры + временные метки).
+ * Переразмечает фразы ASR (speakerId/speakerLabel/speakerTag) по результату
+ * диаризации. Текст, тайминги и прочие поля фраз не трогает.
  *
- * Алгоритм: для каждого Whisper-сегмента находим спикера с максимальным перекрытием по времени.
+ * Алгоритм: для каждой фразы находим спикера с максимальным перекрытием по
+ * времени среди сегментов диаризации.
  *
- * @param {Array<{ start, end, text }>} whisperSegments
+ * @param {Array<{ startTimeMs, endTimeMs, text, [key: string]: any }>} phrases
  * @param {Array<{ speaker, start, stop }>} diarizationSegments
- * @param {number} totalSpeakers - ожидаемое количество спикеров (для нумерации)
- * @returns {Array<{ speakerId, speakerLabel, text, startTimeMs, endTimeMs }>}
+ * @returns {Array<object>} те же фразы с обновлёнными speakerId/speakerLabel/speakerTag
  */
-export function alignTranscriptWithDiarization(whisperSegments, diarizationSegments, totalSpeakers) {
-  // Строим карту нормализованных имён спикеров (SPEAKER_00 → speaker-1 и т.д.)
+export function alignTranscriptWithDiarization(phrases, diarizationSegments) {
   const speakerIds = [...new Set(diarizationSegments.map((s) => s.speaker))].sort();
   const speakerMap = new Map(
-    speakerIds.map((id, i) => [id, { newId: `speaker-${i + 1}`, label: `Спикер ${i + 1}` }])
+    speakerIds.map((id, i) => [id, { newId: `speaker-${i + 1}`, label: `Спикер ${i + 1}`, tag: String(i) }])
   );
 
-  return whisperSegments.map((seg) => {
-    const bestSpeaker = findDominantSpeaker(seg.start, seg.end, diarizationSegments);
+  return phrases.map((phrase) => {
+    const startSec = (phrase.startTimeMs ?? 0) / 1000;
+    const endSec = (phrase.endTimeMs ?? phrase.startTimeMs ?? 0) / 1000;
+    const bestSpeaker = findDominantSpeaker(startSec, endSec, diarizationSegments);
     const mapped = speakerMap.get(bestSpeaker);
 
     return {
+      ...phrase,
       speakerId: mapped?.newId ?? "speaker-1",
       speakerLabel: mapped?.label ?? "Спикер 1",
-      detectedName: null,
-      startTimeMs: Math.round(seg.start * 1000),
-      endTimeMs: Math.round(seg.end * 1000),
-      text: seg.text
+      speakerTag: mapped?.tag ?? "0"
     };
   });
 }
@@ -184,19 +143,8 @@ function findDominantSpeaker(start, end, segments) {
     }
   }
 
-  if (!Object.keys(overlap).length) return "SPEAKER_00";
+  const entries = Object.entries(overlap);
+  if (!entries.length) return "SPEAKER_00";
 
-  return Object.entries(overlap).sort((a, b) => b[1] - a[1])[0][0];
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Utils
-// ────────────────────────────────────────────────────────────────────────────
-
-async function streamToBuffer(stream) {
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
+  return entries.sort((a, b) => b[1] - a[1])[0][0];
 }

@@ -9,6 +9,14 @@ import {
 import { logger } from "../shared/logger.js";
 import { postprocessTranscript } from "./transcript-postprocessor.js";
 import { buildRefineChunks, applyRefinedLines } from "./transcription/refiner.js";
+import { alignTranscriptWithDiarization } from "../infrastructure/pyannote-diarization.js";
+
+// Диаризация на CPU (сервис apps/diarization-service) — RTF ~1x, то есть
+// занимает время, сравнимое с длиной встречи (см.
+// research/diarization-asr-lab/FINDINGS.md). 90 минут — потолок с запасом
+// даже для длинных встреч; после него откатываемся на спикеров из ASR,
+// а не роняем всю встречу.
+const DIARIZE_TIMEOUT_MS = 90 * 60 * 1000;
 
 // Бюджет одного вызова worker-функции: при приближении к таймауту
 // refine чекпоинтится и пере-enqueue'ится (любая длина аудио)
@@ -21,6 +29,7 @@ export class MeetingPipelineService {
     artifactStorage,
     speechKitGateway,
     yandexGptGateway,
+    diarizationGateway,
     queueRunner,
     clock
   }) {
@@ -29,6 +38,7 @@ export class MeetingPipelineService {
     this.artifactStorage = artifactStorage;
     this.speechKitGateway = speechKitGateway;
     this.yandexGptGateway = yandexGptGateway;
+    this.diarizationGateway = diarizationGateway;
     this.queueRunner = queueRunner;
     this.clock = clock;
   }
@@ -169,7 +179,7 @@ export class MeetingPipelineService {
       return;
     }
 
-    const VALID_STATUSES = ["uploaded", "speechkit_processing", "protocol_generating"];
+    const VALID_STATUSES = ["uploaded", "speechkit_processing", "diarizing", "protocol_generating"];
     if (!meeting || !VALID_STATUSES.includes(meeting.status)) {
       logger.warn("processMeeting: skipped", { meetingId, status: meeting?.status, phase });
       return;
@@ -194,7 +204,20 @@ export class MeetingPipelineService {
         return;
       }
 
+      if (meeting.status === "diarizing" && phase === "poll-diarize") {
+        await this.pollDiarizePhase(meeting, project);
+        return;
+      }
+
       if (meeting.status === "protocol_generating") {
+        // Единый пайплайн: протокол должен строиться на уже улучшенном
+        // тексте. Если refine ещё не закончился (queued/processing) — ждём,
+        // не запуская сборку протокола на сыром тексте раньше времени.
+        if (["queued", "processing"].includes(meeting.llmRefine?.status)) {
+          logger.info("processMeeting: protocol waiting for refine", { meetingId, refineStatus: meeting.llmRefine?.status });
+          await this._enqueuePhase(meetingId, "poll-refine", 10);
+          return;
+        }
         await this.generateProtocol(meeting, project);
         logger.info("processMeeting: protocol done", { meetingId });
         return;
@@ -275,21 +298,23 @@ export class MeetingPipelineService {
       return;
     }
 
-    // ASR готов — передаём управление в prepareDraftFromTranscript
-    logger.info("pollAsrPhase: ASR done, continuing to draft", { meetingId: meeting.id });
-    await this.prepareDraftFromTranscript(meeting, project, result.jobId, result.transcript);
+    // ASR готов — передаём управление в диаризацию
+    logger.info("pollAsrPhase: ASR done, continuing to diarization", { meetingId: meeting.id });
+    await this.startDiarizePhase(meeting, project, result.jobId, result.transcript);
   }
 
   /**
-   * Продолжение после получения транскрипта от ASR.
-   * Вызывается из pollAsrPhase когда ASR готов.
+   * Фаза 3 — запускаем диаризацию (apps/diarization-service) и немедленно
+   * выходим. Диаризация на CPU занимает время, сравнимое с длиной встречи —
+   * поэтому асинхронно, с поллингом, как ASR (см. pollAsrPhase).
+   *
+   * Если сервис не настроен (DIARIZATION_SERVICE_URL пуст, напр. в mock-режиме
+   * или локальной разработке) — пропускаем и используем разметку спикеров из
+   * ASR как есть, ничего не ломая.
    */
-  async prepareDraftFromTranscript(meeting, project, jobId, rawTranscript) {
-
-    // Postprocessing — чистим, склеиваем, переименовываем спикеров
-    const transcript = postprocessTranscript(rawTranscript);
-
-    // ── Hard gate: проверка качества расшифровки ─────────────────────────────
+  async startDiarizePhase(meeting, project, jobId, rawTranscript) {
+    // ── Hard gate: проверка качества расшифровки — до диаризации, чтобы не
+    // тратить CPU-время на пустую/бракованную запись ────────────────────────
     const wordCount = (rawTranscript.rawText ?? "").trim().split(/\s+/).filter(Boolean).length;
     if (rawTranscript.phrases.length === 0 || wordCount < 20) {
       const err = new Error(
@@ -301,7 +326,93 @@ export class MeetingPipelineService {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // Сохраняем и сырой, и обработанный — для отладки и retry
+    // Чекпоинт сырого транскрипта — poll-diarize читает его в следующем
+    // (отдельном) вызове воркера, где этот объект уже недоступен в памяти.
+    const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
+    await this.artifactStorage.writeJson(rawKey, rawTranscript);
+
+    if (!this.diarizationGateway?.available) {
+      logger.info("startDiarizePhase: diarization service not configured, skipping", { meetingId: meeting.id });
+      await this.prepareDraftFromTranscript(meeting, project, jobId, rawTranscript);
+      return;
+    }
+
+    const { jobId: diarizationJobId } = await this.diarizationGateway.startJob({
+      meetingId: meeting.id,
+      audioKey: meeting.artifacts.audioOriginalKey
+    });
+
+    await this.meetingRepository.save({
+      ...meeting,
+      status: "diarizing",
+      currentStage: "diarizing",
+      speechKitJobId: jobId,
+      diarizationJobId,
+      diarizationStartedAt: this.clock.now().toISOString(),
+      updatedAt: this.clock.now().toISOString()
+    });
+
+    await this._enqueuePhase(meeting.id, "poll-diarize", 15);
+    logger.info("startDiarizePhase: diarization started", { meetingId: meeting.id, diarizationJobId });
+  }
+
+  /**
+   * Фаза 4 — однократный опрос сервиса диаризации.
+   * Не готово → re-enqueue; готово/упало/просрочено → продолжаем в draft,
+   * переразметив фразы по результату диаризации (либо оставив как есть,
+   * если диаризация не удалась — деградация, а не фатальная ошибка встречи).
+   */
+  async pollDiarizePhase(meeting, project) {
+    const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
+    const startedAt = meeting.diarizationStartedAt ? new Date(meeting.diarizationStartedAt) : null;
+
+    if (startedAt && Date.now() - startedAt.getTime() > DIARIZE_TIMEOUT_MS) {
+      logger.warn("pollDiarizePhase: timed out, falling back to ASR speaker split", { meetingId: meeting.id });
+      const rawTranscript = await this.artifactStorage.readJson(rawKey);
+      await this.prepareDraftFromTranscript(meeting, project, meeting.speechKitJobId, rawTranscript);
+      return;
+    }
+
+    const jobStatus = await this.diarizationGateway.getJobStatus(meeting.diarizationJobId);
+
+    if (jobStatus.status === "pending" || jobStatus.status === "running") {
+      await this._enqueuePhase(meeting.id, "poll-diarize", 15);
+      return;
+    }
+
+    const rawTranscript = await this.artifactStorage.readJson(rawKey);
+
+    if (jobStatus.status === "failed") {
+      logger.warn("pollDiarizePhase: diarization failed, falling back to ASR speaker split", {
+        meetingId: meeting.id, error: jobStatus.error
+      });
+      await this.prepareDraftFromTranscript(meeting, project, meeting.speechKitJobId, rawTranscript);
+      return;
+    }
+
+    // jobStatus.status === "done"
+    const diarizationSegments = await this.diarizationGateway.readRttm(jobStatus.rttmKey);
+    const diarizedTranscript = {
+      ...rawTranscript,
+      phrases: alignTranscriptWithDiarization(rawTranscript.phrases, diarizationSegments)
+    };
+
+    logger.info("pollDiarizePhase: diarization done", { meetingId: meeting.id, speakers: jobStatus.speakers });
+    await this.prepareDraftFromTranscript(meeting, project, meeting.speechKitJobId, diarizedTranscript);
+  }
+
+  /**
+   * Продолжение после получения транскрипта (уже переразмеченного
+   * диаризацией, если она была доступна). Вызывается из pollDiarizePhase
+   * или напрямую из startDiarizePhase, если диаризация недоступна.
+   */
+  async prepareDraftFromTranscript(meeting, project, jobId, rawTranscript) {
+
+    // Postprocessing — чистим, склеиваем, переименовываем спикеров
+    const transcript = postprocessTranscript(rawTranscript);
+
+    // Сохраняем и сырой (уже с исправленными диаризацией спикерами), и
+    // обработанный — для отладки и retry
     await this.artifactStorage.writeJson(meeting.artifacts.transcriptKey, transcript);
     const rawKey = meeting.artifacts.transcriptKey.replace(/\.json$/, ".raw.json");
     await this.artifactStorage.writeJson(rawKey, rawTranscript);
@@ -354,6 +465,11 @@ export class MeetingPipelineService {
     };
 
     await this.meetingRepository.save(draftMeeting);
+
+    // Единый пайплайн без ручных шагов: улучшение раньше запускалось только
+    // кнопкой «Улучшить с помощью ИИ» — теперь всегда автоматически, сразу
+    // после того как черновик (уже с верной диаризацией) готов.
+    await this.enqueueRefine(meeting.id);
   }
 
   /**

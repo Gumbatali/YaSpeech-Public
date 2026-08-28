@@ -39,6 +39,7 @@ fi
 : "${FRONTEND_BUCKET:?Не задана переменная FRONTEND_BUCKET в .env.deploy}"
 : "${SESSION_SECRET:?Не задана переменная SESSION_SECRET в .env.deploy}"
 : "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
+: "${HF_TOKEN:?Не задана переменная HF_TOKEN в .env.deploy (нужен для pyannote-диаризации)}"
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
 # git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
@@ -66,8 +67,20 @@ build_worker() {
   echo "   $(du -sh /tmp/worker.zip | cut -f1)"
 }
 
+# Узнаёт публичный URL уже задеплоенного контейнера диаризации — нужен
+# api/worker функциям, чтобы к нему обращаться. Пусто, если контейнер ещё
+# не создан (PyannoteDiarization.available=false, пайплайн просто пропустит
+# диаризацию, не сломается — см. apps/server/src/infrastructure/pyannote-diarization.js).
+resolve_diarization_url() {
+  local url
+  url=$($YC serverless container get --name yaspeech-diarization --format json 2>/dev/null \
+    | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);const u=j.url||j.domain||'';console.log(u?('https://'+u.replace(/^https?:\/\//,'')):'')}catch(e){console.log('')}})")
+  echo "$url"
+}
+
 deploy_api() {
   echo "🚀 Deploying yaspeech-api..."
+  local diar_url; diar_url=$(resolve_diarization_url)
   local output
   if ! output=$($YC serverless function version create \
     --function-name yaspeech-api \
@@ -83,6 +96,7 @@ deploy_api() {
     --environment YC_FOLDER_ID="$FOLDER_ID" \
     --environment "SESSION_SECRET=$SESSION_SECRET" \
     --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
+    --environment DIARIZATION_SERVICE_URL="$diar_url" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_api failed" >&2
@@ -94,6 +108,7 @@ deploy_api() {
 
 deploy_worker() {
   echo "🚀 Deploying yaspeech-worker..."
+  local diar_url; diar_url=$(resolve_diarization_url)
   local output
   if ! output=$($YC serverless function version create \
     --function-name yaspeech-worker \
@@ -107,6 +122,7 @@ deploy_worker() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
+    --environment DIARIZATION_SERVICE_URL="$diar_url" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_worker failed" >&2
@@ -180,6 +196,45 @@ for root_dir, key_prefix in (("apps/web/app", "app"), ("apps/web/lib", "lib")):
 PYEOF
 }
 
+deploy_diarization() {
+  local REPO="crp68puemkf30m3ufjhg/yaspeech-diar-pyannote-cpu"
+  local IMAGE="cr.yandex/${REPO}:latest"
+
+  echo "🧠 Building diarization image..."
+  docker build -t "$IMAGE" apps/diarization-service
+
+  echo "🔐 Authenticating to Container Registry..."
+  $YC container registry configure-docker
+
+  echo "📤 Pushing image..."
+  docker push "$IMAGE"
+
+  echo "🚀 Deploying yaspeech-diarization container..."
+  # create падает, если контейнер с таким именем уже есть — это ожидаемо
+  # при повторных деплоях, не считаем ошибкой.
+  $YC serverless container create --name yaspeech-diarization >/dev/null 2>&1 || true
+
+  local output
+  if ! output=$($YC serverless container revision deploy \
+    --container-name yaspeech-diarization \
+    --image "$IMAGE" \
+    --memory 4GB \
+    --cores 2 \
+    --execution-timeout 3600s \
+    --concurrency 1 \
+    --environment STORAGE_KEY_ID="$KEY_ID" \
+    --environment "STORAGE_SECRET=$SECRET" \
+    --environment STORAGE_BUCKET="$BUCKET" \
+    --environment "HF_TOKEN=$HF_TOKEN" \
+    --service-account-id "$SA_ID" 2>&1); then
+    echo "$output"
+    echo "❌ deploy_diarization failed" >&2
+    exit 1
+  fi
+  echo "$output" | grep -E "^\.\.\.done|^id:" | head -3
+  echo "   ✓ diarization container deployed"
+}
+
 update_gateway() {
   local SPEC="$ROOT/infra/api-gateway.yaml"
   if [[ -f "$SPEC" ]]; then
@@ -214,7 +269,11 @@ case "$TARGET" in
   frontend|web)
     upload_frontend
     ;;
+  diarization)
+    deploy_diarization
+    ;;
   all|*)
+    deploy_diarization
     build_api
     deploy_api
     build_worker

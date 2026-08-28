@@ -15,6 +15,7 @@ import { MockYandexGptGateway } from "../infrastructure/mock-yandex-gpt-gateway.
 import { YcSpeechKitGateway } from "../infrastructure/yc-speech-kit-gateway.js";
 import { GroqWhisperGateway } from "../infrastructure/groq-whisper-gateway.js";
 import { YcYandexGptGateway } from "../infrastructure/yc-yandex-gpt-gateway.js";
+import { PyannoteDiarization } from "../infrastructure/pyannote-diarization.js";
 import { MeetingPipelineService } from "../application/meeting-pipeline-service.js";
 import { hashPassword, verifyPassword } from "../shared/password.js";
 
@@ -63,12 +64,18 @@ export function makeDeps() {
     ? new MockYandexGptGateway()
     : new YcYandexGptGateway({ folderId });
 
+  const diarizationGateway = new PyannoteDiarization({
+    serviceUrl: process.env.DIARIZATION_SERVICE_URL ?? null,
+    artifactStorage
+  });
+
   const pipelineService = new MeetingPipelineService({
     meetingRepository,
     projectRepository,
     artifactStorage,
     speechKitGateway,
     yandexGptGateway,
+    diarizationGateway,
     queueRunner,
     clock,
   });

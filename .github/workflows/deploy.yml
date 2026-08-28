@@ -16,7 +16,7 @@ on:
         description: 'Что деплоить'
         default: 'all'
         type: choice
-        options: [all, api, worker, frontend, gateway]
+        options: [all, api, worker, frontend, gateway, diarization]
 
 # Два деплоя одновременно в один прод — плохая идея. Очередь, без отмены текущего.
 concurrency:
@@ -80,6 +80,7 @@ jobs:
           FOLDER_ID: ${{ secrets.FOLDER_ID }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           ADMIN_LOGIN: ${{ secrets.ADMIN_LOGIN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: bash scripts/deploy.sh "${{ github.event.inputs.target || 'all' }}"
 
       - name: Убрать ключ
