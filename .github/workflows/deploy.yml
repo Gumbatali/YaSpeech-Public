@@ -66,6 +66,8 @@ jobs:
           printf '%s' "$YC_SA_JSON_KEY" > "$HOME/yc-key.json"
           "$HOME/yandex-cloud/bin/yc" config set service-account-key "$HOME/yc-key.json"
           "$HOME/yandex-cloud/bin/yc" config set folder-id "$FOLDER_ID"
+          # Диагностика: id сервисного аккаунта — публичный идентификатор, не секрет.
+          echo "Deployer service_account_id: $(node -pe 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/yc-key.json", "utf8")).service_account_id')"
 
       - name: Деплой
         # YC не задаём — deploy.sh сам возьмёт $HOME/yandex-cloud/bin/yc,
