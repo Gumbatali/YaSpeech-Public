@@ -81,6 +81,8 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           ADMIN_LOGIN: ${{ secrets.ADMIN_LOGIN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DIARIZATION_QUEUE_URL: ${{ secrets.DIARIZATION_QUEUE_URL }}
+          DIARIZATION_QUEUE_ARN: ${{ secrets.DIARIZATION_QUEUE_ARN }}
         run: bash scripts/deploy.sh "${{ github.event.inputs.target || 'all' }}"
 
       - name: Убрать ключ

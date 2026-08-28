@@ -65,7 +65,9 @@ export function makeDeps() {
     : new YcYandexGptGateway({ folderId });
 
   const diarizationGateway = new PyannoteDiarization({
-    serviceUrl: process.env.DIARIZATION_SERVICE_URL ?? null,
+    queueUrl: process.env.DIARIZATION_QUEUE_URL ?? null,
+    keyId,
+    secret,
     artifactStorage
   });
 

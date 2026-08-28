@@ -89,6 +89,8 @@ Settings → Secrets and variables → **Actions** → New repository secret.
 | `SESSION_SECRET` | Соль для сессий | `openssl rand -hex 32` |
 | `ADMIN_LOGIN` | Логин первого админа | любая строка |
 | `HF_TOKEN` | HuggingFace-токен для сервиса диаризации (pyannote) | huggingface.co/settings/tokens, с принятыми условиями `pyannote/speaker-diarization-3.1` и `pyannote/wespeaker-voxceleb-resnet34-LM` |
+| `DIARIZATION_QUEUE_URL` | URL YMQ-очереди для диаризации | `yc` (или boto3 SQS API) → `create_queue`, см. cloud-deployment.md |
+| `DIARIZATION_QUEUE_ARN` | ARN той же очереди (для YMQ-триггера) | `GetQueueAttributes` (boto3 SQS API) с той же очередью |
 
 > Это те же значения, что лежат в локальном `scripts/.env.deploy`. GitHub
 > Actions подставит их как переменные окружения — `deploy.sh` умеет брать

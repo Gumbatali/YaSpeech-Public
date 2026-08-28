@@ -2,26 +2,30 @@
 """
 HTTP-обвязка над diarize.py + merge_clusters.py для прод-пайплайна YaSpeech.
 
-Статус задачи хранится в Object Storage (не в памяти процесса) — Serverless
-Containers могут маршрутизировать запросы на разные инстансы, а GET-поллинг
-статуса должен работать независимо от того, какой инстанс принял POST.
+Вызывается YMQ-триггером (--invoke-container-*), который держит соединение
+открытым на всё время обработки ОДНОГО сообщения (до 3600с) — необходимо,
+так как диаризация длится время, сравнимое с длиной встречи (RTF ~1x на CPU).
+
+  meeting-pipeline-service.js (Node, таймаут 60с) --SendMessage--> YMQ queue
+  YMQ trigger --POST /process (держит соединение до 3600с)--> этот сервис
+  этот сервис --статус/результат--> S3 (Node читает оттуда, не отсюда)
 
 Эндпоинты:
-  POST /jobs        {"meetingId", "audioKey", "minSpeakers"?, "maxSpeakers"?}
-                     -> {"jobId", "status": "pending"}
-  GET  /jobs/{jobId} -> {"status": "pending"|"running"|"done"|"failed", ...}
-  GET  /health       -> {"status": "ok"}
+  POST /process  — вызывается ТОЛЬКО YMQ-триггером, синхронно делает всю
+                   работу (диаризация + слияние кластеров), пишет статус/RTTM
+                   в S3, отвечает 200 когда готово (или неготово из очереди
+                   удаляется, ошибка — HTTP 500, триггер положит сообщение
+                   обратно по istekшему visibility timeout).
+  GET  /health   — проверка живости.
 """
 import json
 import os
 import tempfile
-import threading
 import traceback
 from pathlib import Path
 
 import boto3
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, Request, Response
 
 from diarize import run_diarize
 from merge_clusters import run_merge
@@ -60,38 +64,45 @@ def write_status(s3, job_id: str, status: dict):
     )
 
 
-class CreateJobRequest(BaseModel):
-    meetingId: str
-    audioKey: str
-    minSpeakers: int | None = None
-    maxSpeakers: int | None = None
+def extract_job_payloads(envelope: dict) -> list[dict]:
+    """YMQ-триггер шлёт {"messages": [{"details": {"message": {"body": "<json>"}}}]}.
+    Разбираем защитно — на случай отличий в форме конверта."""
+    payloads = []
+    for msg in envelope.get("messages", []):
+        body = (
+            msg.get("details", {}).get("message", {}).get("body")
+            or msg.get("body")
+        )
+        if body:
+            payloads.append(json.loads(body))
+    return payloads
 
 
-def run_job(job_id: str, audio_key: str, min_speakers: int | None, max_speakers: int | None):
-    s3 = get_s3_client()
+def process_one(s3, job: dict):
+    job_id = job["meetingId"]
+    audio_key = job["audioKey"]
+    min_speakers = job.get("minSpeakers")
+    max_speakers = job.get("maxSpeakers")
+
     write_status(s3, job_id, {"status": "running"})
 
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            audio_path = str(Path(tmp) / "audio.wav")
-            s3.download_file(bucket_name(), audio_key, audio_path)
+        audio_path = str(Path(tmp) / "audio.wav")
+        s3.download_file(bucket_name(), audio_key, audio_path)
 
-            hyp_rttm_path = str(Path(tmp) / "hyp.rttm")
-            run_diarize(
-                audio_path, job_id, hyp_rttm_path,
-                min_speakers=min_speakers, max_speakers=max_speakers,
-            )
+        hyp_rttm_path = str(Path(tmp) / "hyp.rttm")
+        run_diarize(
+            audio_path, job_id, hyp_rttm_path,
+            min_speakers=min_speakers, max_speakers=max_speakers,
+        )
 
-            merged_rttm_path = str(Path(tmp) / "merged.rttm")
-            speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path)
+        merged_rttm_path = str(Path(tmp) / "merged.rttm")
+        speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path)
 
-            s3.upload_file(merged_rttm_path, bucket_name(), rttm_key(job_id))
-            write_status(s3, job_id, {
-                "status": "done", "rttmKey": rttm_key(job_id), "speakers": speakers,
-            })
-        except Exception as e:
-            traceback.print_exc()
-            write_status(s3, job_id, {"status": "failed", "error": str(e)})
+        s3.upload_file(merged_rttm_path, bucket_name(), rttm_key(job_id))
+        write_status(s3, job_id, {
+            "status": "done", "rttmKey": rttm_key(job_id), "speakers": speakers,
+        })
 
 
 @app.get("/health")
@@ -99,26 +110,23 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/jobs")
-def create_job(req: CreateJobRequest):
-    job_id = req.meetingId
+@app.post("/process")
+async def process(request: Request):
+    envelope = await request.json()
+    jobs = extract_job_payloads(envelope)
     s3 = get_s3_client()
-    write_status(s3, job_id, {"status": "pending"})
 
-    thread = threading.Thread(
-        target=run_job, args=(job_id, req.audioKey, req.minSpeakers, req.maxSpeakers),
-        daemon=True,
-    )
-    thread.start()
+    for job in jobs:
+        job_id = job.get("meetingId", "unknown")
+        try:
+            process_one(s3, job)
+        except Exception as e:
+            traceback.print_exc()
+            write_status(s3, job_id, {"status": "failed", "error": str(e)})
+            # 500 → триггер не удаляет сообщение из очереди, будет повтор
+            # после visibility timeout (полезно для транзиентных сбоев вроде
+            # временной недоступности S3; не полезно для детерминированных
+            # ошибок вроде битого аудио — но лучше повтор, чем тихая потеря).
+            return Response(status_code=500, content=str(e))
 
-    return {"jobId": job_id, "status": "pending"}
-
-
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    s3 = get_s3_client()
-    try:
-        obj = s3.get_object(Bucket=bucket_name(), Key=status_key(job_id))
-    except s3.exceptions.NoSuchKey:
-        raise HTTPException(status_code=404, detail="job not found")
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    return {"processed": len(jobs)}

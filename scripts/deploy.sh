@@ -40,6 +40,8 @@ fi
 : "${SESSION_SECRET:?Не задана переменная SESSION_SECRET в .env.deploy}"
 : "${ADMIN_LOGIN:?Не задана переменная ADMIN_LOGIN в .env.deploy}"
 : "${HF_TOKEN:?Не задана переменная HF_TOKEN в .env.deploy (нужен для pyannote-диаризации)}"
+: "${DIARIZATION_QUEUE_URL:?Не задана переменная DIARIZATION_QUEUE_URL в .env.deploy}"
+: "${DIARIZATION_QUEUE_ARN:?Не задана переменная DIARIZATION_QUEUE_ARN в .env.deploy}"
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
 # git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
@@ -67,20 +69,8 @@ build_worker() {
   echo "   $(du -sh /tmp/worker.zip | cut -f1)"
 }
 
-# Узнаёт публичный URL уже задеплоенного контейнера диаризации — нужен
-# api/worker функциям, чтобы к нему обращаться. Пусто, если контейнер ещё
-# не создан (PyannoteDiarization.available=false, пайплайн просто пропустит
-# диаризацию, не сломается — см. apps/server/src/infrastructure/pyannote-diarization.js).
-resolve_diarization_url() {
-  local url
-  url=$($YC serverless container get --name yaspeech-diarization --format json 2>/dev/null \
-    | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);const u=j.url||j.domain||'';console.log(u?('https://'+u.replace(/^https?:\/\//,'')):'')}catch(e){console.log('')}})")
-  echo "$url"
-}
-
 deploy_api() {
   echo "🚀 Deploying yaspeech-api..."
-  local diar_url; diar_url=$(resolve_diarization_url)
   local output
   if ! output=$($YC serverless function version create \
     --function-name yaspeech-api \
@@ -96,7 +86,7 @@ deploy_api() {
     --environment YC_FOLDER_ID="$FOLDER_ID" \
     --environment "SESSION_SECRET=$SESSION_SECRET" \
     --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
-    --environment DIARIZATION_SERVICE_URL="$diar_url" \
+    --environment DIARIZATION_QUEUE_URL="$DIARIZATION_QUEUE_URL" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_api failed" >&2
@@ -108,7 +98,6 @@ deploy_api() {
 
 deploy_worker() {
   echo "🚀 Deploying yaspeech-worker..."
-  local diar_url; diar_url=$(resolve_diarization_url)
   local output
   if ! output=$($YC serverless function version create \
     --function-name yaspeech-worker \
@@ -122,7 +111,7 @@ deploy_worker() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
-    --environment DIARIZATION_SERVICE_URL="$diar_url" \
+    --environment DIARIZATION_QUEUE_URL="$DIARIZATION_QUEUE_URL" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_worker failed" >&2
@@ -233,6 +222,18 @@ deploy_diarization() {
   fi
   echo "$output" | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ diarization container deployed"
+
+  # YMQ-триггер держит соединение с контейнером открытым на всё время
+  # обработки одного сообщения (см. apps/diarization-service/server.py) —
+  # без него диаризация не досчитывается (Serverless Container не держит
+  # фоновый поток между HTTP-запросами). Создаём один раз, идемпотентно.
+  MSYS_NO_PATHCONV=1 $YC serverless trigger create message-queue yaspeech-diarization-trigger \
+    --queue "$DIARIZATION_QUEUE_ARN" \
+    --queue-service-account-id "$SA_ID" \
+    --batch-size 1 \
+    --invoke-container-name yaspeech-diarization \
+    --invoke-container-path /process \
+    --invoke-container-service-account-id "$SA_ID" >/dev/null 2>&1 || true
 }
 
 update_gateway() {

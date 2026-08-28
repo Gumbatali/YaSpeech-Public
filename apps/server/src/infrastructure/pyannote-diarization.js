@@ -3,70 +3,90 @@
  * Container) — pyannote/speaker-diarization-3.1 + слияние кластеров по
  * эмбеддингу голоса, портировано из research/diarization-asr-lab.
  *
- * Раньше здесь был вызов HuggingFace Inference API с обрезкой аудио до 24 МБ
- * и классом SmartAsrGateway, который на самом деле никогда не создавался в
- * make-deps.js — то есть pyannote в проде не запускался вообще, а разделение
- * на "Спикер 1/2" было побочным продуктом channelTag у SpeechKit. См.
- * research/diarization-asr-lab/CLAUDE.md и обсуждение находки в чате.
- *
- * Работа асинхронная (диаризация на CPU занимает время, сравнимое с длиной
- * встречи — RTF ~1x): startJob ставит задачу и возвращает jobId сразу,
- * getJobStatus поллится из meeting-pipeline-service.js по тому же паттерну,
- * что и SpeechKit-поллинг (см. pollAsrPhase).
+ * Асинхронно через YMQ, не напрямую по HTTP: Node (таймаут функции 60с)
+ * только кладёт сообщение в очередь диаризации — дальше YMQ-триггер вызывает
+ * контейнер по /process и держит соединение открытым на всё время обработки
+ * ОДНОГО сообщения (до 3600с), что нужно для диаризации, которая длится
+ * время, сравнимое с длиной встречи (RTF ~1x на CPU). Статус/результат — в
+ * S3; getJobStatus/readRttm читают оттуда напрямую, не ходят в контейнер.
  */
 
+import { signRequest } from "../shared/sign-v4.js";
 import { logger } from "../shared/logger.js";
-import { getIamToken } from "../shared/iam-token.js";
+
+const YMQ_ENDPOINT = "https://message-queue.api.cloud.yandex.net";
+const YMQ_REGION = "ru-central1";
+const YMQ_SERVICE = "sqs";
+const STATUS_PREFIX = "diarization-jobs";
 
 export class PyannoteDiarization {
   /**
-   * @param {{ serviceUrl: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
+   * @param {{ queueUrl: string, keyId: string, secret: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
    */
-  constructor({ serviceUrl, artifactStorage }) {
-    this.serviceUrl = serviceUrl;
+  constructor({ queueUrl, keyId, secret, artifactStorage }) {
+    this.queueUrl = queueUrl;
+    this.keyId = keyId;
+    this.secret = secret;
     this.artifactStorage = artifactStorage;
+    if (queueUrl) {
+      const url = new URL(queueUrl);
+      this.host = url.host;
+      this.path = url.pathname;
+    }
   }
 
   get available() {
-    return Boolean(this.serviceUrl);
+    return Boolean(this.queueUrl);
   }
 
   /**
-   * Запускает диаризацию для аудиофайла из S3. Не ждёт результата.
+   * Пишет "pending" в S3 и кладёт сообщение в очередь диаризации. Не ждёт
+   * результата — обработка идёт асинхронно через YMQ-триггер на контейнере.
    * @returns {Promise<{ jobId: string }>}
    */
   async startJob({ meetingId, audioKey, minSpeakers = null, maxSpeakers = null }) {
-    // Контейнер требует IAM-авторизацию (не открыт публично, invoker-роль
-    // выдана тому же SA, что у api/worker) — тот же getIamToken(), что
-    // используется для других межсервисных вызовов внутри облака.
-    const token = await getIamToken();
-    const res = await fetch(`${this.serviceUrl}/jobs`, {
+    const jobId = meetingId;
+    await this.artifactStorage.writeJson(statusKey(jobId), { status: "pending" });
+
+    const body = new URLSearchParams({
+      Action: "SendMessage",
+      MessageBody: JSON.stringify({ meetingId, audioKey, minSpeakers, maxSpeakers }),
+      Version: "2012-11-05",
+    }).toString();
+    const contentType = "application/x-www-form-urlencoded";
+
+    const sig = signRequest({
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-      body: JSON.stringify({ meetingId, audioKey, minSpeakers, maxSpeakers })
+      host: this.host,
+      path: this.path,
+      headers: { "content-type": contentType },
+      body,
+      service: YMQ_SERVICE,
+      region: YMQ_REGION,
+      keyId: this.keyId,
+      secret: this.secret,
+    });
+
+    const res = await fetch(`${YMQ_ENDPOINT}${this.path}`, {
+      method: "POST",
+      headers: { host: this.host, "content-type": contentType, ...sig },
+      body,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Diarization service ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Diarization queue SendMessage failed: ${res.status} ${text.slice(0, 200)}`);
     }
-    const data = await res.json();
-    logger.info("Diarization: job started", { meetingId, jobId: data.jobId });
-    return data;
+
+    logger.info("Diarization: job queued", { meetingId, jobId });
+    return { jobId };
   }
 
   /**
    * @returns {Promise<{ status: "pending"|"running"|"done"|"failed", rttmKey?: string, speakers?: number, error?: string }>}
    */
   async getJobStatus(jobId) {
-    const token = await getIamToken();
-    const res = await fetch(`${this.serviceUrl}/jobs/${jobId}`, {
-      headers: { "Authorization": `Bearer ${token}` }
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Diarization service ${res.status}: ${text.slice(0, 200)}`);
-    }
-    return res.json();
+    const status = await this.artifactStorage.readJson(statusKey(jobId));
+    return status ?? { status: "pending" };
   }
 
   /**
@@ -78,6 +98,10 @@ export class PyannoteDiarization {
     const text = await this.artifactStorage.readText(rttmKey);
     return parseRttm(text);
   }
+}
+
+function statusKey(jobId) {
+  return `${STATUS_PREFIX}/${jobId}/status.json`;
 }
 
 function parseRttm(text) {

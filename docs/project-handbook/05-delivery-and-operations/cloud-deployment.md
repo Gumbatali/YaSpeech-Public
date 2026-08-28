@@ -46,15 +46,19 @@ bash scripts/deploy.sh diarization  # только контейнер диари
 5. **Диаризация** (`diarization`-таргет, `apps/diarization-service/`):
    - Собирает Docker-образ (pyannote.audio + сервис на FastAPI), пушит в
      Yandex Container Registry, деплоит как Serverless Container
-     (`yaspeech-diarization`, long-lived, до 1 часа на запрос — диаризация
-     на CPU занимает время, сравнимое с длиной встречи)
+     (`yaspeech-diarization`) и создаёт (идемпотентно) YMQ-триггер
+     `yaspeech-diarization-trigger`, связывающий очередь диаризации с
+     эндпоинтом `/process` контейнера
    - Требует Docker и `HF_TOKEN` (HuggingFace-токен с принятыми условиями
      моделей `pyannote/speaker-diarization-3.1` и
      `pyannote/wespeaker-voxceleb-resnet34-LM`)
-   - `deploy_api`/`deploy_worker` сами подхватывают его URL
-     (`DIARIZATION_SERVICE_URL`) через `resolve_diarization_url()` — при
-     первом деплое диаризацию нужно раскатить до api/worker (в `all` она
-     идёт первой)
+   - **Архитектура**: Node (api/worker) не вызывает контейнер по HTTP
+     напрямую — кладёт сообщение в YMQ-очередь (`DIARIZATION_QUEUE_URL`),
+     дальше статус/результат читаются из S3. YMQ-триггер
+     (`--invoke-container-*`) вызывает контейнер по `/process` и держит
+     соединение открытым на всё время обработки одного сообщения (до
+     3600с) — необходимо, так как диаризация на CPU длится время,
+     сравнимое с длиной встречи (RTF ~1x)
 
 ## Облачные ресурсы
 
@@ -68,7 +72,9 @@ bash scripts/deploy.sh diarization  # только контейнер диари
 | Message Queue | `yaspeech-queue` | YMQ — очередь задач |
 | Service Account | `yaspeech-sa` | Роли: storage.editor, ymq.writer, functions.invoker |
 | Container Registry | `yaspeech-diarization` | Образы сервиса диаризации |
-| Serverless Container | `yaspeech-diarization` | pyannote.audio — реальная acoustic-диаризация (CPU, long-lived, до 1ч) |
+| Serverless Container | `yaspeech-diarization` | pyannote.audio — реальная acoustic-диаризация (CPU, до 1ч на сообщение) |
+| Message Queue | `yaspeech-diarization-queue` | Задачи диаризации (Node → очередь, не напрямую в контейнер) |
+| Trigger | `yaspeech-diarization-trigger` | YMQ → `yaspeech-diarization` (`/process`), держит вызов открытым на всё время обработки |
 
 ## Переменные окружения функций
 
@@ -86,7 +92,7 @@ bash scripts/deploy.sh diarization  # только контейнер диари
 | `ASR_PROVIDER` | worker | `speechkit` \| `groq` \| `mock` |
 | `GPT_B2_VOTES` | worker | Число голосов ансамбля identifySpeakers (B2). По умолчанию `7`; `1` — старое однократное поведение |
 | `GPT_C1_SAMPLES` | worker | Число сэмплов ансамбля extractProtocol (C1). По умолчанию `5`; `1` — старое однократное поведение |
-| `DIARIZATION_SERVICE_URL` | api + worker | URL контейнера `yaspeech-diarization`. Пусто → диаризация пропускается без ошибки (спикеры — как их разделил ASR) |
+| `DIARIZATION_QUEUE_URL` | api + worker | URL очереди `yaspeech-diarization-queue`. Пусто → диаризация пропускается без ошибки (спикеры — как их разделил ASR) |
 | `STORAGE_KEY_ID` / `STORAGE_SECRET` / `STORAGE_BUCKET` | контейнер `yaspeech-diarization` | Доступ к тому же бакету артефактов, что у api/worker |
 | `HF_TOKEN` | контейнер `yaspeech-diarization` | HuggingFace-токен для pyannote (гейтед-модели) |
 
