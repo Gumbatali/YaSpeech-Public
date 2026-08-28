@@ -5,6 +5,7 @@
 # Перед запуском скопируй scripts/.env.deploy.example → scripts/.env.deploy
 # и заполни значениями. Файл .env.deploy НЕ коммитится в git.
 set -e
+set -o pipefail
 
 # Путь к yc CLI можно переопределить через окружение (нужно в CI, где CLI
 # ставится в другое место). По умолчанию — стандартная установка для разработчика.
@@ -67,7 +68,8 @@ build_worker() {
 
 deploy_api() {
   echo "🚀 Deploying yaspeech-api..."
-  $YC serverless function version create \
+  local output
+  if ! output=$($YC serverless function version create \
     --function-name yaspeech-api \
     --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/api-handler.index" \
@@ -81,14 +83,19 @@ deploy_api() {
     --environment YC_FOLDER_ID="$FOLDER_ID" \
     --environment "SESSION_SECRET=$SESSION_SECRET" \
     --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
-    --service-account-id "$SA_ID" \
-    2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    --service-account-id "$SA_ID" 2>&1); then
+    echo "$output"
+    echo "❌ deploy_api failed" >&2
+    exit 1
+  fi
+  echo "$output" | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ api deployed"
 }
 
 deploy_worker() {
   echo "🚀 Deploying yaspeech-worker..."
-  $YC serverless function version create \
+  local output
+  if ! output=$($YC serverless function version create \
     --function-name yaspeech-worker \
     --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
@@ -100,8 +107,12 @@ deploy_worker() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
-    --service-account-id "$SA_ID" \
-    2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    --service-account-id "$SA_ID" 2>&1); then
+    echo "$output"
+    echo "❌ deploy_worker failed" >&2
+    exit 1
+  fi
+  echo "$output" | grep -E "^\.\.\.done|^id:" | head -3
   echo "   ✓ worker deployed"
 }
 
@@ -173,8 +184,13 @@ update_gateway() {
   local SPEC="$ROOT/infra/api-gateway.yaml"
   if [[ -f "$SPEC" ]]; then
     echo "🌐 Updating API Gateway..."
-    $YC serverless api-gateway update --name yaspeech-gateway --spec "$SPEC" \
-      2>&1 | grep -E "^\.\.\.done|^id:" | head -3
+    local output
+    if ! output=$($YC serverless api-gateway update --name yaspeech-gateway --spec "$SPEC" 2>&1); then
+      echo "$output"
+      echo "❌ update_gateway failed" >&2
+      exit 1
+    fi
+    echo "$output" | grep -E "^\.\.\.done|^id:" | head -3
     echo "   ✓ gateway updated"
   else
     echo "   ⚠️  infra/api-gateway.yaml not found, skipping gateway update"
