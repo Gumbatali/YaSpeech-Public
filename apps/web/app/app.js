@@ -39,6 +39,44 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
     return { date: todayIso(), startTime: null, endTime: null, durationSeconds: null, file: null };
   }
 
+  // Уведомление о готовности встречи — localStorage, а не state: должно
+  // пережить перезагрузку страницы, пока пользователь ждёт обработку.
+  function isNotifyEnabled(meetingId) {
+    try {
+      return localStorage.getItem(`notify:${meetingId}`) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function setNotifyEnabled(meetingId, on) {
+    try {
+      if (on) localStorage.setItem(`notify:${meetingId}`, "1");
+      else localStorage.removeItem(`notify:${meetingId}`);
+    } catch {
+      // localStorage недоступен (приватный режим и т.п.) — тихо пропускаем
+    }
+  }
+
+  async function requestNotifyPermission() {
+    if (typeof Notification === "undefined") return false;
+    if (Notification.permission === "granted") return true;
+    if (Notification.permission === "denied") return false;
+    const result = await Notification.requestPermission();
+    return result === "granted";
+  }
+
+  function fireDoneNotification(meeting) {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    try {
+      new Notification("Протокол готов", {
+        body: meeting.titleDraft || "Встреча обработана"
+      });
+    } catch {
+      // конструктор Notification может бросить в некоторых окружениях — не критично
+    }
+  }
+
   function createDraftForm(meeting = null) {
     return {
       titleDraft: meeting?.titleDraft ?? "",
@@ -304,7 +342,15 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
     async function refreshMeeting(meetingId, silent) {
       try {
         const payload = await api.getMeeting(meetingId);
+        const previousStatus = activeMeeting?.id === meetingId ? activeMeeting.status : null;
         setActiveMeeting(payload.meeting);
+        if (
+          previousStatus && previousStatus !== "done" &&
+          payload.meeting.status === "done" && isNotifyEnabled(meetingId)
+        ) {
+          fireDoneNotification(payload.meeting);
+          setNotifyEnabled(meetingId, false);
+        }
         if (payload.meeting.projectId === selectedProjectId) {
           await refreshMeetings(selectedProjectId);
         }
@@ -1079,6 +1125,32 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       `;
     }
 
+    function renderNotifyToggle(meetingId) {
+      const enabled = isNotifyEnabled(meetingId);
+
+      async function handleToggle(event) {
+        const wantOn = event.target.checked;
+        if (wantOn) {
+          const granted = await requestNotifyPermission();
+          if (!granted) {
+            setError("Уведомления заблокированы в браузере — разрешите их в настройках сайта.");
+            return;
+          }
+        }
+        setNotifyEnabled(meetingId, wantOn);
+        // notify-состояние живёт в localStorage, не в useState — форсируем
+        // перерисовку, чтобы чекбокс сразу отразил новое значение
+        setActiveMeeting((m) => (m ? { ...m } : m));
+      }
+
+      return html`
+        <label className="refine-control">
+          <input type="checkbox" checked=${enabled} onChange=${handleToggle} />
+          <span>🔔 Уведомить, когда будет готово</span>
+        </label>
+      `;
+    }
+
     function renderProcessingScreen() {
       return html`
         <section className="screen project-screen">
@@ -1092,6 +1164,9 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                 <h2>${stageView.title}</h2>
               </div>
               <p className="panel-copy">${stageView.detail}</p>
+              ${activeMeeting && activeMeeting.status !== "failed"
+                ? renderNotifyToggle(activeMeeting.id)
+                : null}
             </div>
 
             <div className="timeline">
@@ -1213,11 +1288,17 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                 <button
                   className="primary-button"
                   onClick=${handleConfirmDraft}
-                  disabled=${confirmingDraft}
+                  disabled=${confirmingDraft || activeMeeting?.status === "protocol_generating"}
                 >
-                  ${confirmingDraft ? "Собираем..." : "Собрать протокол"}
+                  ${confirmingDraft || activeMeeting?.status === "protocol_generating" ? "Собираем..." : "Собрать протокол"}
                 </button>
               </div>
+              ${activeMeeting?.status === "protocol_generating" ? html`
+                <div className="quality-warning" style=${{ background: "var(--accent-soft, #eef2ff)" }}>
+                  ⏳ ${stageView.title} — ${stageView.detail}
+                </div>
+                ${renderNotifyToggle(activeMeeting.id)}
+              ` : null}
               ${activeMeeting?.gptContext?.transcriptQuality === "poor" ? html`
                 <div className="quality-warning">
                   ⚠️ <b>Низкое качество записи</b> — протокол может быть неточным.
@@ -1272,6 +1353,32 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                     ${speaker.reasoning && speaker.reasoning !== "fallback"
                       ? html`<span className="speaker-reasoning">${speaker.reasoning}</span>`
                       : null}
+                    ${(() => {
+                      // Подсказки из ростера проекта — не печатать заново имя,
+                      // которое уже есть в участниках; исключаем тех, кто уже
+                      // назначен на ДРУГУЮ метку, чтобы не тыкнуть по ошибке
+                      // одного человека на двух спикеров.
+                      const quickpick = teamDraft.filter((member) =>
+                        !draftForm.speakerDrafts.some((s, i) => i !== index && s.guessedName === member.name)
+                      );
+                      return quickpick.length > 0
+                        ? html`
+                            <div className="refine-control">
+                              ${quickpick.map((member) => html`
+                                <button
+                                  key=${member.id}
+                                  type="button"
+                                  className="ghost-button ghost-button--sm"
+                                  onClick=${(event) => {
+                                    event.preventDefault();
+                                    updateDraftSpeaker(index, member.name);
+                                  }}
+                                >${member.name}</button>
+                              `)}
+                            </div>
+                          `
+                        : null;
+                    })()}
                   </label>
                 `
               )}

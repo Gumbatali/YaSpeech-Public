@@ -31,12 +31,16 @@ export function resolveScreen({ selectedProjectId, activeMeeting, requestedScree
     return "meeting-result";
   }
 
-  if (activeMeeting.status === "draft_ready") {
+  // protocol_generating остаётся на экране черновика — сам черновик уже
+  // готов к этому моменту, пользователь должен иметь возможность его
+  // посмотреть, пока протокол собирается в фоне (баннер прогресса — внутри
+  // экрана черновика, см. getStageViewModel).
+  if (activeMeeting.status === "draft_ready" || activeMeeting.status === "protocol_generating") {
     return "meeting-draft";
   }
 
   if (
-    ["uploading", "uploaded", "speechkit_processing", "diarizing", "protocol_generating", "failed"].includes(
+    ["uploading", "uploaded", "speechkit_processing", "diarizing", "failed"].includes(
       activeMeeting.status
     )
   ) {
@@ -44,6 +48,18 @@ export function resolveScreen({ selectedProjectId, activeMeeting, requestedScree
   }
 
   return "project-workspace";
+}
+
+// RTF ~0.9-1.25x на CPU для diarize + ~1-3 мин фиксированного оверхеда на
+// merge-кластеризацию (загрузка модели эмбеддингов + per-спикер обработка) —
+// см. research/diarization-asr-lab/FINDINGS.md. Без durationSeconds оценку
+// не показываем, а не гадаем.
+function formatDiarizeEta(durationSeconds) {
+  if (!durationSeconds || durationSeconds <= 0) return "";
+  const minutes = durationSeconds / 60;
+  const low = Math.max(1, Math.round(minutes * 0.9 + 1));
+  const high = Math.round(minutes * 1.25 + 3);
+  return ` Ориентировочно: ~${low}–${high} мин.`;
 }
 
 export function getStageViewModel(meeting) {
@@ -99,7 +115,7 @@ export function getStageViewModel(meeting) {
     return {
       tone: "working",
       title: "Определяем, кто говорит",
-      detail: "Разделяем голоса участников по записи — может занять время, сравнимое с длиной встречи."
+      detail: `Разделяем голоса участников по записи — обычно занимает время, сравнимое с длиной встречи.${formatDiarizeEta(meeting.audioFile?.durationSeconds)}`
     };
   }
 
