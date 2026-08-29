@@ -466,10 +466,9 @@ export class MeetingPipelineService {
 
     await this.meetingRepository.save(draftMeeting);
 
-    // Единый пайплайн без ручных шагов: улучшение раньше запускалось только
-    // кнопкой «Улучшить с помощью ИИ» — теперь всегда автоматически, сразу
-    // после того как черновик (уже с верной диаризацией) готов.
-    await this.enqueueRefine(meeting.id);
+    // Улучшение — по выбору пользователя (переключатель «Улучшить с помощью
+    // ИИ» на черновике), не автоматически: draft остаётся в состоянии idle
+    // (llmRefine не выставлен), пока пользователь сам не включит.
   }
 
   /**
@@ -767,7 +766,7 @@ export class MeetingPipelineService {
       // не критично — продолжаем без предыдущего протокола
     }
 
-    const { protocol, protocolText, glossary: newGlossary } = await this.yandexGptGateway.generateProtocol({
+    const { protocol, protocolText, glossary: newGlossary, speakerDrafts: resolvedSpeakerDrafts } = await this.yandexGptGateway.generateProtocol({
       meeting,
       project,
       transcript,
@@ -803,7 +802,16 @@ export class MeetingPipelineService {
     await this.meetingRepository.save({
       ...finalized,
       titleDraft: meeting.titleDraft,
-      speakerDrafts: meeting.speakerDrafts,
+      speakerDrafts: resolvedSpeakerDrafts
+        ? resolvedSpeakerDrafts.map((s) => ({
+            id: s.id,
+            label: s.label,
+            guessedName: s.guessedName ?? null,
+            guessedRole: s.guessedRole ?? null,
+            dialogueRole: s.dialogueRole ?? null,
+            confidence: s.confidence ?? "low"
+          }))
+        : meeting.speakerDrafts,
       transcriptPreview: meeting.transcriptPreview,
       transcriptSegments: meeting.transcriptSegments,
       protocol

@@ -100,8 +100,6 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
       : html`<div className="refine-done">✨ Расшифровка улучшена ИИ</div>`;
   }
 
-  // failed → только повтор; idle/stale — улучшение уже запущено
-  // автоматически (см. prepareDraftFromTranscript), кнопки не показываем.
   if (status === "failed") {
     return html`
       <div className="refine-control">
@@ -110,6 +108,17 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
           ✨ Повторить улучшение
         </button>
       </div>
+    `;
+  }
+
+  // idle (переключатель ещё не включали) — по умолчанию выключено,
+  // включение запускает улучшение через Qwen 3.6 (см. runRefinePhase)
+  if (!status) {
+    return html`
+      <label className="refine-control refine-toggle">
+        <input type="checkbox" checked=${false} onChange=${handleRefine} />
+        <span>✨ Улучшить с помощью ИИ</span>
+      </label>
     `;
   }
 
@@ -259,7 +268,7 @@ export function TranscriptTab({
       </div>
       ${RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
-        ? html`<div className="empty-state">Улучшение расшифровки идёт автоматически — версия появится через некоторое время.</div>`
+        ? html`<div className="empty-state">Включите «Улучшить с помощью ИИ» выше — версия появится после обработки.</div>`
         : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
             showDiff: transcriptVersion === "llm" && showDiff
           })

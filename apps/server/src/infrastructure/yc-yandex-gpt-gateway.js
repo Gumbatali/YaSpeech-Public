@@ -514,9 +514,8 @@ export class YcYandexGptGateway {
     // сдаются и оставляют метку нерезолвленной — см. EVALUATION.md. Не идеальна
     // (изредка сочиняет имя из ASR-шума или приписывает задачу третьему лицу —
     // тот же класс ошибок, что и у YandexGPT, просто реже), но заметно точнее
-    // на этой конкретной задаче. Остальные стадии (refine и т.д.) остаются на
-    // основной модели — Lite для них откалибрована отдельным бенчмарком
-    // (scripts/experiments/llm-refine-bench), переносить не на чем и незачем.
+    // на этой конкретной задаче. refine (refineLines) тоже на этой модели —
+    // по явному запросу пользователя (2026-08-29), см. комментарий там.
     b2c1Model = process.env.GPT_MODEL_B2C1 ?? "qwen3.6-35b-a3b"
   }) {
     this.folderId = folderId;
@@ -672,7 +671,13 @@ export class YcYandexGptGateway {
       domain,
       glossary
     });
-    const raw = await this.client.complete(system, user, options);
+    // Qwen (b2c1Client), не Lite — по явному запросу пользователя
+    // (2026-08-29). Раньше refine намеренно держали на Lite: бенчмарк
+    // (scripts/experiments/llm-refine-bench) показывал WER-восстановление
+    // 63% при цене в 6 раз ниже Pro, Qwen для refine не был откалиброван
+    // тем же бенчмарком — при регрессии в качестве коррекции стоит
+    // перепроверить этот бенчмарк на Qwen.
+    const raw = await this.b2c1Client.complete(system, user, options);
     return parseRefinedLines(raw, ids);
   }
 
@@ -1158,11 +1163,30 @@ export class YcYandexGptGateway {
           projectName: project.name
         });
 
-    const speakers = (meeting.speakerDrafts ?? []).map((s) => ({
+    // Определение имён спикеров (B2) — ВСЕГДА для протокола, независимо от
+    // переключателя «Улучшить с помощью ИИ» (тот управляет только построчной
+    // коррекцией текста, refineLines). Без этого протокол без refine выходит
+    // с сырыми "Спикер N" вместо реальных имён участников — по явному
+    // запросу пользователя (2026-08-29) это больше не приемлемо.
+    let resolvedSpeakerDrafts = null;
+    const hasResolvedNames = (meeting.speakerDrafts ?? []).some((s) => s.guessedName);
+    if (!hasResolvedNames) {
+      resolvedSpeakerDrafts = await this.identifySpeakers({
+        correctedText,
+        transcript,
+        project,
+        context
+      }).catch((e) => {
+        logger.warn("GPT B2 (protocol-time): speaker identification failed, using drafts as-is", { error: e.message });
+        return null;
+      });
+    }
+
+    const speakers = (resolvedSpeakerDrafts ?? meeting.speakerDrafts ?? []).map((s) => ({
       id: s.id,
       label: s.label,
       guessedName: s.guessedName,
-      guessedRole: null,
+      guessedRole: s.guessedRole ?? null,
       confidence: s.confidence
     }));
 
@@ -1210,7 +1234,7 @@ export class YcYandexGptGateway {
     const protocolText = buildProtocolText(protocol, meeting, project, context);
     // Возвращаем глоссарий из meeting.gptContext чтобы pipeline мог его накопить
     const glossary = meeting.gptContext?.glossary ?? null;
-    return { protocol, protocolText, glossary };
+    return { protocol, protocolText, glossary, speakerDrafts: resolvedSpeakerDrafts };
   }
 
   /**
