@@ -266,9 +266,8 @@ export function TranscriptTab({
           >LLM восстановил</button>
         </div>
       </div>
-      ${RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact: transcriptVersion === "raw" })}
       ${transcriptVersion === "llm" && !hasLlm
-        ? html`<div className="empty-state">Включите «Улучшить с помощью ИИ» выше — версия появится после обработки.</div>`
+        ? html`<div className="empty-state">Улучшенная версия недоступна для этой встречи.</div>`
         : renderTranscriptSegments(activeSegments, colorMap, speakerInfo, {
             showDiff: transcriptVersion === "llm" && showDiff
           })
