@@ -343,6 +343,69 @@ export async function resolveBorderlinePairsWithLLM(items, pairs, completeBatchF
   return items.filter((_, idx) => !toRemove.has(idx));
 }
 
+// decisions — плоские строки без owner, поэтому найдено на реальном прогоне
+// (2026-08-29): dedupeSimilarStrings (жёсткий порог) ловит только явные
+// дубли, а borderline-пары ("одно решение, разные формулировки", ratio
+// 0.3-0.6) для decisions никогда не проверялись моделью — в отличие от
+// actionItems, у которых уже есть resolveBorderlinePairsWithLLM выше.
+// Те же пороги/паттерн, но без группировки по owner (его у decisions нет).
+export function findBorderlineStringPairs(items, threshold = NEAR_DUP_THRESHOLD, lowThreshold = BORDERLINE_LOW_THRESHOLD) {
+  const wordsCache = items.map((item) => significantWords(item));
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const score = wordOverlapRatio(wordsCache[i], wordsCache[j]);
+      if (score >= lowThreshold && score < threshold) pairs.push({ i, j, score });
+    }
+  }
+  return pairs;
+}
+
+export async function resolveBorderlineStringPairsWithLLM(items, pairs, completeBatchFn) {
+  if (pairs.length === 0) return items;
+  const requests = pairs.map(({ i, j }) => ({
+    system: "Ответь только JSON {\"same\": true} или {\"same\": false}. Обе формулировки — независимые пересказы одного и того же решения одной и той же встречи, могут отличаться словами и уровнем детализации. Считай их ОДНИМ решением (true), если по сути это один и тот же согласованный пункт. Считай РАЗНЫМИ (false), только если это явно разные, самостоятельные решения по разным вопросам.",
+    user: `Пункт 1: ${items[i]}\nПункт 2: ${items[j]}`,
+    options: { temperature: 0, maxTokens: 20 }
+  }));
+
+  let responses;
+  try {
+    responses = await completeBatchFn(requests);
+  } catch (e) {
+    logger.warn("resolveBorderlineStringPairsWithLLM: completeBatchFn failed, keeping items unmerged", {
+      pairs: pairs.length,
+      error: e.message
+    });
+    return items;
+  }
+
+  const toRemove = new Set();
+  for (let k = 0; k < pairs.length; k++) {
+    const { i, j } = pairs[k];
+    if (toRemove.has(i) || toRemove.has(j)) continue;
+    let same = false;
+    try {
+      same = JSON.parse(stripJsonFence(String(responses[k] ?? ""))).same === true;
+    } catch {
+      // не распарсилось — трактуем как "не одно и то же", не мержим наугад
+    }
+    if (same) toRemove.add(j);
+  }
+  return items.filter((_, idx) => !toRemove.has(idx));
+}
+
+// Общий шаг "жёсткий дедуп → LLM-проверка серой зоны" для decisions —
+// оборачивает findBorderlineStringPairs/resolveBorderlineStringPairsWithLLM,
+// чтобы не повторять эти три строки в каждом из мест, где decisions
+// собираются (extractProtocolOnce, ensemble, map-reduce, qaProtocol).
+export async function dedupeDecisionsWithLLM(decisions, completeBatchFn) {
+  const deduped = dedupeSimilarStrings(decisions);
+  const borderlinePairs = findBorderlineStringPairs(deduped);
+  if (borderlinePairs.length === 0) return deduped;
+  return resolveBorderlineStringPairsWithLLM(deduped, borderlinePairs, completeBatchFn);
+}
+
 // transcriptHighlights — та же проблема map-reduce, что и decisions/actionItems:
 // куски видят одни и те же яркие цитаты и обе включают их в свою пятёрку
 export function dedupeSimilarHighlights(items, threshold = NEAR_DUP_THRESHOLD, resolveSpeaker = (x) => x) {
@@ -909,14 +972,18 @@ export class YcYandexGptGateway {
       );
     }
 
+    // Тот же приём, что выше для actionItems: жёсткий дедуп ловит только
+    // явные дубли, серую зону (0.3-0.6) отдаём модели напрямую.
+    const mergedDecisions = await dedupeDecisionsWithLLM(
+      allSamples.flatMap((s) => s.decisions ?? []),
+      this.b2c1Client.completeBatch.bind(this.b2c1Client)
+    );
+
     let protocol = {
       summary: bestSample?.summary ?? { title: meeting.titleDraft ?? project.name, overview: "" },
       topics: bestSample?.topics ?? [],
       participants: dedupeSimilarStrings([...new Set(allSamples.flatMap((s) => s.participants ?? []))]),
-      decisions: dropDecisionsOverlappingTasks(
-        dedupeSimilarStrings(allSamples.flatMap((s) => s.decisions ?? [])),
-        mergedActionItems
-      ),
+      decisions: dropDecisionsOverlappingTasks(mergedDecisions, mergedActionItems),
       actionItems: mergedActionItems,
       completedFromPrevious: allSamples.flatMap((s) => s.completedFromPrevious ?? []),
       carriedForward: allSamples.flatMap((s) => s.carriedForward ?? []),
@@ -990,7 +1057,10 @@ export class YcYandexGptGateway {
     // вопрос (другая формулировка того же) не ловится
     protocol.participants = dedupeSimilarStrings(sanitizeStringArray(protocol.participants));
     protocol.topics = sanitizeTopics(protocol.topics);
-    protocol.decisions = dedupeSimilarStrings(sanitizeStringArray(protocol.decisions));
+    protocol.decisions = await dedupeDecisionsWithLLM(
+      sanitizeStringArray(protocol.decisions),
+      this.b2c1Client.completeBatch.bind(this.b2c1Client)
+    );
     protocol.actionItems = resolveDeadlineYears(
       dedupeSimilarTasks(sanitizeTaskArray(protocol.actionItems), NEAR_DUP_THRESHOLD, resolveSpeaker),
       meeting.date
@@ -1116,10 +1186,11 @@ export class YcYandexGptGateway {
       patchedProtocol.actionItems = resolveDeadlineYears(mergedBack, meetingDate);
     }
     if (completeness.missedDecisions?.length) {
-      patchedProtocol.decisions = dropDecisionsOverlappingTasks(
-        dedupeSimilarStrings(sanitizeStringArray([...patchedProtocol.decisions, ...completeness.missedDecisions])),
-        patchedProtocol.actionItems
+      const mergedDecisions = await dedupeDecisionsWithLLM(
+        sanitizeStringArray([...patchedProtocol.decisions, ...completeness.missedDecisions]),
+        this.b2c1Client.completeBatch.bind(this.b2c1Client)
       );
+      patchedProtocol.decisions = dropDecisionsOverlappingTasks(mergedDecisions, patchedProtocol.actionItems);
     }
     // missedRisks — упомянутые в разговоре риски/незакрытые моменты, которые
     // не оформлены как решение или задача. По смыслу ближе всего к уже
@@ -1316,7 +1387,10 @@ export class YcYandexGptGateway {
           meeting.date
         );
         combined.decisions = dropDecisionsOverlappingTasks(
-          dedupeSimilarStrings(sanitizeStringArray(combined.decisions)),
+          await dedupeDecisionsWithLLM(
+            sanitizeStringArray(combined.decisions),
+            this.b2c1Client.completeBatch.bind(this.b2c1Client)
+          ),
           combined.actionItems
         );
         combined.openQuestions = dedupeSimilarStrings(sanitizeStringArray(combined.openQuestions));
@@ -1334,7 +1408,10 @@ export class YcYandexGptGateway {
       meeting.date
     );
     merged.decisions = dropDecisionsOverlappingTasks(
-      dedupeSimilarStrings(sanitizeStringArray(merged.decisions)),
+      await dedupeDecisionsWithLLM(
+        sanitizeStringArray(merged.decisions),
+        this.b2c1Client.completeBatch.bind(this.b2c1Client)
+      ),
       merged.actionItems
     );
     return reconcileParticipants(merged, speakers);
