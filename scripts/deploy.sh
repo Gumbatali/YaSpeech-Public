@@ -105,12 +105,18 @@ deploy_api() {
 deploy_worker() {
   echo "🚀 Deploying yaspeech-worker..."
   local output
+  # 600s (платформенный максимум для Cloud Functions), не 60s: generateProtocol
+  # делает 12-20+ последовательных LLM-вызовов (B2×7 + C1×5 + QA, ещё больше
+  # для длинных встреч через map-reduce) и, в отличие от runRefinePhase, НЕ
+  # чекпоинтится — при 60s функцию убивает платформа посреди работы, и
+  # обработка перезапускается с нуля на каждой redelivery до бесконечности
+  # (реальный инцидент 2026-08-29: встреча "висела" час именно так).
   if ! output=$($YC serverless function version create \
     --function-name yaspeech-worker \
     --runtime nodejs22 \
     --entrypoint "apps/server/src/functions/worker-handler.index" \
     --memory 512m \
-    --execution-timeout 60s \
+    --execution-timeout 600s \
     --source-path /tmp/worker.zip \
     --environment YC_STORAGE_BUCKET="$BUCKET" \
     --environment YC_QUEUE_URL="$QUEUE_URL" \
