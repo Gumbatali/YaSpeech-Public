@@ -79,6 +79,30 @@ export class YcArtifactStorage {
     return res.body;
   }
 
+  /** S3 DELETE — идемпотентен, 404 не считается ошибкой */
+  async delete(key) {
+    const path = this._path(key);
+    const sig = signRequest({
+      method: "DELETE",
+      host: HOST,
+      path,
+      service: SERVICE,
+      region: REGION,
+      keyId: this.keyId,
+      secret: this.secret,
+    });
+
+    const res = await fetch(`https://${HOST}${path}`, {
+      method: "DELETE",
+      headers: { host: HOST, ...sig },
+    });
+
+    if (!res.ok && res.status !== 404) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`S3 DELETE failed [${key}]: ${res.status} ${text.slice(0, 200)}`);
+    }
+  }
+
   // ── private ────────────────────────────────────────────────────────────────
 
   _path(key) {

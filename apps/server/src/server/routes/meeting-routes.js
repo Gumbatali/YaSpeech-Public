@@ -6,6 +6,7 @@ import {
   incrementTranscriptionUsed
 } from "../../../../../packages/core/src/domain/user.js";
 import { badRequest, notFound, sendJson, sendText } from "../../shared/http.js";
+import { logger } from "../../shared/logger.js";
 import {
   optionalIsoDate,
   optionalString,
@@ -338,6 +339,18 @@ export function registerMeetingRoutes(router, deps) {
 
   router.add("DELETE", "/api/meetings/:id", async ({ response, params }) => {
     await meetingRepository.delete(params.id);
+
+    // jobId диаризации === meetingId (см. PyannoteDiarization.startJob) —
+    // подчищаем сироту в S3, чтобы удалённая встреча не оставляла висящий
+    // статус "pending"/"running" без хозяина в очереди диаризации.
+    // Само сообщение в YMQ-очереди не удалить без receipt handle — но
+    // подчистка S3-статуса убирает главный видимый симптом (реальный
+    // инцидент 2026-08-29: осиротевшая джоба 46e16fd4).
+    await Promise.all([
+      artifactStorage.delete(`diarization-jobs/${params.id}/status.json`),
+      artifactStorage.delete(`diarization-jobs/${params.id}/diarization.rttm`)
+    ]).catch((e) => logger.warn("delete meeting: diarization job cleanup failed", { meetingId: params.id, error: e.message }));
+
     sendJson(response, 200, { ok: true });
   });
 
