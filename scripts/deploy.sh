@@ -204,8 +204,11 @@ deploy_diarization() {
   $YC serverless container create --name yaspeech-diarization >/dev/null 2>&1 || true
 
   local output
+  # --container-id (не --container-name): резолвинг имени в id требует
+  # права на листинг контейнеров в папке, которых у деплоер-SA может не
+  # быть, даже когда конкретные права на сам ресурс есть.
   if ! output=$($YC serverless container revision deploy \
-    --container-name yaspeech-diarization \
+    --container-id bbaeste93e4dpg7h4d99 \
     --image "$IMAGE" \
     --memory 4GB \
     --cores 2 \
@@ -231,7 +234,7 @@ deploy_diarization() {
     --queue "$DIARIZATION_QUEUE_ARN" \
     --queue-service-account-id "$SA_ID" \
     --batch-size 1 \
-    --invoke-container-name yaspeech-diarization \
+    --invoke-container-id bbaeste93e4dpg7h4d99 \
     --invoke-container-path /process \
     --invoke-container-service-account-id "$SA_ID" >/dev/null 2>&1 || true
 }
