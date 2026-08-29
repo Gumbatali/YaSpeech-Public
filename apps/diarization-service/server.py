@@ -19,6 +19,7 @@ HTTP-обвязка над diarize.py + merge_clusters.py для прод-пай
   GET  /health   — проверка живости.
 """
 import json
+import multiprocessing as mp
 import os
 import tempfile
 import traceback
@@ -32,6 +33,10 @@ from merge_clusters import run_merge
 
 STORAGE_ENDPOINT = "https://storage.yandexcloud.net"
 STATUS_PREFIX = "diarization-jobs"
+# Держим запас под 3600с жёсткий лимит контейнера (--execution-timeout) —
+# без этого platform kill убивает процесс без обновления статуса, и джоба
+# висит "running" в S3 вечно (реальный инцидент: 2+ часа без апдейта).
+JOB_TIMEOUT_SECONDS = int(os.environ.get("DIARIZE_JOB_TIMEOUT_SECONDS", "3300"))
 
 app = FastAPI()
 
@@ -78,31 +83,75 @@ def extract_job_payloads(envelope: dict) -> list[dict]:
     return payloads
 
 
-def process_one(s3, job: dict):
-    job_id = job["meetingId"]
-    audio_key = job["audioKey"]
-    min_speakers = job.get("minSpeakers")
-    max_speakers = job.get("maxSpeakers")
+def _run_job_body(job: dict, conn: "mp.connection.Connection"):
+    """Выполняется в отдельном процессе, чтобы его можно было надёжно
+    убить по таймауту (Python-потоки нельзя принудительно прервать).
 
+    Передача результата через Pipe, а не Queue/Lock — в этом контейнере нет
+    /dev/shm, и любой POSIX-семафор (Queue, Lock, Semaphore) падает с
+    FileNotFoundError при создании. Pipe — голый os.pipe()/socketpair(),
+    семафоров не требует (реальный инцидент: сломало вообще все джобы)."""
+    try:
+        job_id = job["meetingId"]
+        audio_key = job["audioKey"]
+        s3 = get_s3_client()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = str(Path(tmp) / "audio.wav")
+            s3.download_file(bucket_name(), audio_key, audio_path)
+
+            hyp_rttm_path = str(Path(tmp) / "hyp.rttm")
+            run_diarize(
+                audio_path, job_id, hyp_rttm_path,
+                min_speakers=job.get("minSpeakers"), max_speakers=job.get("maxSpeakers"),
+            )
+
+            merged_rttm_path = str(Path(tmp) / "merged.rttm")
+            speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path)
+
+            s3.upload_file(merged_rttm_path, bucket_name(), rttm_key(job_id))
+        conn.send(("done", speakers))
+    except Exception as e:
+        traceback.print_exc()
+        conn.send(("failed", str(e)))
+    finally:
+        conn.close()
+
+
+def process_one(s3, job: dict, timeout_seconds: int = JOB_TIMEOUT_SECONDS):
+    job_id = job["meetingId"]
     write_status(s3, job_id, {"status": "running"})
 
-    with tempfile.TemporaryDirectory() as tmp:
-        audio_path = str(Path(tmp) / "audio.wav")
-        s3.download_file(bucket_name(), audio_key, audio_path)
+    ctx = mp.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_run_job_body, args=(job, child_conn))
+    proc.start()
+    child_conn.close()  # только читающий конец нужен родителю
+    proc.join(timeout_seconds)
 
-        hyp_rttm_path = str(Path(tmp) / "hyp.rttm")
-        run_diarize(
-            audio_path, job_id, hyp_rttm_path,
-            min_speakers=min_speakers, max_speakers=max_speakers,
-        )
-
-        merged_rttm_path = str(Path(tmp) / "merged.rttm")
-        speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path)
-
-        s3.upload_file(merged_rttm_path, bucket_name(), rttm_key(job_id))
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        parent_conn.close()
         write_status(s3, job_id, {
-            "status": "done", "rttmKey": rttm_key(job_id), "speakers": speakers,
+            "status": "failed", "error": f"timeout after {timeout_seconds}s",
         })
+        raise TimeoutError(f"diarization job {job_id} exceeded {timeout_seconds}s, killed")
+
+    if parent_conn.poll():
+        outcome, payload = parent_conn.recv()
+    else:
+        outcome, payload = "failed", "worker process died unexpectedly"
+    parent_conn.close()
+
+    if outcome == "failed":
+        write_status(s3, job_id, {"status": "failed", "error": payload})
+        raise RuntimeError(payload)
+
+    write_status(s3, job_id, {"status": "done", "rttmKey": rttm_key(job_id), "speakers": payload})
 
 
 @app.get("/health")

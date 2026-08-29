@@ -85,6 +85,10 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           DIARIZATION_QUEUE_URL: ${{ secrets.DIARIZATION_QUEUE_URL }}
           DIARIZATION_QUEUE_ARN: ${{ secrets.DIARIZATION_QUEUE_ARN }}
+          DIARIZATION_QUEUE_URL_2: ${{ secrets.DIARIZATION_QUEUE_URL_2 }}
+          DIARIZATION_QUEUE_ARN_2: ${{ secrets.DIARIZATION_QUEUE_ARN_2 }}
+          DIARIZATION_QUEUE_URL_3: ${{ secrets.DIARIZATION_QUEUE_URL_3 }}
+          DIARIZATION_QUEUE_ARN_3: ${{ secrets.DIARIZATION_QUEUE_ARN_3 }}
         run: bash scripts/deploy.sh "${{ github.event.inputs.target || 'all' }}"
 
       - name: Убрать ключ

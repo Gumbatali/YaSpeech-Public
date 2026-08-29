@@ -65,7 +65,13 @@ export function makeDeps() {
     : new YcYandexGptGateway({ folderId });
 
   const diarizationGateway = new PyannoteDiarization({
-    queueUrl: process.env.DIARIZATION_QUEUE_URL ?? null,
+    // Несколько очередей для round-robin — см. комментарий в
+    // pyannote-diarization.js о том, почему одной очереди недостаточно.
+    queueUrls: [
+      process.env.DIARIZATION_QUEUE_URL,
+      process.env.DIARIZATION_QUEUE_URL_2,
+      process.env.DIARIZATION_QUEUE_URL_3
+    ].filter(Boolean),
     keyId,
     secret,
     artifactStorage

@@ -9,6 +9,12 @@
  * ОДНОГО сообщения (до 3600с), что нужно для диаризации, которая длится
  * время, сравнимое с длиной встречи (RTF ~1x на CPU). Статус/результат — в
  * S3; getJobStatus/readRttm читают оттуда напрямую, не ходят в контейнер.
+ *
+ * Несколько очередей вместо одной: у YMQ-триггера нет режима "N воркеров на
+ * одну очередь" (Yandex Cloud явно запрещает вешать второй триггер на ту же
+ * очередь) — он последовательный consumer, держит только одно сообщение за
+ * раз. Поэтому реальный параллелизм получаем через round-robin по нескольким
+ * независимым очередям, у каждой свой триггер на тот же контейнер.
  */
 
 import { signRequest } from "../shared/sign-v4.js";
@@ -21,22 +27,21 @@ const STATUS_PREFIX = "diarization-jobs";
 
 export class PyannoteDiarization {
   /**
-   * @param {{ queueUrl: string, keyId: string, secret: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
+   * @param {{ queueUrls: string[], keyId: string, secret: string, artifactStorage: import("./yc-artifact-storage.js").YcArtifactStorage }}
    */
-  constructor({ queueUrl, keyId, secret, artifactStorage }) {
-    this.queueUrl = queueUrl;
+  constructor({ queueUrls, keyId, secret, artifactStorage }) {
+    this.queues = (queueUrls ?? []).filter(Boolean).map((queueUrl) => {
+      const url = new URL(queueUrl);
+      return { queueUrl, host: url.host, path: url.pathname };
+    });
     this.keyId = keyId;
     this.secret = secret;
     this.artifactStorage = artifactStorage;
-    if (queueUrl) {
-      const url = new URL(queueUrl);
-      this.host = url.host;
-      this.path = url.pathname;
-    }
+    this._rrIndex = 0;
   }
 
   get available() {
-    return Boolean(this.queueUrl);
+    return this.queues.length > 0;
   }
 
   /**
@@ -48,6 +53,9 @@ export class PyannoteDiarization {
     const jobId = meetingId;
     await this.artifactStorage.writeJson(statusKey(jobId), { status: "pending" });
 
+    const queue = this.queues[this._rrIndex % this.queues.length];
+    this._rrIndex += 1;
+
     const body = new URLSearchParams({
       Action: "SendMessage",
       MessageBody: JSON.stringify({ meetingId, audioKey, minSpeakers, maxSpeakers }),
@@ -57,8 +65,8 @@ export class PyannoteDiarization {
 
     const sig = signRequest({
       method: "POST",
-      host: this.host,
-      path: this.path,
+      host: queue.host,
+      path: queue.path,
       headers: { "content-type": contentType },
       body,
       service: YMQ_SERVICE,
@@ -67,9 +75,9 @@ export class PyannoteDiarization {
       secret: this.secret,
     });
 
-    const res = await fetch(`${YMQ_ENDPOINT}${this.path}`, {
+    const res = await fetch(`${YMQ_ENDPOINT}${queue.path}`, {
       method: "POST",
-      headers: { host: this.host, "content-type": contentType, ...sig },
+      headers: { host: queue.host, "content-type": contentType, ...sig },
       body,
     });
     if (!res.ok) {
@@ -77,7 +85,7 @@ export class PyannoteDiarization {
       throw new Error(`Diarization queue SendMessage failed: ${res.status} ${text.slice(0, 200)}`);
     }
 
-    logger.info("Diarization: job queued", { meetingId, jobId });
+    logger.info("Diarization: job queued", { meetingId, jobId, queueUrl: queue.queueUrl });
     return { jobId };
   }
 

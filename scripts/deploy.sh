@@ -42,6 +42,10 @@ fi
 : "${HF_TOKEN:?Не задана переменная HF_TOKEN в .env.deploy (нужен для pyannote-диаризации)}"
 : "${DIARIZATION_QUEUE_URL:?Не задана переменная DIARIZATION_QUEUE_URL в .env.deploy}"
 : "${DIARIZATION_QUEUE_ARN:?Не задана переменная DIARIZATION_QUEUE_ARN в .env.deploy}"
+: "${DIARIZATION_QUEUE_URL_2:?Не задана переменная DIARIZATION_QUEUE_URL_2 в .env.deploy}"
+: "${DIARIZATION_QUEUE_ARN_2:?Не задана переменная DIARIZATION_QUEUE_ARN_2 в .env.deploy}"
+: "${DIARIZATION_QUEUE_URL_3:?Не задана переменная DIARIZATION_QUEUE_URL_3 в .env.deploy}"
+: "${DIARIZATION_QUEUE_ARN_3:?Не задана переменная DIARIZATION_QUEUE_ARN_3 в .env.deploy}"
 
 # ── Версия для cache-busting ──────────────────────────────────────────────────
 # git-хэш + epoch: уникальна на каждый деплой, поэтому мобильные браузеры
@@ -87,6 +91,8 @@ deploy_api() {
     --environment "SESSION_SECRET=$SESSION_SECRET" \
     --environment ADMIN_LOGIN="$ADMIN_LOGIN" \
     --environment DIARIZATION_QUEUE_URL="$DIARIZATION_QUEUE_URL" \
+    --environment DIARIZATION_QUEUE_URL_2="$DIARIZATION_QUEUE_URL_2" \
+    --environment DIARIZATION_QUEUE_URL_3="$DIARIZATION_QUEUE_URL_3" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_api failed" >&2
@@ -112,6 +118,8 @@ deploy_worker() {
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
     --environment DIARIZATION_QUEUE_URL="$DIARIZATION_QUEUE_URL" \
+    --environment DIARIZATION_QUEUE_URL_2="$DIARIZATION_QUEUE_URL_2" \
+    --environment DIARIZATION_QUEUE_URL_3="$DIARIZATION_QUEUE_URL_3" \
     --service-account-id "$SA_ID" 2>&1); then
     echo "$output"
     echo "❌ deploy_worker failed" >&2
@@ -214,6 +222,7 @@ deploy_diarization() {
     --cores 2 \
     --execution-timeout 3600s \
     --concurrency 1 \
+    --zone-instances-limit 3 \
     --environment STORAGE_KEY_ID="$KEY_ID" \
     --environment "STORAGE_SECRET=$SECRET" \
     --environment STORAGE_BUCKET="$BUCKET" \
@@ -230,8 +239,29 @@ deploy_diarization() {
   # обработки одного сообщения (см. apps/diarization-service/server.py) —
   # без него диаризация не досчитывается (Serverless Container не держит
   # фоновый поток между HTTP-запросами). Создаём один раз, идемпотентно.
+  #
+  # Три очереди/триггера вместо одной: YMQ-триггер — последовательный
+  # consumer (держит одно сообщение за раз), и Yandex Cloud запрещает вешать
+  # второй триггер на ту же очередь. Реальный параллелизм — только через
+  # round-robin по нескольким независимым очередям (см. pyannote-diarization.js).
   MSYS_NO_PATHCONV=1 $YC serverless trigger create message-queue yaspeech-diarization-trigger \
     --queue "$DIARIZATION_QUEUE_ARN" \
+    --queue-service-account-id "$SA_ID" \
+    --batch-size 1 \
+    --invoke-container-id bbaeste93e4dpg7h4d99 \
+    --invoke-container-path /process \
+    --invoke-container-service-account-id "$SA_ID" >/dev/null 2>&1 || true
+
+  MSYS_NO_PATHCONV=1 $YC serverless trigger create message-queue yaspeech-diarization-trigger-2 \
+    --queue "$DIARIZATION_QUEUE_ARN_2" \
+    --queue-service-account-id "$SA_ID" \
+    --batch-size 1 \
+    --invoke-container-id bbaeste93e4dpg7h4d99 \
+    --invoke-container-path /process \
+    --invoke-container-service-account-id "$SA_ID" >/dev/null 2>&1 || true
+
+  MSYS_NO_PATHCONV=1 $YC serverless trigger create message-queue yaspeech-diarization-trigger-3 \
+    --queue "$DIARIZATION_QUEUE_ARN_3" \
     --queue-service-account-id "$SA_ID" \
     --batch-size 1 \
     --invoke-container-id bbaeste93e4dpg7h4d99 \
