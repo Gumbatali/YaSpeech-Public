@@ -1245,6 +1245,11 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
       const refineBusy = ["queued", "processing"].includes(
         activeMeeting?.llmRefine?.status
       );
+      // Протокол уже собирается по снимку черновика на момент подтверждения —
+      // правки имён/названия/текста здесь больше ни на что не влияют, поэтому
+      // на этом этапе показываем расшифровку только для чтения, без
+      // редактируемых полей и кнопок подтверждения.
+      const isGenerating = activeMeeting?.status === "protocol_generating";
 
       function startDraftTranscriptEdit() {
         setTranscriptEditText(
@@ -1293,12 +1298,9 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                   ${confirmingDraft || activeMeeting?.status === "protocol_generating" ? "Собираем..." : "Собрать протокол"}
                 </button>
               </div>
-              ${activeMeeting?.status === "protocol_generating" ? html`
-                <div className="quality-warning" style=${{ background: "var(--accent-soft, #eef2ff)" }}>
-                  ⏳ ${stageView.title} — ${stageView.detail}
-                </div>
-                ${renderNotifyToggle(activeMeeting.id)}
-              ` : null}
+              ${activeMeeting?.status === "protocol_generating"
+                ? renderNotifyToggle(activeMeeting.id)
+                : null}
               ${activeMeeting?.gptContext?.transcriptQuality === "poor" ? html`
                 <div className="quality-warning">
                   ⚠️ <b>Низкое качество записи</b> — протокол может быть неточным.
@@ -1308,29 +1310,30 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                 </div>
               ` : null}
               <p className="panel-copy">
-                Если нужно, поправьте подписи. После подтверждения соберём
-                итоговый протокол.
+                ${isGenerating
+                  ? "Протокол уже собирается по этому черновику — правки здесь больше ни на что не повлияют."
+                  : "Если нужно, поправьте подписи. После подтверждения соберём итоговый протокол."}
               </p>
-              ${RefineControl({
-                api,
-                activeMeeting,
-                setActiveMeeting,
-                setError
-              })}
+              ${activeMeeting?.status === "draft_ready"
+                ? RefineControl({ api, activeMeeting, setActiveMeeting, setError })
+                : null}
             </div>
 
-            <label className="field">
-              <span>Название встречи</span>
-              <input
-                value=${draftForm.titleDraft}
-                onInput=${(event) =>
-                  setDraftForm((current) => ({
-                    ...current,
-                    titleDraft: event.target.value
-                  }))}
-              />
-            </label>
+            ${isGenerating ? null : html`
+              <label className="field">
+                <span>Название встречи</span>
+                <input
+                  value=${draftForm.titleDraft}
+                  onInput=${(event) =>
+                    setDraftForm((current) => ({
+                      ...current,
+                      titleDraft: event.target.value
+                    }))}
+                />
+              </label>
+            `}
 
+            ${isGenerating ? null : html`
             <div className="speaker-list">
               ${draftForm.speakerDrafts.map(
                 (speaker, index) => html`
@@ -1383,6 +1386,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                 `
               )}
             </div>
+            `}
 
             <div className="transcript-box">
               <div className="transcript-box-head">
@@ -1391,7 +1395,7 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
                     ? "Транскрипт (улучшен ИИ)"
                     : "Фрагмент транскрипта"}
                 </div>
-                ${!editingTranscript && !refineBusy
+                ${!editingTranscript && !refineBusy && !isGenerating
                   ? html`
                       <button
                         className="ghost-button ghost-button--sm"
@@ -1441,13 +1445,15 @@ import { TranscriptTab, RefineControl } from "./screens/transcript-tab.js?v=__BU
             </div>
 
             <div className="button-row">
-              <button
-                className="primary-button"
-                onClick=${handleConfirmDraft}
-                disabled=${confirmingDraft}
-              >
-                ${confirmingDraft ? "Собираем..." : "Собрать протокол"}
-              </button>
+              ${isGenerating ? null : html`
+                <button
+                  className="primary-button"
+                  onClick=${handleConfirmDraft}
+                  disabled=${confirmingDraft}
+                >
+                  ${confirmingDraft ? "Собираем..." : "Собрать протокол"}
+                </button>
+              `}
               <button className="ghost-button" onClick=${openProjectHome}>
                 К проекту
               </button>

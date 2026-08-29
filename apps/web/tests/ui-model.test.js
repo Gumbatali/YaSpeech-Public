@@ -79,9 +79,17 @@ test("getStageViewModel uses human language for the processing stages", () => {
     {
       tone: "working",
       title: "Определяем, кто говорит",
-      detail: "Разделяем голоса участников по записи — может занять время, сравнимое с длиной встречи."
+      detail: "Разделяем голоса участников по записи — обычно занимает время, сравнимое с длиной встречи."
     }
   );
+
+  // С длительностью аудио — добавляется ориентировочная оценка времени
+  const withEta = getStageViewModel({
+    status: "diarizing",
+    currentStage: "diarizing",
+    audioFile: { durationSeconds: 600 }
+  });
+  assert.match(withEta.detail, /Ориентировочно: ~\d+–\d+ мин\.$/);
 
   assert.deepEqual(
     getStageViewModel({ status: "draft_ready", currentStage: "draft_ready" }),
