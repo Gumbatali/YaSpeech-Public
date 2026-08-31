@@ -57,9 +57,10 @@ function renderTranscriptSegments(segments, colorMap, speakerInfo, { showDiff = 
 }
 
 /**
- * Кнопка/прогресс LLM-улучшения расшифровки.
- * ЕДИНСТВЕННАЯ точка запуска LLM-коррекции — без неё никаких LLM-вызовов нет.
- * Используется на вкладке «Расшифровка» и на экране черновика.
+ * Прогресс/ошибка LLM-улучшения расшифровки. Запуск — автоматический
+ * (см. prepareDraftFromTranscript), эта функция только отображает статус
+ * и даёт кнопку повтора при сбое. Используется на вкладке «Расшифровка»
+ * и на экране черновика.
  */
 export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, compact = false }) {
   const refine = activeMeeting?.llmRefine;
@@ -111,17 +112,8 @@ export function RefineControl({ api, activeMeeting, setActiveMeeting, setError, 
     `;
   }
 
-  // idle (переключатель ещё не включали) — по умолчанию выключено,
-  // включение запускает улучшение через Qwen 3.6 (см. runRefinePhase)
-  if (!status) {
-    return html`
-      <label className="refine-control refine-toggle">
-        <input type="checkbox" checked=${false} onChange=${handleRefine} />
-        <span>✨ Улучшить с помощью ИИ</span>
-      </label>
-    `;
-  }
-
+  // idle — улучшение запускается автоматически при готовности черновика
+  // (см. prepareDraftFromTranscript), переключателя в UI больше нет.
   return null;
 }
 

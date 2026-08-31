@@ -466,9 +466,11 @@ export class MeetingPipelineService {
 
     await this.meetingRepository.save(draftMeeting);
 
-    // Улучшение — по выбору пользователя (переключатель «Улучшить с помощью
-    // ИИ» на черновике), не автоматически: draft остаётся в состоянии idle
-    // (llmRefine не выставлен), пока пользователь сам не включит.
+    // Улучшение запускается автоматически, как только черновик готов —
+    // без ручного переключателя. Сборка протокола (processMeeting,
+    // phase="poll-refine") ждёт llmRefine.status done/failed, прежде чем
+    // генерировать текст, так что порядок гонки не важен.
+    await this.enqueueRefine(draftMeeting.id);
   }
 
   /**
