@@ -105,6 +105,37 @@ bash scripts/deploy.sh diarization  # только контейнер диари
 | `STORAGE_KEY_ID` / `STORAGE_SECRET` / `STORAGE_BUCKET` | контейнер `yaspeech-diarization` | Доступ к тому же бакету артефактов, что у api/worker |
 | `HF_TOKEN` | контейнер `yaspeech-diarization` | HuggingFace-токен для pyannote (гейтед-модели) |
 
+## Диаризация на виртуалке (pull-воркер, для записей длиннее часа)
+
+Serverless Container ограничен 3600с, а pyannote на CPU работает со скоростью
+около реального времени (RTF ~1x и хуже на многоголосых записях), поэтому час
+аудио в него не помещается. Воркер `apps/diarization-service/worker.py` работает
+без этого потолка: сам опрашивает те же три YMQ-очереди, обрабатывает по одной
+задаче, пишет статус и RTTM в S3 теми же ключами. Node-сторона не меняется.
+
+1. Создайте ВМ (Docker, доступ к `storage.yandexcloud.net` и
+   `message-queue.api.cloud.yandex.net`). Размер подбирайте замером на своей
+   записи: ускорение от числа ядер меньше линейного.
+2. Соберите образ (тот же, что для контейнера) и запустите воркер:
+   ```bash
+   docker run -d --restart=always --name diar-worker \
+     -e STORAGE_KEY_ID=... -e STORAGE_SECRET=... -e STORAGE_BUCKET=... \
+     -e HF_TOKEN=... \
+     -e DIARIZATION_QUEUE_URL=... -e DIARIZATION_QUEUE_URL_2=... -e DIARIZATION_QUEUE_URL_3=... \
+     -e DIARIZE_JOB_TIMEOUT_SECONDS=14400 \
+     <образ диаризации> python worker.py
+   ```
+   `YMQ_KEY_ID` / `YMQ_SECRET` задавайте, только если ключи очередей отличаются от S3.
+3. **Удалите YMQ-триггеры** `yaspeech-diarization-trigger`, `-trigger-2`, `-trigger-3`:
+   иначе контейнер и воркер будут забирать одни и те же сообщения.
+4. Поднимите в окружении `yaspeech-worker` переменную `DIARIZE_TIMEOUT_MINUTES`
+   (по умолчанию 90): после этого срока пайплайн откатывается на разметку SpeechKit.
+5. Для параллельной обработки нескольких встреч запустите несколько воркеров,
+   каждому дайте свой набор очередей.
+
+Откат: остановите воркер и выполните `bash scripts/deploy.sh diarization` — он
+пересоздаст триггеры на контейнер.
+
 ## API Gateway — маршруты (`infra/api-gateway.yaml`)
 
 | Путь | Куда |

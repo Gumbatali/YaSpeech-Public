@@ -123,6 +123,7 @@ deploy_worker() {
     --environment YMQ_KEY_ID="$KEY_ID" \
     --environment "YMQ_SECRET=$SECRET" \
     --environment YC_FOLDER_ID="$FOLDER_ID" \
+    --environment DIARIZE_TIMEOUT_MINUTES=240 \
     --environment DIARIZATION_QUEUE_URL="$DIARIZATION_QUEUE_URL" \
     --environment DIARIZATION_QUEUE_URL_2="$DIARIZATION_QUEUE_URL_2" \
     --environment DIARIZATION_QUEUE_URL_3="$DIARIZATION_QUEUE_URL_3" \
@@ -225,7 +226,7 @@ deploy_diarization() {
     --container-id bbaeste93e4dpg7h4d99 \
     --image "$IMAGE" \
     --memory 4GB \
-    --cores 2 \
+    --cores 4 \
     --execution-timeout 3600s \
     --concurrency 1 \
     --zone-instances-limit 3 \

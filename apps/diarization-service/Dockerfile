@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY diarize.py merge_clusters.py server.py /app/
+COPY diarize.py merge_clusters.py server.py worker.py /app/
 
 ENV PORT=8080
 EXPOSE 8080

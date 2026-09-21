@@ -15,8 +15,9 @@ import { alignTranscriptWithDiarization } from "../infrastructure/pyannote-diari
 // занимает время, сравнимое с длиной встречи (см.
 // research/diarization-asr-lab/FINDINGS.md). 90 минут — потолок с запасом
 // даже для длинных встреч; после него откатываемся на спикеров из ASR,
-// а не роняем всю встречу.
-const DIARIZE_TIMEOUT_MS = 90 * 60 * 1000;
+// а не роняем всю встречу. Для записей длиннее часа (pull-воркер на ВМ, без
+// лимита Serverless Container) поднимите DIARIZE_TIMEOUT_MINUTES в окружении.
+const DIARIZE_TIMEOUT_MS = Number(process.env.DIARIZE_TIMEOUT_MINUTES ?? 90) * 60 * 1000;
 
 // Бюджет одного вызова worker-функции: при приближении к таймауту
 // refine чекпоинтится и пере-enqueue'ится (любая длина аудио)
