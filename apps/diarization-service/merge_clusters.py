@@ -69,9 +69,10 @@ def run_merge(
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM",
     # 0.4 сливало реальных разных людей (найдено на встрече с 10 участниками:
     # pyannote с min_speakers=10 верно нашёл все 10 сырых кластеров, но этот
-    # пол слил 3 пары с похожестью 0.58–0.78 — довёл до 7). Поднят до 0.75,
+    # пол слил 3 пары с похожестью 0.58–0.78 — довёл до 7). На 0.75 из трёх
+    # пар осталось слито две (0.758, 0.783) — довёл до 8. Поднят до 0.8,
     # калибровать через MERGE_MIN_SIMILARITY, не меняя код.
-    min_similarity: float = float(os.environ.get("MERGE_MIN_SIMILARITY", "0.75")),
+    min_similarity: float = float(os.environ.get("MERGE_MIN_SIMILARITY", "0.8")),
     max_segments_per_label: int = 10,
     min_segment_sec: float = 1.0,
     max_rounds: int = 1,
@@ -280,7 +281,7 @@ def main():
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--out-rttm", required=True)
     parser.add_argument("--embedding-model", default="pyannote/wespeaker-voxceleb-resnet34-LM")
-    parser.add_argument("--min-similarity", type=float, default=0.75)
+    parser.add_argument("--min-similarity", type=float, default=0.8)
     parser.add_argument("--max-segments-per-label", type=int, default=10)
     parser.add_argument("--min-segment-sec", type=float, default=1.0)
     parser.add_argument("--max-rounds", type=int, default=1)
