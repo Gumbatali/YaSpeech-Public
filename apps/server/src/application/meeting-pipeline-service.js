@@ -338,9 +338,18 @@ export class MeetingPipelineService {
       return;
     }
 
+    // Подсказка по числу спикеров — размер команды проекта. Проверено на
+    // реальной 10-человечной встрече (2026-09-26): без подсказки pyannote
+    // недосчитывал до 6-8, с minSpeakers=maxSpeakers=10 (точное число, не
+    // диапазон) — ровно 10. Риск: если реально пришло заметно меньше
+    // участников, чем в ростере, minSpeakers может заставить модель
+    // искусственно дробить реальных людей на лишние куски — сигнала о
+    // фактической явке у нас нет, ростер — единственная доступная оценка.
+    const teamSize = project?.team?.length ?? 0;
     const { jobId: diarizationJobId } = await this.diarizationGateway.startJob({
       meetingId: meeting.id,
-      audioKey: meeting.artifacts.audioOriginalKey
+      audioKey: meeting.artifacts.audioOriginalKey,
+      ...(teamSize > 0 ? { minSpeakers: teamSize, maxSpeakers: teamSize } : {})
     });
 
     await this.meetingRepository.save({

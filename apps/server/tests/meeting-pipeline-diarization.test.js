@@ -160,4 +160,37 @@ test("startDiarizePhase: с diarizationGateway запускает job и ста�
   assert.equal(meetingRepository._current().status, "diarizing");
   assert.equal(meetingRepository._current().diarizationJobId, "diar-1");
   assert.ok(queueRunner.enqueued.some((e) => e.key === "meeting:m1:poll-diarize"));
+  assert.equal("minSpeakers" in startJobCalledWith, false, "без команды проекта подсказку не ставим");
+  assert.equal("maxSpeakers" in startJobCalledWith, false, "без команды проекта подсказку не ставим");
+});
+
+test("startDiarizePhase: с командой проекта передаёт minSpeakers/maxSpeakers по её размеру", async () => {
+  const meeting = baseMeeting({ status: "speechkit_processing", currentStage: "speechkit_processing" });
+  const meetingRepository = fakeMeetingRepository(meeting);
+  const queueRunner = fakeQueueRunner();
+  const project = { id: "p1", name: "Проект", team: [{ name: "Аня" }, { name: "Боря" }, { name: "Вера" }] };
+  const rawTranscript = {
+    rawText: "это достаточно длинный текст для прохождения проверки качества расшифровки да действительно очень длинный текст с достаточным количеством слов чтобы пройти проверку качества расшифровки успешно",
+    phrases: [{ speakerId: "speaker-1", speakerLabel: "Спикер 1", startTimeMs: 0, endTimeMs: 1000, text: "текст" }]
+  };
+
+  let startJobCalledWith = null;
+  const service = new MeetingPipelineService({
+    meetingRepository,
+    projectRepository: { async getById() { return project; } },
+    artifactStorage: { writeJson: async () => {} },
+    speechKitGateway: {},
+    yandexGptGateway: {},
+    diarizationGateway: {
+      available: true,
+      async startJob(args) { startJobCalledWith = args; return { jobId: "diar-1" }; }
+    },
+    queueRunner,
+    clock: fakeClock()
+  });
+
+  await service.startDiarizePhase(meeting, project, "job-1", rawTranscript);
+
+  assert.equal(startJobCalledWith.minSpeakers, 3);
+  assert.equal(startJobCalledWith.maxSpeakers, 3);
 });
