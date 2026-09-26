@@ -2,12 +2,20 @@
 """
 Слияние кластеров диаризации по эмбеддингу голоса — прод-версия.
 
-Тот же алгоритм, что в research/diarization-asr-lab/run/merge-clusters.py
-(находим наибольший разрыв в матрице косинусного сходства между метками,
-сливаем только взаимно-ближайшие пары выше порога), но БЕЗ отката по DER —
-эталонной разметки для реальных встреч не существует, поэтому
-`min_similarity` остаётся единственной сеткой безопасности. См. обсуждение
-выбора алгоритма в research/diarization-asr-lab/FINDINGS.md, разделы 1-2.
+Два независимых этапа:
+
+  1. Слияние по сходству голоса (тот же алгоритм, что в
+     research/diarization-asr-lab/run/merge-clusters.py: наибольший разрыв
+     в матрице косинусного сходства между метками, сливаем только
+     взаимно-ближайшие пары выше `min_similarity`) — БЕЗ отката по DER,
+     эталонной разметки для реальных встреч не существует. См. обсуждение
+     выбора алгоритма в research/diarization-asr-lab/FINDINGS.md, разделы 1-2.
+  2. Поглощение меток с суммарным временем речи меньше `min_total_duration_sec`
+     ближайшим по голосу "большим" спикером — ловит спикеров-обрывков
+     (шум, вдохи, короткие перекрытия), которых этап 1 не видит: их
+     эмбеддинг по паре крох слишком ненадёжен, чтобы набрать
+     `min_similarity` с кем бы то ни было. См. инцидент 2026-09-26 в
+     истории коммитов этого файла.
 """
 import argparse
 import itertools
@@ -59,10 +67,22 @@ def run_merge(
     session_id: str,
     out_rttm_path: str,
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM",
-    min_similarity: float = 0.4,
+    # 0.4 сливало реальных разных людей (найдено на встрече с 10 участниками:
+    # pyannote с min_speakers=10 верно нашёл все 10 сырых кластеров, но этот
+    # пол слил 3 пары с похожестью 0.58–0.78 — довёл до 7). Поднят до 0.75,
+    # калибровать через MERGE_MIN_SIMILARITY, не меняя код.
+    min_similarity: float = float(os.environ.get("MERGE_MIN_SIMILARITY", "0.75")),
     max_segments_per_label: int = 10,
     min_segment_sec: float = 1.0,
     max_rounds: int = 1,
+    # Инцидент 2026-09-26: на записи с 3 реальными участниками pyannote
+    # выдал ещё 3 "спикера" по 4-8с суммарно за всю встречу (шум, обрывки,
+    # короткие перекрытия) — этап 1 их не трогает, похожесть по крохе
+    # аудио ни с кем не набирает min_similarity. Отдельный порог именно
+    # на СУММАРНОЕ время речи метки за всю встречу — не про то, насколько
+    # похож голос, а про то, что меньше этого самого "спикера" как
+    # персоны, считай, не существует. См. этап 2 ниже.
+    min_total_duration_sec: float = float(os.environ.get("MERGE_MIN_TOTAL_DURATION_SEC", "10.0")),
 ) -> int:
     """Возвращает число спикеров после слияния."""
     import numpy as np
@@ -74,6 +94,15 @@ def run_merge(
 
     inference = get_embedding_inference(embedding_model, hf_token)
     hypothesis = parse_rttm(hyp_rttm_path)
+
+    # Суммарное время речи по КАЖДОЙ сырой метке, без фильтра по длине
+    # сегмента — нужно для этапа 2 (поглощение спикеров-обрывков), у
+    # обычного `by_label` ниже короткие сегменты уже отфильтрованы.
+    total_duration_all = {}
+    all_segments_by_label = {}
+    for segment, _, label in hypothesis.itertracks(yield_label=True):
+        total_duration_all[label] = total_duration_all.get(label, 0.0) + segment.duration
+        all_segments_by_label.setdefault(label, []).append(segment)
 
     by_label = {}
     for segment, _, label in hypothesis.itertracks(yield_label=True):
@@ -181,10 +210,66 @@ def run_merge(
         merged_now = build_hypothesis(parent, find)
         print(f"  раунд {round_num}: слито {round_pairs} -> спикеров={len(merged_now.labels())}")
 
+    # ============================================================
+    # Этап 2: поглощение спикеров с малым суммарным временем речи.
+    # ============================================================
+    # Работает независимо от того, слилось ли что-то на этапе 1 —
+    # порог здесь другой (суммарная длительность, не сходство голоса).
+    def fallback_centroid(label):
+        """Эмбеддинг по ВСЕМ сегментам метки, включая короче min_segment_sec —
+        для меток-обрывков, у которых в `centroids` вообще ничего нет."""
+        segments = sorted(all_segments_by_label.get(label, []), key=lambda s: -s.duration)
+        segments = segments[:max_segments_per_label]
+        embeddings = []
+        for seg in segments:
+            emb = inference.crop(audio_path, seg)
+            if emb is not None:
+                embeddings.append(np.asarray(emb).reshape(-1))
+        if not embeddings:
+            return None
+        c = np.mean(embeddings, axis=0)
+        return c / (np.linalg.norm(c) + 1e-8)
+
+    all_raw_labels = sorted(total_duration_all.keys())
+    for label in all_raw_labels:
+        parent.setdefault(label, label)
+
+    def cluster_total_duration(root):
+        return sum(total_duration_all[label] for label in all_raw_labels if find(label) == root)
+
+    active_roots = {find(label) for label in all_raw_labels}
+    big_roots = {r for r in active_roots if cluster_total_duration(r) >= min_total_duration_sec}
+    small_roots = active_roots - big_roots
+
+    if small_roots and big_roots:
+        root_centroid = {r: (centroids[r] if r in centroids else fallback_centroid(r)) for r in big_roots}
+        root_centroid = {r: c for r, c in root_centroid.items() if c is not None}
+
+        for small_root in sorted(small_roots):
+            dur = cluster_total_duration(small_root)
+            emb = centroids.get(small_root)
+            if emb is None:
+                emb = fallback_centroid(small_root)
+            if emb is None or not root_centroid:
+                # Даже по всем сегментам эмбеддинг не строится (совсем
+                # тихий/короткий обрывок) — некуда осмысленно деть,
+                # оставляем отдельным спикером, а не гадаем наугад.
+                print(f"  ! {small_root}: {dur:.1f}с речи, эмбеддинг не построен, оставлен отдельным спикером")
+                continue
+            best_root = max(root_centroid, key=lambda r: float(np.dot(emb, root_centroid[r])))
+            best_sim = float(np.dot(emb, root_centroid[best_root]))
+            print(f"  поглощение: {small_root} ({dur:.1f}с речи) -> {best_root} (сходство {best_sim:.3f})")
+            parent[small_root] = best_root
+    elif small_roots:
+        # Все метки короче порога — нет ни одного "настоящего" спикера,
+        # в кого поглощать. Оставляем как есть: лучше подозрительно много
+        # спикеров, чем молча слить всех в одного наугад.
+        print(f"  этап 2: все метки короче {min_total_duration_sec}с, поглощать некуда, пропуск")
+
     merged_hypothesis = build_hypothesis(parent, find)
     annotation_to_rttm(merged_hypothesis, session_id, out_rttm_path)
     speakers = len(merged_hypothesis.labels())
-    print(f"\nИтог после {round_num} раунд(ов): спикеров={speakers} -> {out_rttm_path}")
+    print(f"\nИтог: спикеров={speakers} -> {out_rttm_path}")
     return speakers
 
 
@@ -195,10 +280,11 @@ def main():
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--out-rttm", required=True)
     parser.add_argument("--embedding-model", default="pyannote/wespeaker-voxceleb-resnet34-LM")
-    parser.add_argument("--min-similarity", type=float, default=0.4)
+    parser.add_argument("--min-similarity", type=float, default=0.75)
     parser.add_argument("--max-segments-per-label", type=int, default=10)
     parser.add_argument("--min-segment-sec", type=float, default=1.0)
     parser.add_argument("--max-rounds", type=int, default=1)
+    parser.add_argument("--min-total-duration-sec", type=float, default=10.0)
     args = parser.parse_args()
 
     try:
@@ -207,6 +293,7 @@ def main():
             embedding_model=args.embedding_model, min_similarity=args.min_similarity,
             max_segments_per_label=args.max_segments_per_label,
             min_segment_sec=args.min_segment_sec, max_rounds=args.max_rounds,
+            min_total_duration_sec=args.min_total_duration_sec,
         )
     except RuntimeError as e:
         print(f"ОШИБКА: {e}", file=sys.stderr)

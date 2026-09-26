@@ -3,6 +3,7 @@
 dist/
 node_modules/
 npm-debug.log*
+__pycache__/
 *.m4a
 *.mp3
 *.wav
