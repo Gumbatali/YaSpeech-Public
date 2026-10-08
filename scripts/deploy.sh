@@ -1,6 +1,6 @@
 #!/bin/bash
 # YaSpeech deploy script
-# Usage: ./scripts/deploy.sh [api|worker|all]
+# Usage: ./scripts/deploy.sh [api|worker|diarization|all]  (all = без diarization)
 #
 # Перед запуском скопируй scripts/.env.deploy.example → scripts/.env.deploy
 # и заполни значениями. Файл .env.deploy НЕ коммитится в git.
@@ -313,8 +313,10 @@ case "$TARGET" in
   diarization)
     deploy_diarization
     ;;
+  # Диаризация в "all" не входит: деплой контейнера в CI падает с
+  # "endpoint should be set", а сам образ меняется редко. Выкатывается
+  # явно: deploy.sh diarization (локально или target=diarization в CI).
   all|*)
-    deploy_diarization
     build_api
     deploy_api
     build_worker
