@@ -221,6 +221,10 @@ ${transcriptText.slice(0, 20_000)}
 // ============================================================
 // PASS B2: Идентификация спикеров
 // ============================================================
+// Только защита от переполнения контекста модели: раньше было 18k и на
+// длинных встречах отрезало имена, прозвучавшие во второй половине записи.
+const SPEAKER_ID_MAX_CHARS = 200_000;
+
 export function promptSpeakerIdentification({ transcriptText, speakerStats, projectTeam, context, addressedNames = [] }) {
   const teamList = projectTeam?.length
     ? projectTeam.map((m) => `- ${m.name}${m.role ? ` (${m.role})` : ""}`).join("\n")
@@ -264,7 +268,7 @@ ${teamList}
 ${statsText}
 
 Транскрипт:
-${transcriptText.slice(0, 18_000)}
+${transcriptText.slice(0, SPEAKER_ID_MAX_CHARS)}
 
 Верни JSON:
 {

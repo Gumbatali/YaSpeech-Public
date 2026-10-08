@@ -182,6 +182,79 @@ function nameKey(name) {
   return name === null || name === undefined ? name : String(name).toLowerCase().replace(/ё/g, "е");
 }
 
+const HIGH_CONFIDENCE_SHARE = 0.7;
+const FALLBACK_MIN_SHARE = 0.5;
+
+/**
+ * Сводит N прогонов B2 в одно совместное назначение «метка → имя».
+ *
+ * Кандидаты (метка, имя) сортируются по доле голосов и берутся жадно, каждое
+ * имя достаётся только одной метке. Метка, потерявшая своё имя более сильному
+ * претенденту, переходит к следующему кандидату, только если у него доля
+ * >= 0.5, иначе остаётся без имени — лучше null, чем чужое имя. Доля >= 0.7
+ * даёт "high", иначе "low". inRoster показывает, есть ли имя в составе проекта.
+ */
+export function assignSpeakerNames(samples, team = []) {
+  const byLabel = new Map();
+  for (const sample of samples) {
+    for (const s of sample) {
+      if (!byLabel.has(s.label)) byLabel.set(s.label, []);
+      byLabel.get(s.label).push(s);
+    }
+  }
+
+  const rosterKeys = new Set(team.flatMap((m) => {
+    const full = nameKey(String(m.name ?? "").trim());
+    return [full, full.split(/\s+/)[0]];
+  }));
+
+  const labels = [];
+  const candidates = [];
+  for (const [label, labelVotes] of byLabel) {
+    const counts = new Map();
+    for (const v of labelVotes) {
+      if (!v.guessedName) continue;
+      const key = nameKey(v.guessedName.trim());
+      const entry = counts.get(key) ?? { key, name: v.guessedName.trim(), count: 0, vote: v };
+      entry.count++;
+      counts.set(key, entry);
+    }
+    const best = labelVotes[0];
+    labels.push({ label, labelVotes, best });
+    for (const c of counts.values()) {
+      candidates.push({ label, ...c, share: c.count / labelVotes.length, total: labelVotes.length });
+    }
+  }
+  candidates.sort((a, b) => b.share - a.share || b.count - a.count);
+
+  const taken = new Set();
+  const assigned = new Map();
+  for (const c of candidates) {
+    if (assigned.has(c.label) || taken.has(c.key)) continue;
+    const displaced = candidates.some((o) => o.label === c.label && o.share > c.share && taken.has(o.key));
+    if (displaced && c.share < FALLBACK_MIN_SHARE) continue;
+    assigned.set(c.label, c);
+    taken.add(c.key);
+  }
+
+  return labels.map(({ label, best, labelVotes }) => {
+    const pick = assigned.get(label);
+    const source = pick?.vote ?? best;
+    return {
+      id: source.id,
+      label,
+      guessedName: pick ? pick.name : null,
+      guessedRole: source.guessedRole ?? null,
+      dialogueRole: source.dialogueRole ?? null,
+      reasoning: source.reasoning ?? null,
+      votesForWinner: pick?.count ?? 0,
+      totalVotes: labelVotes.length,
+      confidence: pick && pick.share >= HIGH_CONFIDENCE_SHARE ? "high" : "low",
+      inRoster: pick ? rosterKeys.has(pick.key) : null
+    };
+  });
+}
+
 export function dedupeSimilarTasks(items, threshold = NEAR_DUP_THRESHOLD, resolveOwner = (x) => x) {
   const kept = [];
   const keptWords = [];
@@ -796,76 +869,7 @@ export class YcYandexGptGateway {
       samples.push(await this.identifySpeakersOnce({ correctedText, transcript, project, context }));
     }
 
-    const byLabel = new Map();
-    for (const sample of samples) {
-      for (const s of sample) {
-        if (!byLabel.has(s.label)) byLabel.set(s.label, []);
-        byLabel.get(s.label).push(s);
-      }
-    }
-
-    // Порог 0.7 — та же марж-эвристика, что в лабе: "4/7, а не 7/7" явно
-    // называется слабым консенсусом в живой демонстрации (раздел 10) —
-    // 4/7≈0.57 должен попасть в "low", 7/7 и 6/7 — не должны. Не
-    // гарантирует поимку каждой галлюцинации (если все N голосов
-    // независимо сходятся на одном неверном ответе — не статистически
-    // независимые прогоны, все видят один и тот же вводящий в
-    // заблуждение текст), но ловит объективный разнобой.
-    const CONFIDENCE_MARGIN_THRESHOLD = 0.7;
-    const finalDrafts = [...byLabel.entries()].map(([label, labelVotes]) => {
-      const nameCounts = new Map();
-      for (const v of labelVotes) {
-        const name = v.guessedName || null;
-        if (!name) continue;
-        nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
-      }
-      const winner = [...nameCounts.entries()].sort((a, b) => b[1] - a[1])[0];
-      const bestVote = labelVotes.find((v) => v.guessedName === winner?.[0]) ?? labelVotes[0];
-      const votesForWinner = winner?.[1] ?? 0;
-      const totalVotes = labelVotes.length;
-      const confidence = !winner || votesForWinner / totalVotes < CONFIDENCE_MARGIN_THRESHOLD ? "low" : "high";
-      return {
-        id: bestVote.id,
-        label,
-        guessedName: winner ? winner[0] : null,
-        guessedRole: bestVote.guessedRole ?? null,
-        dialogueRole: bestVote.dialogueRole ?? null,
-        reasoning: bestVote.reasoning ?? null,
-        votesForWinner,
-        totalVotes,
-        confidence
-      };
-    });
-
-    // Конфликт-резолвер — тоже перенесён из лабы (найдено уже сегодня на
-    // реальных прогонах): одно и то же имя иногда достаётся ДВУМ разным
-    // диаризационным меткам одновременно (одна с сильным консенсусом —
-    // вероятно, реальный человек, другая со слабым — вероятно, другой,
-    // не опознанный человек, которому B2 при неуверенности "одолжил" уже
-    // известное имя из ростера вместо честного null). nameKey() — та же
-    // ё/е-нормализация, что и в дедупе (раздел 20) — иначе "Семён"/
-    // "Семен" не распознаются как коллизия.
-    const byName = new Map();
-    for (const s of finalDrafts) {
-      if (!s.guessedName) continue;
-      const key = nameKey(s.guessedName);
-      if (!byName.has(key)) byName.set(key, []);
-      byName.get(key).push(s);
-    }
-    for (const claimants of byName.values()) {
-      if (claimants.length < 2) continue;
-      claimants.sort((a, b) => (b.votesForWinner / b.totalVotes) - (a.votesForWinner / a.totalVotes));
-      const [winner, ...losers] = claimants;
-      logger.info("GPT B2: name collision resolved", {
-        name: winner.guessedName,
-        winner: `${winner.label} (${winner.votesForWinner}/${winner.totalVotes})`,
-        losers: losers.map((l) => `${l.label} (${l.votesForWinner}/${l.totalVotes})`)
-      });
-      for (const loser of losers) {
-        loser.guessedName = null;
-        loser.confidence = "low";
-      }
-    }
+    const finalDrafts = assignSpeakerNames(samples, project?.team ?? []);
 
     logger.info("GPT B2: done (ensemble)", {
       votes,

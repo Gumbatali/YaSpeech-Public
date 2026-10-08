@@ -23,6 +23,21 @@ const DIARIZE_TIMEOUT_MS = Number(process.env.DIARIZE_TIMEOUT_MINUTES ?? 90) * 6
 // refine чекпоинтится и пере-enqueue'ится (любая длина аудио)
 const REFINE_TIME_BUDGET_MS = 200_000;
 
+const normalizeName = (name) => name?.trim().toLowerCase().replaceAll("ё", "е") || null;
+
+function summarizeNameConfirmation(drafts) {
+  const summary = { speakers: drafts.length, proposed: 0, agreed: 0, changed: 0, filled: 0, cleared: 0 };
+  for (const d of drafts) {
+    const proposed = normalizeName(d.proposedName);
+    const confirmed = normalizeName(d.guessedName);
+    if (proposed) summary.proposed++;
+    if (proposed && confirmed) summary[proposed === confirmed ? "agreed" : "changed"]++;
+    else if (!proposed && confirmed) summary.filled++;
+    else if (proposed && !confirmed) summary.cleared++;
+  }
+  return summary;
+}
+
 export class MeetingPipelineService {
   constructor({
     meetingRepository,
@@ -116,19 +131,36 @@ export class MeetingPipelineService {
       throw new Error(`Meeting not found: ${meetingId}`);
     }
 
-    const updatedMeeting = {
-      ...meeting,
-      titleDraft: titleDraft?.trim() || meeting.titleDraft,
-      speakerDrafts: Array.isArray(speakerDrafts) && speakerDrafts.length > 0
-        ? speakerDrafts.map((speaker) => ({
+    const storedById = new Map((meeting.speakerDrafts ?? []).map((s) => [s.id, s]));
+    const confirmedDrafts = Array.isArray(speakerDrafts) && speakerDrafts.length > 0
+      ? speakerDrafts.map((speaker) => {
+          const stored = storedById.get(speaker.id);
+          const hasProposal = stored && "proposedName" in stored;
+          return {
             id: speaker.id,
             label: speaker.label,
             guessedName: speaker.guessedName?.trim() || null,
             guessedRole: speaker.guessedRole?.trim() || null,
             dialogueRole: speaker.dialogueRole?.trim() || null,
-            confidence: speaker.confidence ?? "unknown"
-          }))
-        : meeting.speakerDrafts,
+            confidence: speaker.confidence ?? "unknown",
+            proposedName: (hasProposal ? stored.proposedName : stored?.guessedName) ?? null,
+            proposedConfidence: (hasProposal ? stored.proposedConfidence : stored?.confidence) ?? null
+          };
+        })
+      : null;
+
+    if (confirmedDrafts) {
+      logger.info("confirmDraft: speaker names proposed vs confirmed", {
+        meetingId,
+        teamSize: meeting.diarizationTeamSize ?? null,
+        ...summarizeNameConfirmation(confirmedDrafts)
+      });
+    }
+
+    const updatedMeeting = {
+      ...meeting,
+      titleDraft: titleDraft?.trim() || meeting.titleDraft,
+      speakerDrafts: confirmedDrafts ?? meeting.speakerDrafts,
       status: "protocol_generating",
       currentStage: "protocol_generating",
       updatedAt: this.clock.now().toISOString(),
@@ -358,6 +390,7 @@ export class MeetingPipelineService {
       currentStage: "diarizing",
       speechKitJobId: jobId,
       diarizationJobId,
+      diarizationTeamSize: teamSize,
       diarizationStartedAt: this.clock.now().toISOString(),
       updatedAt: this.clock.now().toISOString()
     });
