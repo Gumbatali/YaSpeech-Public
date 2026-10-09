@@ -182,6 +182,25 @@ function nameKey(name) {
   return name === null || name === undefined ? name : String(name).toLowerCase().replace(/ё/g, "е");
 }
 
+export function isFallbackDrafts(drafts) {
+  return drafts.length > 0 && drafts.every((d) => d.reasoning === "fallback");
+}
+
+/**
+ * Достаёт целые объекты спикеров из оборванного ответа B2 (JSON обрезан по
+ * лимиту токенов). Берёт только плоские объекты с id и guessedName.
+ */
+export function salvageSpeakerDrafts(raw) {
+  const out = [];
+  for (const m of String(raw).matchAll(/\{[^{}]*"id"[^{}]*"guessedName"[^{}]*\}/g)) {
+    try {
+      const d = JSON.parse(m[0]);
+      if (d.id && d.label) out.push(d);
+    } catch { /* неполный объект — пропускаем */ }
+  }
+  return out;
+}
+
 const HIGH_CONFIDENCE_SHARE = 0.7;
 const FALLBACK_MIN_SHARE = 0.5;
 
@@ -869,7 +888,11 @@ export class YcYandexGptGateway {
       samples.push(await this.identifySpeakersOnce({ correctedText, transcript, project, context }));
     }
 
-    const finalDrafts = assignSpeakerNames(samples, project?.team ?? []);
+    // Голос, у которого JSON не разобрался и ничего не спаслось, — не «все
+    // null», а отсутствие голоса: иначе он разбавляет доли всех имён.
+    const usable = samples.filter((s) => !isFallbackDrafts(s));
+    logger.info("GPT B2: usable votes", { usable: usable.length, votes });
+    const finalDrafts = assignSpeakerNames(usable.length ? usable : samples, project?.team ?? []);
 
     logger.info("GPT B2: done (ensemble)", {
       votes,
@@ -909,7 +932,14 @@ export class YcYandexGptGateway {
       }))
     }, "B2");
 
-    const drafts = result.speakerDrafts ?? [];
+    let drafts = result.speakerDrafts ?? [];
+    if (isFallbackDrafts(drafts)) {
+      const salvaged = salvageSpeakerDrafts(raw);
+      if (salvaged.length) {
+        logger.warn("GPT B2: truncated JSON, salvaged complete speakers", { salvaged: salvaged.length });
+        drafts = salvaged;
+      }
+    }
     logger.info("GPT B2: done", {
       identified: drafts.filter((s) => s.guessedName).length,
       total: drafts.length

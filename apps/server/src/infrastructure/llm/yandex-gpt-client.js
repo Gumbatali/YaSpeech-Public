@@ -201,7 +201,7 @@ export class YandexGptClient {
         // пробуем следующий вариант
       }
     }
-    logger.error(`YandexGPT parse error [${label}]: ${raw.slice(0, 200)}`);
+    logger.error(`YandexGPT parse error [${label}]: length=${raw.length} head=${raw.slice(0, 200)} tail=${raw.slice(-200)}`);
     return fallback;
   }
 }

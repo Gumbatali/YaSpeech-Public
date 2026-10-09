@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignSpeakerNames } from "../src/infrastructure/yc-yandex-gpt-gateway.js";
+import { assignSpeakerNames, isFallbackDrafts, salvageSpeakerDrafts } from "../src/infrastructure/yc-yandex-gpt-gateway.js";
 
 const vote = (label, guessedName) => ({ id: label, label, guessedName });
 const run = (perSample) => perSample.map((s) => Object.entries(s).map(([l, n]) => vote(l, n)));
@@ -41,4 +41,19 @@ test("assignSpeakerNames: ё/е не различаются, имя вне ро�
 test("assignSpeakerNames: имя по первому слову полного имени из ростера считается ростерным", () => {
   const r = byLabel(assignSpeakerNames(run([{ A: "Настя" }]), [{ name: "Настя Филатова" }]));
   assert.equal(r.A.inRoster, true);
+});
+
+test("salvageSpeakerDrafts: достаёт целые объекты из оборванного JSON", () => {
+  const raw = `{"speakerDrafts":[
+    {"id":"speaker-1","label":"Спикер 1","guessedName":"Артем","confidence":"high","reasoning":"обращение"},
+    {"id":"speaker-2","label":"Спикер 2","guessedName":null,"confidence":"low","reasoning":"нет"},
+    {"id":"speaker-3","label":"Спикер 3","guessedName":"Вла`;
+  const got = salvageSpeakerDrafts(raw);
+  assert.deepEqual(got.map((d) => [d.id, d.guessedName]), [["speaker-1", "Артем"], ["speaker-2", null]]);
+});
+
+test("isFallbackDrafts: узнаёт заглушку разбора и не принимает настоящие ответы", () => {
+  assert.equal(isFallbackDrafts([{ reasoning: "fallback" }, { reasoning: "fallback" }]), true);
+  assert.equal(isFallbackDrafts([{ reasoning: "fallback" }, { reasoning: "обращение" }]), false);
+  assert.equal(isFallbackDrafts([]), false);
 });
