@@ -57,3 +57,33 @@ test("isFallbackDrafts: узнаёт заглушку разбора и не п�
   assert.equal(isFallbackDrafts([{ reasoning: "fallback" }, { reasoning: "обращение" }]), false);
   assert.equal(isFallbackDrafts([]), false);
 });
+
+test("assignSpeakerNames: голое имя разворачивается в полное, если в ростере оно одно", () => {
+  const r = byLabel(assignSpeakerNames(run([{ A: "Настя" }]), [{ name: "Настя Филатова" }, { name: "Влад" }]));
+  assert.equal(r.A.guessedName, "Настя Филатова");
+  assert.equal(r.A.nameCandidates, null);
+});
+
+test("assignSpeakerNames: две Насти в ростере — обе метки сохраняют имя, помечены неоднозначными", () => {
+  const team = [{ name: "Настя Филатова" }, { name: "Настя Хохлова" }];
+  const r = byLabel(assignSpeakerNames(run(Array(5).fill({ A: "Настя", B: "Настя" })), team));
+  assert.equal(r.A.guessedName, "Настя");
+  assert.equal(r.B.guessedName, "Настя");
+  assert.deepEqual(r.A.nameCandidates, ["Настя Филатова", "Настя Хохлова"]);
+  assert.equal(r.A.confidence, "low");
+});
+
+test("assignSpeakerNames: третья метка с тем же именем при двух Настях в ростере обнуляется", () => {
+  const team = [{ name: "Настя Филатова" }, { name: "Настя Хохлова" }];
+  const samples = run(Array(5).fill({ A: "Настя", B: "Настя", C: "Настя" }));
+  samples.forEach((s, i) => { s[2].guessedName = i < 3 ? "Настя" : null; });
+  const r = byLabel(assignSpeakerNames(samples, team));
+  assert.equal(r.C.guessedName, null);
+});
+
+test("assignSpeakerNames: полное имя из ответа модели однозначно", () => {
+  const team = [{ name: "Настя Филатова" }, { name: "Настя Хохлова" }];
+  const r = byLabel(assignSpeakerNames(run(Array(5).fill({ A: "Настя Хохлова" })), team));
+  assert.equal(r.A.guessedName, "Настя Хохлова");
+  assert.equal(r.A.confidence, "high");
+});

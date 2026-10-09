@@ -222,10 +222,19 @@ export function assignSpeakerNames(samples, team = []) {
     }
   }
 
-  const rosterKeys = new Set(team.flatMap((m) => {
-    const full = nameKey(String(m.name ?? "").trim());
-    return [full, full.split(/\s+/)[0]];
-  }));
+  // Полное имя из ростера -> оно же; голое имя ("Настя") -> все совпадения по
+  // первому слову. Два человека с одним именем — вместимость 2, но кто из них
+  // кто, по одному имени не узнать: такой выбор помечается как неоднозначный.
+  const rosterFull = new Map();
+  const rosterByFirst = new Map();
+  for (const m of team) {
+    const full = String(m.name ?? "").trim();
+    if (!full) continue;
+    rosterFull.set(nameKey(full), full);
+    const first = nameKey(full.split(/\s+/)[0]);
+    rosterByFirst.set(first, [...(rosterByFirst.get(first) ?? []), full]);
+  }
+  const capacity = (key) => (rosterFull.has(key) ? 1 : (rosterByFirst.get(key)?.length ?? 1));
 
   const labels = [];
   const candidates = [];
@@ -246,30 +255,39 @@ export function assignSpeakerNames(samples, team = []) {
   }
   candidates.sort((a, b) => b.share - a.share || b.count - a.count);
 
-  const taken = new Set();
+  const taken = new Map();
+  const isFull = (key) => (taken.get(key) ?? 0) >= capacity(key);
   const assigned = new Map();
   for (const c of candidates) {
-    if (assigned.has(c.label) || taken.has(c.key)) continue;
-    const displaced = candidates.some((o) => o.label === c.label && o.share > c.share && taken.has(o.key));
+    if (assigned.has(c.label) || isFull(c.key)) continue;
+    const displaced = candidates.some((o) => o.label === c.label && o.share > c.share && isFull(o.key));
     if (displaced && c.share < FALLBACK_MIN_SHARE) continue;
     assigned.set(c.label, c);
-    taken.add(c.key);
+    taken.set(c.key, (taken.get(c.key) ?? 0) + 1);
   }
 
   return labels.map(({ label, best, labelVotes }) => {
     const pick = assigned.get(label);
     const source = pick?.vote ?? best;
+    let name = pick ? pick.name : null;
+    let nameCandidates = null;
+    if (pick) {
+      const matches = rosterFull.has(pick.key) ? [rosterFull.get(pick.key)] : (rosterByFirst.get(pick.key) ?? []);
+      if (matches.length === 1) name = matches[0];
+      else if (matches.length > 1) nameCandidates = matches;
+    }
     return {
       id: source.id,
       label,
-      guessedName: pick ? pick.name : null,
+      guessedName: name,
       guessedRole: source.guessedRole ?? null,
       dialogueRole: source.dialogueRole ?? null,
       reasoning: source.reasoning ?? null,
       votesForWinner: pick?.count ?? 0,
       totalVotes: labelVotes.length,
-      confidence: pick && pick.share >= HIGH_CONFIDENCE_SHARE ? "high" : "low",
-      inRoster: pick ? rosterKeys.has(pick.key) : null
+      confidence: pick && pick.share >= HIGH_CONFIDENCE_SHARE && !nameCandidates ? "high" : "low",
+      inRoster: pick ? rosterFull.has(pick.key) || rosterByFirst.has(pick.key) : null,
+      nameCandidates
     };
   });
 }
