@@ -61,6 +61,10 @@ def rttm_key(job_id: str) -> str:
     return f"{STATUS_PREFIX}/{job_id}/diarization.rttm"
 
 
+def embeddings_key(job_id: str) -> str:
+    return f"{STATUS_PREFIX}/{job_id}/embeddings.json"
+
+
 def write_status(s3, job_id: str, status: dict):
     s3.put_object(
         Bucket=bucket_name(), Key=status_key(job_id),
@@ -107,9 +111,25 @@ def _run_job_body(job: dict, conn: "mp.connection.Connection"):
             )
 
             merged_rttm_path = str(Path(tmp) / "merged.rttm")
-            speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path)
+            embeddings = {}
+            speakers = run_merge(audio_path, hyp_rttm_path, job_id, merged_rttm_path,
+                                 embeddings_out=embeddings)
 
             s3.upload_file(merged_rttm_path, bucket_name(), rttm_key(job_id))
+
+            # Голосовые эмбеддинги — побочный результат для будущей привязки
+            # голосов к именам; их сбой не должен ронять диаризацию.
+            try:
+                s3.put_object(
+                    Bucket=bucket_name(), Key=embeddings_key(job_id),
+                    Body=json.dumps({
+                        "model": "pyannote/wespeaker-voxceleb-resnet34-LM",
+                        "speakers": embeddings,
+                    }).encode("utf-8"),
+                    ContentType="application/json; charset=utf-8",
+                )
+            except Exception:
+                traceback.print_exc()
         conn.send(("done", speakers))
     except Exception as e:
         traceback.print_exc()
@@ -151,7 +171,10 @@ def process_one(s3, job: dict, timeout_seconds: int = JOB_TIMEOUT_SECONDS):
         write_status(s3, job_id, {"status": "failed", "error": payload})
         raise RuntimeError(payload)
 
-    write_status(s3, job_id, {"status": "done", "rttmKey": rttm_key(job_id), "speakers": payload})
+    write_status(s3, job_id, {
+        "status": "done", "rttmKey": rttm_key(job_id), "embeddingsKey": embeddings_key(job_id),
+        "speakers": payload,
+    })
 
 
 @app.get("/health")

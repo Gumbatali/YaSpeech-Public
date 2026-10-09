@@ -83,8 +83,11 @@ def run_merge(
     # похож голос, а про то, что меньше этого самого "спикера" как
     # персоны, считай, не существует. См. этап 2 ниже.
     min_total_duration_sec: float = float(os.environ.get("MERGE_MIN_TOTAL_DURATION_SEC", "10.0")),
+    embeddings_out: dict | None = None,
 ) -> int:
-    """Возвращает число спикеров после слияния."""
+    """Возвращает число спикеров после слияния. Если передан `embeddings_out`,
+    кладёт в него усреднённый L2-нормированный эмбеддинг голоса каждого
+    итогового спикера: {метка в итоговом RTTM: [float, ...]}."""
     import numpy as np
     from pyannote.core import Annotation
 
@@ -265,6 +268,14 @@ def run_merge(
         # в кого поглощать. Оставляем как есть: лучше подозрительно много
         # спикеров, чем молча слить всех в одного наугад.
         print(f"  этап 2: все метки короче {min_total_duration_sec}с, поглощать некуда, пропуск")
+
+    if embeddings_out is not None:
+        for root in sorted({find(label) for label in all_raw_labels}):
+            centroid = centroids.get(root)
+            if centroid is None:
+                centroid = fallback_centroid(root)
+            if centroid is not None:
+                embeddings_out[root] = [round(float(x), 5) for x in centroid]
 
     merged_hypothesis = build_hypothesis(parent, find)
     annotation_to_rttm(merged_hypothesis, session_id, out_rttm_path)

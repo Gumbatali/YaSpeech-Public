@@ -9,7 +9,7 @@ import {
 import { logger } from "../shared/logger.js";
 import { postprocessTranscript } from "./transcript-postprocessor.js";
 import { buildRefineChunks, applyRefinedLines } from "./transcription/refiner.js";
-import { alignTranscriptWithDiarization } from "../infrastructure/pyannote-diarization.js";
+import { alignTranscriptWithDiarization, diarizationSpeakerLabels } from "../infrastructure/pyannote-diarization.js";
 
 // Диаризация на CPU (сервис apps/diarization-service) — RTF ~1x, то есть
 // занимает время, сравнимое с длиной встречи (см.
@@ -24,6 +24,9 @@ const DIARIZE_TIMEOUT_MS = Number(process.env.DIARIZE_TIMEOUT_MINUTES ?? 90) * 6
 const REFINE_TIME_BUDGET_MS = 200_000;
 
 const normalizeName = (name) => name?.trim().toLowerCase().replaceAll("ё", "е") || null;
+
+const voiceKeyOf = (meeting) => meeting.artifacts.transcriptKey.replace(/\.json$/, ".voice.json");
+const voiceSamplesKeyOf = (projectId) => `projects/${projectId}/_voice-samples.json`;
 
 function summarizeNameConfirmation(drafts) {
   const summary = { speakers: drafts.length, proposed: 0, agreed: 0, changed: 0, filled: 0, cleared: 0 };
@@ -168,6 +171,13 @@ export class MeetingPipelineService {
     };
 
     await this.meetingRepository.save(updatedMeeting);
+    if (confirmedDrafts) {
+      try {
+        await this.collectVoiceSamples(meeting, confirmedDrafts);
+      } catch (err) {
+        logger.warn("confirmDraft: collecting voice samples failed", { meetingId, error: err.message });
+      }
+    }
     this.enqueueProcessing(meetingId);
     return updatedMeeting;
   }
@@ -442,6 +452,75 @@ export class MeetingPipelineService {
 
     logger.info("pollDiarizePhase: diarization done", { meetingId: meeting.id, speakers: jobStatus.speakers });
     await this.prepareDraftFromTranscript(meeting, project, meeting.speechKitJobId, diarizedTranscript);
+
+    try {
+      await this.saveVoiceEmbeddings(meeting, jobStatus, diarizationSegments);
+    } catch (err) {
+      logger.warn("pollDiarizePhase: saving voice embeddings failed", { meetingId: meeting.id, error: err.message });
+    }
+  }
+
+  /**
+   * Сохраняет эмбеддинги голосов спикеров встречи по ИТОГОВЫМ id спикеров
+   * (после переименования по talk time), чтобы при подтверждении черновика
+   * связать их с подтверждённым именем. Побочный результат: если контейнер
+   * эмбеддингов не вернул, пропускаем.
+   */
+  async saveVoiceEmbeddings(meeting, jobStatus, diarizationSegments) {
+    const embeddings = await this.diarizationGateway.readEmbeddings?.(jobStatus.embeddingsKey);
+    if (!embeddings?.speakers) return;
+
+    const originalIdByLabel = new Map(
+      diarizationSpeakerLabels(diarizationSegments).map((label, i) => [label, `speaker-${i + 1}`])
+    );
+    const transcript = await this.artifactStorage.readJson(meeting.artifacts.transcriptKey);
+    const finalIdByOriginal = new Map();
+    for (const p of transcript?.phrases ?? []) {
+      if (p.originalSpeakerId) finalIdByOriginal.set(p.originalSpeakerId, p.speakerId);
+    }
+
+    const bySpeakerId = {};
+    for (const [label, vector] of Object.entries(embeddings.speakers)) {
+      const finalId = finalIdByOriginal.get(originalIdByLabel.get(label));
+      if (finalId) bySpeakerId[finalId] = vector;
+    }
+    await this.artifactStorage.writeJson(voiceKeyOf(meeting), { model: embeddings.model ?? null, bySpeakerId });
+    logger.info("pollDiarizePhase: voice embeddings saved", {
+      meetingId: meeting.id, speakers: Object.keys(bySpeakerId).length
+    });
+  }
+
+  /**
+   * Копит в проекте пары «подтверждённое имя — эмбеддинг голоса» для будущей
+   * привязки голосов. Идемпотентно: повторное подтверждение той же встречи
+   * заменяет её прежние образцы. Образцы лишь накапливаются — на решения о
+   * именах пока не влияют.
+   */
+  async collectVoiceSamples(meeting, confirmedDrafts) {
+    const voice = await this.artifactStorage.readJson(voiceKeyOf(meeting));
+    if (!voice?.bySpeakerId) return;
+
+    const key = voiceSamplesKeyOf(meeting.projectId);
+    const store = (await this.artifactStorage.readJson(key)) ?? { model: voice.model ?? null, samples: [] };
+    const samples = store.samples.filter((s) => s.meetingId !== meeting.id);
+    const confirmedAt = this.clock.now().toISOString();
+
+    for (const d of confirmedDrafts) {
+      const embedding = voice.bySpeakerId[d.id];
+      if (!d.guessedName || !embedding) continue;
+      samples.push({
+        meetingId: meeting.id,
+        speakerId: d.id,
+        name: d.guessedName,
+        proposedName: d.proposedName ?? null,
+        embedding,
+        confirmedAt
+      });
+    }
+    await this.artifactStorage.writeJson(key, { ...store, samples });
+    logger.info("confirmDraft: voice samples saved", {
+      meetingId: meeting.id, projectId: meeting.projectId, total: samples.length
+    });
   }
 
   /**

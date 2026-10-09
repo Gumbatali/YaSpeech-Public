@@ -106,6 +106,19 @@ export class PyannoteDiarization {
     const text = await this.artifactStorage.readText(rttmKey);
     return parseRttm(text);
   }
+
+  /**
+   * Эмбеддинги итоговых спикеров ({ model, speakers: { метка RTTM: [float] } })
+   * или null, если файла нет — это побочный результат, его отсутствие не ошибка.
+   */
+  async readEmbeddings(embeddingsKey) {
+    if (!embeddingsKey) return null;
+    try {
+      return (await this.artifactStorage.readJson(embeddingsKey)) ?? null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function statusKey(jobId) {
@@ -141,7 +154,7 @@ function parseRttm(text) {
  * @returns {Array<object>} те же фразы с обновлёнными speakerId/speakerLabel/speakerTag
  */
 export function alignTranscriptWithDiarization(phrases, diarizationSegments) {
-  const speakerIds = [...new Set(diarizationSegments.map((s) => s.speaker))].sort();
+  const speakerIds = diarizationSpeakerLabels(diarizationSegments);
   const speakerMap = new Map(
     speakerIds.map((id, i) => [id, { newId: `speaker-${i + 1}`, label: `Спикер ${i + 1}`, tag: String(i) }])
   );
@@ -159,6 +172,14 @@ export function alignTranscriptWithDiarization(phrases, diarizationSegments) {
       speakerTag: mapped?.tag ?? "0"
     };
   });
+}
+
+/**
+ * Метки RTTM в порядке, по которому им выдаются id `speaker-1..N` при
+ * переразметке фраз. Единая нумерация нужна и для привязки эмбеддингов.
+ */
+export function diarizationSpeakerLabels(diarizationSegments) {
+  return [...new Set(diarizationSegments.map((s) => s.speaker))].sort();
 }
 
 /**
