@@ -76,7 +76,7 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-cookbook-demo
+        bucket: yaspeech-frontend
         object: index.html
         service_account_id: ajenlsjcgan733cej0r0
       responses:
@@ -87,7 +87,7 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-cookbook-demo
+        bucket: yaspeech-frontend
         object: "app/{path}"
         service_account_id: ajenlsjcgan733cej0r0
       parameters:
@@ -104,7 +104,7 @@ paths:
     get:
       x-yc-apigateway-integration:
         type: object_storage
-        bucket: yaspeech-cookbook-demo
+        bucket: yaspeech-frontend
         object: "lib/{path}"
         service_account_id: ajenlsjcgan733cej0r0
       parameters:
